@@ -1,0 +1,23 @@
+
+color( red );
+color( green );
+color( blue );
+
+has_property( $word, type ) {
+	color( $word );
+}
+
+is_property( $word, type, color ) {
+	color( $word );
+}
+
+is_color( $word ) {
+	has_property( $word, type );
+	is_property( $word, type, color );
+}
+
+main( $argument ) {
+	print( "Main" );
+	is_color( $options );
+	print( $options );
+}

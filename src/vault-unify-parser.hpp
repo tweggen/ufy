@@ -1,0 +1,670 @@
+#if !defined( _VAULT_UNIFY_PARSER_HPP )
+#define _VAULT_UNIFY_PARSER_HPP
+
+/*
+ * Workaround for a but in boost 1.58: It does not support
+ * empty structs in BOOST_FUSION_ADOPT_STRUCT
+ */
+#undef BOOST_PP_VARIADICS
+#define BOOST_PP_VARIADICS 0
+
+#include <vault-unification.hpp>
+
+#include <string>
+#include <vector>
+#include <iomanip>
+
+#include <boost/config/warning_disable.hpp>
+#include <boost/bind.hpp>
+
+#include <boost/spirit/include/qi.hpp>
+#include <boost/spirit/include/phoenix_core.hpp>
+#include <boost/spirit/include/phoenix_operator.hpp>
+#include <boost/spirit/include/phoenix_object.hpp>
+#include <boost/spirit/include/phoenix_fusion.hpp>
+#include <boost/spirit/include/phoenix.hpp>
+#include <boost/spirit/repository/include/qi_iter_pos.hpp>
+
+#include <boost/fusion/include/adapt_struct.hpp>
+
+#include <boost/fusion/include/io.hpp>
+
+#define BOOST_SPIRIT_USE_PHOENIX_V3
+
+namespace vault {
+namespace unify {    
+
+class FileDebugInfo;
+
+
+namespace PrologParser {
+
+#define USE_NIL 1
+
+#if USE_NIL
+struct unifynil {};
+#endif
+
+struct AtomInput {
+    AtomInput() {}
+    AtomInput( const std::string& strName, int l ) 
+        : name( strName )
+        , line( l ) {}
+    std::string name;
+    int line;
+};
+
+struct AnyTermInput;
+struct ConsTermInput;
+struct InfixTermsInput;
+struct PrefixTermInput;
+struct MapPairInput;
+
+struct MapTermInput {
+    MapTermInput() {};
+    std::vector<MapPairInput> pairs;
+};
+
+
+struct ArrayTermInput {
+    ArrayTermInput() {};
+    std::vector<AnyTermInput> members;
+};
+
+typedef boost::variant<
+#if USE_NIL
+        unifynil, 
+#endif
+        boost::recursive_wrapper<ConsTermInput>,
+        boost::recursive_wrapper<MapTermInput>,
+        boost::recursive_wrapper<ArrayTermInput>,
+        boost::recursive_wrapper<PrefixTermInput>,
+        boost::recursive_wrapper<InfixTermsInput>
+        > AnyTermRecursiveType;
+
+struct AnyTermInput {
+    AnyTermInput() 
+#if USE_NIL
+    : term( unifynil() )
+#endif
+    {};
+    AnyTermInput( const AnyTermInput& other ) : term( other.term ) {}
+    AnyTermInput( const ConsTermInput& cti ) : term( cti ) {}
+    AnyTermInput( const MapTermInput& mti ) : term( mti ) {}
+    AnyTermInput( const ArrayTermInput& ati ) : term( ati ) {}
+    AnyTermInput( const PrefixTermInput& pti ) : term( pti ) {}
+    AnyTermInput( const InfixTermsInput& iti ) : term( iti ) {}
+
+    AnyTermRecursiveType term;
+};
+
+struct ConsTermInput {
+    ConsTermInput() {}
+    // ctor for cons term with atom only.
+    ConsTermInput( const AtomInput& ai ) : atom( ai ) {}
+    AtomInput atom;
+    std::vector<AnyTermInput> values;
+};
+
+struct InfixTermRightHandSide {
+    InfixTermRightHandSide() {}
+    InfixTermRightHandSide( const AnyTermInput& ati ) : first( 0 ), second( ati ) {}
+
+    char first;
+    AnyTermInput second;
+};
+
+struct InfixTermsInput {
+    InfixTermsInput() {}
+    InfixTermsInput( const AnyTermInput& ati ) : atilhs( ati ) {}
+
+    AnyTermInput atilhs;
+    boost::optional<InfixTermRightHandSide> rhs;
+};
+
+struct PrefixTermInput {
+    PrefixTermInput() {}
+    PrefixTermInput( const InfixTermsInput& ati ) : rhs( ati ) {}
+    PrefixTermInput( char op ) : first( op ) {}
+
+    boost::optional<char> first;
+    InfixTermsInput rhs;
+};
+
+
+struct MapPairInput {
+    MapPairInput() {}
+    MapPairInput( const MapPairInput& other ) : pairKey( other.pairKey ), pairValue( other.pairValue ) {}
+    MapPairInput( const AtomInput& ai ) : pairKey( ai ) {}
+    AtomInput pairKey;
+    AnyTermInput pairValue;
+};
+
+
+class IfStatementInput;
+class SingleGoalInput;
+class AnyStatementInput;
+
+typedef boost::variant<
+#if USE_NIL
+        unifynil, 
+#endif
+        boost::recursive_wrapper<IfStatementInput>,
+        boost::recursive_wrapper<SingleGoalInput>,
+        boost::recursive_wrapper<AnyStatementInput>
+        > AnyStatementRecursiveType;
+
+
+struct AnyStatementInput {
+    AnyStatementInput() 
+#if USE_NIL
+    : statement( unifynil() )
+#endif
+    {};
+    AnyStatementInput( const AnyStatementInput& other ) : statement( other.statement ) {}
+    AnyStatementInput( const IfStatementInput& isi ) : statement( isi ) {}
+    AnyStatementInput( const SingleGoalInput& sgi ) : statement( sgi ) {}
+
+    AnyStatementRecursiveType statement;
+};
+
+
+struct GoalInput {
+    std::vector<AnyStatementInput> consTerms;
+};
+
+
+struct SingleGoalInput {
+    SingleGoalInput() {}
+    SingleGoalInput( const InfixTermsInput& ati ) : rhs( ati ) {}
+    SingleGoalInput( char op ) : first( op ) {}
+    boost::optional<char> first;
+    InfixTermsInput rhs;
+};
+
+
+struct IfStatementInput {
+    IfStatementInput() {}
+    IfStatementInput( const SingleGoalInput& sgi ) : lhs( sgi ) {}
+    SingleGoalInput lhs;
+    GoalInput rhs;
+};
+
+
+struct ClauseInput {
+    ClauseInput() {}
+    ClauseInput( const ConsTermInput& cti ) : leftHandTerm( cti ) {}
+    ConsTermInput leftHandTerm;
+    GoalInput rightHandGoal;
+};
+
+
+struct QueryInput {
+    QueryInput() {}
+//    QueryInput( const ConsTermInput& cti ) : leftHandTerm( cti ) {}
+    GoalInput queryGoal;
+};
+
+
+struct EventInput {
+    EventInput() {}
+    EventInput( const QueryInput& qi ) : query( qi ) {}
+    EventInput( const ClauseInput& qi ) : clause( qi ) {}
+    QueryInput query;
+    ClauseInput clause;
+};
+
+}; // namespace PrologParser
+}; // namespace unify
+}; // namespace vault
+
+BOOST_FUSION_ADAPT_STRUCT(
+    vault::unify::PrologParser::unifynil,
+)
+
+BOOST_FUSION_ADAPT_STRUCT(
+    vault::unify::PrologParser::AtomInput,
+    (std::string, name)
+)
+
+BOOST_FUSION_ADAPT_STRUCT(
+    vault::unify::PrologParser::ConsTermInput,
+    (vault::unify::PrologParser::AtomInput, atom)
+    (std::vector<vault::unify::PrologParser::AnyTermInput>, values)
+)
+
+BOOST_FUSION_ADAPT_STRUCT(
+    vault::unify::PrologParser::InfixTermRightHandSide,
+    (char,first)
+    (vault::unify::PrologParser::AnyTermInput,second)
+)
+
+BOOST_FUSION_ADAPT_STRUCT(
+    vault::unify::PrologParser::InfixTermsInput,
+    (vault::unify::PrologParser::AnyTermInput, atilhs)
+    (boost::optional<vault::unify::PrologParser::InfixTermRightHandSide>, rhs)
+)
+
+BOOST_FUSION_ADAPT_STRUCT(
+    vault::unify::PrologParser::PrefixTermInput,
+    (boost::optional<char>, first)
+    (vault::unify::PrologParser::InfixTermsInput, rhs)
+)
+
+BOOST_FUSION_ADAPT_STRUCT(
+    vault::unify::PrologParser::MapTermInput,
+    (std::vector<vault::unify::PrologParser::MapPairInput>, pairs)
+)
+
+BOOST_FUSION_ADAPT_STRUCT(
+    vault::unify::PrologParser::ArrayTermInput,
+    (std::vector<vault::unify::PrologParser::AnyTermInput>, members)
+)
+
+BOOST_FUSION_ADAPT_STRUCT(
+    vault::unify::PrologParser::AnyTermInput,
+    (vault::unify::PrologParser::AnyTermRecursiveType, term)
+)
+
+BOOST_FUSION_ADAPT_STRUCT(
+    vault::unify::PrologParser::MapPairInput,
+    (vault::unify::PrologParser::AtomInput, pairKey)
+    (vault::unify::PrologParser::AnyTermInput, pairValue)
+)
+
+BOOST_FUSION_ADAPT_STRUCT(
+    vault::unify::PrologParser::SingleGoalInput,
+    (boost::optional<char>, first)
+    (vault::unify::PrologParser::InfixTermsInput, rhs)
+)
+
+BOOST_FUSION_ADAPT_STRUCT(
+    vault::unify::PrologParser::IfStatementInput,
+    (vault::unify::PrologParser::SingleGoalInput, lhs)
+    (vault::unify::PrologParser::GoalInput,rhs)
+)
+
+BOOST_FUSION_ADAPT_STRUCT(
+    vault::unify::PrologParser::AnyStatementInput,
+    (vault::unify::PrologParser::AnyStatementRecursiveType, statement)
+)
+
+BOOST_FUSION_ADAPT_STRUCT(
+    vault::unify::PrologParser::GoalInput,
+    (std::vector<vault::unify::PrologParser::AnyStatementInput>, consTerms)
+)
+
+BOOST_FUSION_ADAPT_STRUCT(
+    vault::unify::PrologParser::ClauseInput,
+    (vault::unify::PrologParser::ConsTermInput, leftHandTerm)
+    (vault::unify::PrologParser::GoalInput, rightHandGoal)
+)
+
+BOOST_FUSION_ADAPT_STRUCT(
+    vault::unify::PrologParser::QueryInput,
+    (vault::unify::PrologParser::GoalInput, queryGoal)
+)
+
+BOOST_FUSION_ADAPT_STRUCT(
+    vault::unify::PrologParser::EventInput,
+    (vault::unify::PrologParser::QueryInput, query)
+    (vault::unify::PrologParser::ClauseInput, clause)
+)
+
+namespace vault {
+namespace unify {
+namespace PrologParser {
+
+namespace qi = boost::spirit::qi;
+namespace phoenix = boost::phoenix;
+
+
+class Context;
+
+
+struct ClauseContext {
+    ClauseContext( Context& context ) : m_context( context ), m_anonVarIndex(1000) {}
+    void reset() { m_mapSymbols.clear(); }
+    std::map<std::string,vault::unify::VarTerm*> m_mapSymbols;
+    std::string nextAnonVarName() {
+        return std::string("$__")
+            +boost::lexical_cast<std::string>( m_anonVarIndex++ );
+    }
+    Context& m_context;
+    int m_anonVarIndex;
+    std::string nextAnonClauseName( const std::string& tag ) {
+        return std::string( "__" ) +tag+ std::string( "__" )
+            +boost::lexical_cast<std::string>( m_anonClauseIndex++ );
+    }
+
+    static int m_anonClauseIndex;
+};
+
+class Context {
+public:
+    Context( WorldPtr spWorld ) : m_spWorld( spWorld ), m_pFileDebugInfo( NULL ) { }
+
+    /**
+     * Given an abstract syntax tree, isUnificationDonegenerate a list of terms.
+     * The overall list of terms later may be converted to a goal.
+     */
+    int createGoal(
+        ClauseContext& clauseContext,
+        const vault::unify::PrologParser::GoalInput& goalInput,
+        std::list<vault::unify::AbstractTerm*>& out_lsTerms
+        );
+    int createClause(
+        ClauseContext& clauseContext,
+        const vault::unify::PrologParser::ClauseInput& clauseInput,
+        vault::unify::Clause*& out_pClause
+        );
+
+    WorldPtr getWorld() const { return m_spWorld; }
+
+    void setFileDebugInfo( const FileDebugInfo* pFileDebugInfo ) {
+        m_pFileDebugInfo = pFileDebugInfo;
+    }
+
+    const FileDebugInfo* getFileDebugInfo() const {
+        return m_pFileDebugInfo;
+    }
+
+private:
+    WorldPtr m_spWorld;
+    const FileDebugInfo* m_pFileDebugInfo;
+};
+
+
+template <typename Iterator>
+    struct ufy_skipper 
+        : public qi::grammar<Iterator> 
+{
+    ufy_skipper( vault::unify::PrologParser::Context& pctx )
+            : ufy_skipper::base_type(start)
+            , m_pctx( pctx )
+    {
+        start = qi::ascii::space 
+            | ("/*" >> *(qi::char_ - "*/") >> "*/")
+            | "//" >> *(qi::char_ - qi::eol) >> ( qi::eol );
+    }
+
+    qi::rule<Iterator> start;
+    vault::unify::PrologParser::Context& m_pctx;
+};
+
+// lazy function for error reporting
+struct ReportError {
+    // the result type must be explicit for Phoenix
+    template<typename, typename, typename, typename>
+    struct result { typedef void type; };
+
+    // contract the string to the surrounding new-line characters
+    template<typename Iter>
+    void operator()(Iter first_iter, Iter last_iter,
+                Iter error_iter, const qi::info& what) const {
+    std::string first(first_iter, error_iter);
+    std::string last(error_iter, last_iter);
+    auto first_pos = first.rfind('\n');
+    auto last_pos = last.find('\n');
+    auto error_line = ((first_pos == std::string::npos) ? first
+                    : std::string(first, first_pos + 1))
+                    + std::string(last, 0, last_pos);
+    auto error_pos = (error_iter - first_iter) + 1;
+    if (first_pos != std::string::npos) {
+        error_pos -= (first_pos + 1);
+    }
+    std::cerr
+        << "Parsing error in " << what << std::endl
+        << error_line << std::endl
+        << std::setw(error_pos) << '^'
+        << std::endl;
+    }
+};
+
+
+template<typename It>
+struct annotation_f {
+    template<typename,typename> struct result { typedef void type; };
+    //typedef void result;
+
+    annotation_f(It _first) : first(_first) {}
+    It const first;
+
+    template<typename Val, typename First>
+    void operator()(Val& v, First f ) const {
+        do_annotate(v, f, first);
+    }
+  private:
+    void static do_annotate( AtomInput& ai, It f, It const first ) {
+        ai.line   = get_line(f);
+    }
+    static void do_annotate(...) {}
+};
+
+
+template <typename Iterator, typename Skipper> 
+    struct ClauseParser 
+        : public qi::grammar<Iterator, EventInput(), Skipper /*qi::ascii::space_type*/>
+{
+public:
+    ClauseParser( Iterator first, Context& pctx )
+            : ClauseParser::base_type( m_ruleEvent )
+            , m_pctx( pctx )
+            // , annotate( first )
+    {
+        using boost::phoenix::at_c;
+        using boost::phoenix::push_back;
+
+        m_unescapedChar.add
+                ("\\a", '\a')("\\b", '\b')("\\f", '\f')("\\n", '\n')
+                ("\\r", '\r')("\\t", '\t')("\\v", '\v')
+                ("\\\\", '\\')("\\\'", '\'')("\\\"", '\"')
+            ;
+ 
+        m_unescapedString %= 
+                qi::lit( '"' ) >> qi::no_skip[ *(m_unescapedChar | "\\x" >> qi::hex | qi::char_ - '"' - '\\') ] >>  qi::lit( '"' )
+            ;
+
+        m_ruleId %= qi::char_( "$a-zA-Z_" ) >> *qi::char_( "a-zA-Z_0-9" );
+
+        m_ruleNumber %= + qi::char_( "0-9" );
+
+        m_ruleAtom %=
+                ( m_ruleId >> qi::attr( 1 ) /* boost::spirit::repository::qi::iter_pos.position()*/ )
+            |   ( m_ruleNumber >> qi::attr( 1 ) /* boost::spirit::repository::qi::iter_pos.position()*/ )
+            |   ( m_unescapedString >> qi::attr( 1 ) /* boost::spirit::repository::qi::iter_pos.position()*/ )
+            // or another type of constant like a number.
+            ;
+
+        m_ruleMapPair %=
+                ( m_ruleAtom >> ':' >> m_ruleAnyTerm )
+            ;
+
+        m_ruleMapTerm %=
+                ( '{' 
+                    >> ( m_ruleMapPair % ',' )
+                    >>'}' 
+                )
+            ;
+
+        m_ruleArrayTerm %=
+                ( '['
+                    >> ( m_ruleAnyTerm % ',' )
+                    >> ']'
+                )
+            ;
+
+        m_ruleConsTerm %=
+                (m_ruleAtom 
+                    >> -( 
+                        '(' 
+                        >> ( m_ruleAnyTerm  % ',' )
+                        >> ')' )
+                    )
+            ;
+
+        m_ruleAnyConsTerm %=
+                m_ruleConsTerm
+            |   m_ruleMapTerm
+            |   m_ruleArrayTerm
+            ;
+
+        m_ruleArrayDeref %=
+                (m_ruleAnyConsTerm >> ( -( qi::char_( "[" ) >> m_ruleAnyConsTerm ) ) )
+            ;
+
+        m_ruleAssignmentPart %=
+                ( m_ruleArrayDeref >> ( -( qi::lit( "->" ) >> m_ruleArrayDeref ) ) )
+            ;
+
+        m_rulePrefixTerm %=
+                //m_ruleAssignmentPart
+                -qi::char_( '-' ) >> m_ruleAssignmentPart
+            ;
+
+        m_ruleInfixTerm %=
+                ( m_rulePrefixTerm >> ( -( qi::char_( "=" ) >> m_rulePrefixTerm ) ) )
+            ;
+
+        m_ruleAnyTerm %=
+                m_ruleInfixTerm
+            ;
+
+        m_ruleSingleGoal %=
+                -qi::char_( '!' ) >> m_ruleInfixTerm;
+            ;
+     
+        m_ruleIfStatement %=
+                qi::lit( "if") >> qi::lit( "(" ) >> m_ruleSingleGoal >> qi::lit( ")" )
+                    >> qi::lit( "{" ) >> m_ruleGoal >> qi::lit( "}" )
+            ;
+
+        m_ruleAnyStatement %=
+                m_ruleIfStatement
+            |   m_ruleSingleGoal >> ';'
+            ;
+
+        m_ruleGoal %=
+                qi::eps >> +( m_ruleAnyStatement /* >> ';' */ )
+            ;
+
+        m_ruleClause %=
+                ( m_ruleConsTerm >> qi::lit( "{" ) >> m_ruleGoal >> '}' )
+            |   ( m_ruleConsTerm >> ';' )
+            ;
+
+        m_ruleQuery %=
+                (m_ruleGoal >> '?')
+            ;
+        
+        m_ruleEvent %=
+                (m_ruleQuery)
+            |   (m_ruleClause)
+            ;
+            
+        m_ruleId.name( "Identifier" );
+        m_ruleNumber.name( "Number" );
+        m_ruleAtom.name( "Atom" );
+        m_ruleAtomTerm.name( "AtomTerm" );
+        m_ruleConsTerm.name( "ConsTerm" );
+        m_ruleInfixTerm.name( "InfixTerm" );
+        m_rulePrefixTerm.name( "PrefixTerm" );
+        m_ruleAssignmentPart.name( "AssignmentPart" );
+        m_ruleMapPair.name( "MapPair" );
+        m_ruleMapTerm.name( "MapTerm" );
+        m_ruleAnyConsTerm.name( "AnyConsTerm" );
+        m_ruleAnyTerm.name( "AnyTerm" );
+        m_ruleSingleGoal.name( "SingleGoal" );
+        m_ruleGoal.name( "Goal" );
+        m_ruleClause.name( "Clause" );
+        m_ruleQuery.name( "Query" );
+        m_ruleEvent.name( "Event" );
+
+        {
+            /*qi::_1_type _1;
+            qi::_2_type _2;
+            qi::_3_type _3;
+            qi::_4_type _4;
+            qi::_val_type _val;*/
+            typedef boost::phoenix::function<annotation_f<Iterator> > annotation_t;
+            // annotation_t f = annotation_t( first )( _val, _1 );
+            qi::on_success( m_ruleAtom, annotation_t( first )( boost::spirit::_val, boost::spirit::_1 ) );
+        }
+#if 0
+        const phoenix::function<ReportError> report_error = ReportError();
+        qi::on_error<qi::fail>( m_ruleId, report_error(boost::spirit::_1, boost::spirit::_2, boost::spirit::_3, boost::spirit::_4) );
+        qi::on_error<qi::fail>( m_ruleNumber, report_error(boost::spirit::_1, boost::spirit::_2, boost::spirit::_3, boost::spirit::_4) );
+        qi::on_error<qi::fail>( m_ruleAtom, report_error(boost::spirit::_1, boost::spirit::_2, boost::spirit::_3, boost::spirit::_4) );
+        qi::on_error<qi::fail>( m_ruleAtomTerm, report_error(boost::spirit::_1, boost::spirit::_2, boost::spirit::_3, boost::spirit::_4) );
+        qi::on_error<qi::fail>( m_ruleConsTerm, report_error(boost::spirit::_1, boost::spirit::_2, boost::spirit::_3, boost::spirit::_4) );
+        qi::on_error<qi::fail>( m_ruleInfixTerm, report_error(boost::spirit::_1, boost::spirit::_2, boost::spirit::_3, boost::spirit::_4) );
+        qi::on_error<qi::fail>( m_ruleAssignmentPart, report_error(boost::spirit::_1, boost::spirit::_2, boost::spirit::_3, boost::spirit::_4) );
+        qi::on_error<qi::fail>( m_ruleMapPair, report_error(boost::spirit::_1, boost::spirit::_2, boost::spirit::_3, boost::spirit::_4) );
+        qi::on_error<qi::fail>( m_ruleMapTerm, report_error(boost::spirit::_1, boost::spirit::_2, boost::spirit::_3, boost::spirit::_4) );
+        qi::on_error<qi::fail>( m_ruleAnyConsTerm, report_error(boost::spirit::_1, boost::spirit::_2, boost::spirit::_3, boost::spirit::_4) );
+        qi::on_error<qi::fail>( m_ruleAnyTerm, report_error(boost::spirit::_1, boost::spirit::_2, boost::spirit::_3, boost::spirit::_4) );
+        qi::on_error<qi::fail>( m_ruleGoal, report_error(boost::spirit::_1, boost::spirit::_2, boost::spirit::_3, boost::spirit::_4) );
+        qi::on_error<qi::fail>( m_ruleClause, report_error(boost::spirit::_1, boost::spirit::_2, boost::spirit::_3, boost::spirit::_4) );
+        qi::on_error<qi::fail>( m_ruleQuery, report_error(boost::spirit::_1, boost::spirit::_2, boost::spirit::_3, boost::spirit::_4) );
+        qi::on_error<qi::fail>( m_ruleEvent, report_error(boost::spirit::_1, boost::spirit::_2, boost::spirit::_3, boost::spirit::_4) );
+#endif
+
+
+#if 0
+        qi::debug( m_ruleId );
+        qi::debug( m_ruleNumber );
+        qi::debug( m_ruleAtom );
+        qi::debug( m_ruleAtomTerm );
+        qi::debug( m_ruleConsTerm );
+        qi::debug( m_ruleInfixTerm );
+        qi::debug( m_ruleMapPair );
+        qi::debug( m_ruleMapTerm );
+        qi::debug( m_ruleAnyConsTerm );
+        qi::debug( m_ruleAnyTerm );
+        qi::debug( m_ruleGoal );
+        qi::debug( m_ruleClause );
+        qi::debug( m_ruleQuery );
+        qi::debug( m_ruleEvent );
+#endif
+    }
+        
+    virtual ~ClauseParser() {}
+   
+    Context& m_pctx;
+   
+    qi::rule<Iterator, std::string(), Skipper> m_unescapedString;
+    qi::symbols<char const, char const> m_unescapedChar;
+
+    
+
+    // qi::rule<Iterator, std::string(), Skipper, qi::locals<char> > m_ruleQuotedString;
+    qi::rule<Iterator, std::string(), Skipper> m_ruleId;
+    qi::rule<Iterator, std::string(), Skipper> m_ruleNumber;
+    qi::rule<Iterator, AtomInput(), Skipper> m_ruleAtom;
+    qi::rule<Iterator, ConsTermInput(), Skipper> m_ruleAtomTerm;
+    qi::rule<Iterator, AnyTermInput(), Skipper> m_ruleAnyAtomTerm;
+    qi::rule<Iterator, ConsTermInput(), Skipper> m_ruleConsTerm;
+    qi::rule<Iterator, InfixTermsInput(), Skipper> m_ruleInfixTerm;
+    qi::rule<Iterator, PrefixTermInput(), Skipper> m_rulePrefixTerm;
+    qi::rule<Iterator, InfixTermsInput(), Skipper> m_ruleAssignmentPart;
+    qi::rule<Iterator, InfixTermsInput(), Skipper> m_ruleArrayDeref;
+    qi::rule<Iterator, MapPairInput(), Skipper> m_ruleMapPair;
+    qi::rule<Iterator, MapTermInput(), Skipper> m_ruleMapTerm;
+    qi::rule<Iterator, ArrayTermInput(), Skipper> m_ruleArrayTerm;
+    qi::rule<Iterator, AnyTermInput(), Skipper> m_ruleAnyConsTerm;
+    qi::rule<Iterator, AnyTermInput(), Skipper> m_ruleAnyTerm;
+    qi::rule<Iterator, SingleGoalInput(), Skipper> m_ruleSingleGoal;
+    qi::rule<Iterator, IfStatementInput(), Skipper> m_ruleIfStatement;
+    qi::rule<Iterator, AnyStatementInput(), Skipper> m_ruleAnyStatement;
+    qi::rule<Iterator, GoalInput(), Skipper> m_ruleGoal;
+    qi::rule<Iterator, ClauseInput(), Skipper> m_ruleClause;
+    qi::rule<Iterator, QueryInput(), Skipper> m_ruleQuery;
+    qi::rule<Iterator, EventInput(), Skipper> m_ruleEvent;
+private:
+};
+
+}; // namespace PrologParser
+}; // namespace unify
+}; // namespace vault
+
+#endif

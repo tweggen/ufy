@@ -1,0 +1,62 @@
+
+/*
+ * Define some points.
+ */
+point( { x: 10, y: 20 } );
+point( { x: 10, y: 30 } );
+point( { x: 20, y: 30 } );
+point( { x: 40, y: 50 } );
+
+pointtest( $objPoint, $out_x, $out_y ) {
+	point( $mapPoint );
+	point( $mapPoint ) = $objPoint;
+	$out_x = $mapPoint->x;
+	$out_y = $mapPoint->y;
+}
+
+// point( $objPoint ); print( $objPoint); ?
+
+f2( $p ) {
+	print( $p->x );
+	print( $p->y );
+}
+
+f1( $p ) {
+	f2( {
+		x: $p->x,
+		y: $p->y 
+	} );
+}
+
+to_1( $a ) {
+	$a = 1;
+}
+
+to_2( $a ) {
+	$a = 2;
+}
+
+g2( $p ) 
+{
+	print( $p->x );
+}
+
+g1( $p ) {
+	to_1( $tmp1 );
+	to_2( $tmp2 );
+	g2( {
+		x: $tmp1,
+		y: $tmp2
+	} );
+}
+
+foo( $o ) { 
+	print( $o->x );
+	$ox = $o->x;
+	print( $ox );
+}
+
+coo( $p ) {
+	a( $px ) = $p;
+	print( $px );
+}

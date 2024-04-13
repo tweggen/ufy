@@ -1,0 +1,406 @@
+/* 
+
+// TXWTODO: Should be builtin; true;
+
+class(
+	device,		// Class name
+	object, 	// superclass
+	{
+		name: untitled,
+		endpoints: null
+	}
+	);
+
+device( {
+	name: mainlight_lvr1,
+	endpoints: {
+		i0: endpoint( {
+			location: livingroom,
+			component: light,
+			targets: {
+				i0: target( { actor: light_level } ),
+				i1: target( { actor: color( R, G, B ) } )
+				}
+			} )
+		}
+	} );
+
+
+
+location_request_attribute( Location, Attribute ) :-
+	device( Device ), 
+	foreach( endpoint( Endpoint, Device->endpoints[] ) ),
+		Endpoint->location = Location,
+		foreach( target( Actor ), Endpoint->actors[] ),
+			target_supports_attribute( Actor, Attribute ),
+			target_request_attribute( Actor, Attribute )
+	;
+
+
+ */
+
+
+log( $x )
+{
+	print( $x );
+} 
+
+target_endpoint( $target, $endpoint )
+{
+	target( $endpoint, $actorName );
+	$target = target( $endpoint, $actorName );
+}
+
+target_location( $target, $location )
+{
+	target_endpoint( $target, $endpoint );
+	endpoint_at_location( $endpoint, $location );
+}
+ 
+target_to_json( $target, $json )
+{
+	$target = target( endpoint( $deviceName, $componentName ), $actorName );
+	$json = { 
+		device: $deviceName, 
+		component: $componentName,
+		actor: $actorName
+	};
+}
+
+target_request_attribute( $target, $attribute ) 
+{
+	target_to_json( $target, $jsonTarget );
+	emit( { type: action_trigger_attribute, target: $jsonTarget, attribute: $attribute } );
+}
+
+target_supports_attribute( $target, $attribute )
+{
+	engine_translates_attribute( $attribute, $anyAttribute );
+	target_supports_attribute( $target, $anyAttribute );
+}
+
+/*
+ * Request to activate an attribute for the given location;
+ * First rule: Device directly supports attribute;
+ */
+location_request_attribute( $location, $attribute )
+{
+	target_location( $target, $location );
+	target_supports_attribute( $target, $attribute );
+	target_request_attribute( $target, $attribute );
+}
+
+
+/*
+ * Device definitions follow;
+ */
+
+/*
+ * Device instance blinds one;
+ */ 
+device( blinds_lvr_1 );
+device_endpoint( blinds_lvr_1, blinds );
+endpoint_at_location( endpoint( blinds_lvr_1, blinds ), livingroom );
+device_endpoint( blinds_lvr_1, weather_detector );
+endpoint_at_location( endpoint( blinds_lvr_1, weather_detector ), outside );
+
+target( endpoint( blinds_lvr_1, blinds ), blinds_level );
+target_supports_attribute(
+	target( endpoint( blinds_lvr_1, blinds ), blinds_level ),
+	{ name: home_theatre }
+);
+
+sensor( endpoint( blinds_lvr_1, weather_detector ), daylight );
+sensor_supports_attribute(
+	sensor( endpoint( blinds_lvr_1, weather_detector ), daylight ), 
+	{ name: daylight_scale }
+);
+
+
+/*
+ * Declaration of lamp a type;
+ */
+
+
+/** 
+ * Declare lamp_a class "light" endpoint: If the device is of class "lamp_a", 
+ * it has exactly one endpoint called "light".
+ * This endpoint is at the same location as the device.
+ */
+device_endpoint( $deviceName, light )
+{
+	device_is_class( $deviceName, lamp_a );
+}
+
+
+/** 
+ * Declare lamp_a class location: If the device is of class "lamp_a", 
+ * it has exactly one endpoint called "light".
+ * This endpoint is at the same location as the device.
+ */
+endpoint_at_location( endpoint( $deviceName, light ), $location )
+{
+	device_is_class( $deviceName, lamp_a );
+	device_at_location( $deviceName, $location );
+}
+
+/**
+ * Declare attributes supported.
+ */
+lamp_a_light_is_supported_attribute( { name: home_theatre } );
+lamp_a_light_is_supported_attribute( { name: light_active } );
+lamp_a_light_is_supported_attribute( { name: light_standby } );
+
+lamp_a_light_is_supported_attribute( $attr ) 
+{
+	class_component_is_supported_attribute( lamp_a, light, $attr );
+}
+
+target( endpoint( $deviceName, light ), light_level )
+{
+	device_is_class( $deviceName, lamp_a );
+}
+
+target_supports_attribute( 
+		target( endpoint( $deviceName, light ), light_level ),
+		$attribute )
+{
+	device_is_class( $deviceName, lamp_a );
+	lamp_a_light_is_supported_attribute( $attribute );
+}
+
+
+/* 
+ * Shortcuts: Map short definition "local_device_at_location()" to
+ * the actual device definition calls 
+ * - device( $deviceName ), 
+ * - device_at_location( $deviceName, $location ) (seems wrong to me)
+ * - device_is_class( $device_name, $class )
+ */
+device( $deviceName )
+{
+	local_device_at_location( $deviceName, $anyClass, $anyLocation );
+}
+
+device_at_location( $deviceName, $location )
+{
+	local_device_at_location( $deviceName, $anyClass, $location );
+}
+
+device_is_class( $deviceName, $class ) {
+	local_device_at_location( $deviceName, $class, $anyLocation );
+}
+
+
+/*
+ * Device instance living room lights one;
+ */
+
+local_device_at_location( bathroom_lamp_1, lamp_a, bathroom );
+
+local_device_at_location( bedroom_lamp_1, lamp_a, bedroom );
+local_device_at_location( bedroom_lamp_2, lamp_a, bedroom );
+local_device_at_location( bedroom_lamp_3, lamp_a, bedroom );
+
+local_device_at_location( kitchen_lamp_1, lamp_a, kitchen );
+
+local_device_at_location( livingroom_lamp_1, lamp_a, livingroom );
+local_device_at_location( livingroom_lamp_3, lamp_a, livingroom );
+local_device_at_location( livingroom_lamp_4, lamp_a, livingroom );
+
+local_device_at_location( office_lamp_1, lamp_a, office );
+local_device_at_location( office_lamp_2, lamp_a, office );
+
+local_device_at_location( wardrobe_lamp_1, lamp_a, wardrobe );
+local_device_at_location( wardrobe_lamp_2, lamp_a, wardrobe );
+
+
+/*
+ * Device instance living room lights two;
+ */
+
+engine_translates_attribute(
+	{ name: home_theatre },
+	{ name: ambient_light_lumen, level: 20 }
+);
+engine_translates_attribute( 
+	{ name: light_active },
+	{ name: ambient_light_lumen, level: 80 }
+);
+engine_translates_attribute( 
+	{ name: light_standby },
+	{ name: ambient_light_lumen, level: 05 }
+);
+
+
+device( livingroom_lamp_2 );
+device_endpoint( livingroom_lamp_2, light );
+endpoint_at_location( endpoint( livingroom_lamp_2, light ), livingroom );
+target( endpoint( livingroom_lamp_2, light ), light_level );
+target_supports_attribute(
+	target( endpoint( livingroom_lamp_2, light ), light_level ), 
+	{ name: ambient_light_lumen, level: $level }
+);
+
+
+/////////////////////////////////////////////////////////////////////////////
+// Declaration of standard behaviour.
+/////////////////////////////////////////////////////////////////////////////
+
+/*
+ * Behaviour definition: event types;
+ */
+
+/*
+ * Controller request event;
+ */
+
+event_is_a( event_controller_request, event_controller_request );
+
+event_reaction( event_controller_request, $event )
+{
+	$controllerRequest = $event->controllerRequest;
+	device_endpoint( $controllerRequest->device, $anyComponent );
+	target_request_attribute( 
+		target(
+			endpoint( $controllerRequest->device, $anyComponent ),
+			$controllerRequest->actor ) ,
+		$controllerRequest->attribute );
+}
+
+
+/*
+ * Person detected event;
+ */
+event_reaction( event_person_detected, $event )
+{
+	$location = $event->location;
+	location( $location );
+	location_request_attribute( $location, { name: light_active } );
+//	location_request_attribute( $location, { name: temperature_active } );
+}
+
+
+/*
+ * Nobody detected event;
+ */
+event_reaction( event_nobody_detected, $event )
+{
+	$location = $event->location;
+	location( $location );
+	location_request_attribute( $location, { name: light_standby } );
+//	location_request_attribute( $location, { name: temparature_standby } );
+}
+
+/////////////////////////////////////////////////////////////////////////////
+// Event API definition
+/////////////////////////////////////////////////////////////////////////////
+
+/*
+ * API method to emit an event to a location.
+ */
+push_event( $event )
+{
+	event_reaction( $event->type, $event );
+}
+
+// Specific device binding.
+
+// office lamp 1
+
+target_supports_attribute( target( endpoint( office_lamp_1, light ), light_level ), { name: light_active } );
+target_supports_attribute( target( endpoint( office_lamp_1, light ), light_level ), { name: light_standby } );
+
+target_request_attribute( target( endpoint( office_lamp_1, light ), light_level ), { name: light_active } )
+{
+	log( office_lamp_1_on );
+	zw_node_value( "ozw0x0184e7b70x04", "ozwv0x0100000004494000", True );
+}
+
+target_request_attribute( target( endpoint( office_lamp_1, light ), light_level ), { name: light_standby } )
+{
+	log( office_lamp_1_off );
+	zw_node_value( "ozw0x0184e7b70x04", "ozwv0x0100000004494000", False );
+}
+
+// kitchen_lamp_1
+
+target_supports_attribute( target( endpoint( kitchen_lamp_1, light ), light_level ), { name: light_active } );
+target_supports_attribute( target( endpoint( kitchen_lamp_1, light ), light_level ), { name: light_standby } );
+
+target_request_attribute( target( endpoint( kitchen_lamp_1, light ), light_level ), { name: light_active } )
+{
+	log( kitchen_lamp_1_on );
+	zw_node_value( "ozw0x0184e7b70x07", "ozwv0x0100000007494000", True );
+}
+
+target_request_attribute( target( endpoint( kitchen_lamp_1, light ), light_level ), { name: light_standby } )
+{
+	log( kitchen_lamp_1_off );
+	zw_node_value( "ozw0x0184e7b70x07", "ozwv0x0100000007494000", False );
+}
+
+
+aeotec_multisensor_5_value_changed( $event, "True" )
+{
+//	print( here3 );
+	push_event( { type: event_person_detected, location: office } );
+}
+
+
+aeotec_multisensor_5_value_changed( $event, "False" )
+{
+//	print( here2 );
+	push_event( { type: event_nobody_detected, location: office } );
+}
+
+
+event_reaction( zw_value_changed, $event )
+{
+	"ozw0x0184e7b70x05" = $event->zw_node_id;
+	aeotec_multisensor_5_value_changed( $event, $event->zw_value_string );
+}
+
+
+aeotec_multisensor_6_basic_set( $event, "255" )
+{
+	push_event( { type: event_person_detected, location: kitchen } );
+}
+
+
+aeotec_multisensor_5_value_changed( $event, "0" )
+{
+	push_event( { type: event_nobody_detected, location: kitchen } );
+}
+
+
+event_reaction( zw_node_basic_set, $event )
+{
+	"ozw0x0184e7b70x08" = $event->zw_node_id;
+	aeotec_multisensor_6_basic_set( $event, $event->zw_event );
+}
+
+// Setup the multisensor
+// Warning: Configuring the sensors at this point requires the sensors
+// to wake up.
+// See https://community.smartthings.com/t/aeon-multisensor-gen-5-set-parameters/21106/3
+// zw_node_config( "ozw0x0184e7b70x05", 3, 7, 2 );
+// Activate PIR
+// zw_node_config( "ozw0x0184e7b70x05", 4, 1, 1 );
+// Report by value_change.
+// zw_node_config( "ozw0x0184e7b70x05", 5, 1, 1 );
+
+// Setup multisensor 6
+// Parameter 3 is timeout for motion sensor. Defaults to 240
+// according to manual. Set to 10s for testing.
+// Two byte parameter.
+// zw_node_config( "ozw0x0184e7b70x08", 3, 20, 2 );
+// I dont know why, but the first set config param "2" sets the value to 1
+// zw_node_config( "ozw0x0184e7b70x08", 5, 2, 1 );
+// Vice versa: this one sets it to two ??
+// zw_node_config( "ozw0x0184e7b70x08", 5, 1, 1 );
+
+// Setup aeotec key fob.
+// We want to set use scene mode
+// According to manual, this is param 250, size 1, group mode 0, scene mode 1
+// zw_node_config( "ozw0x0184e7b70x09", 250, 1, 1 );
