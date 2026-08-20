@@ -327,11 +327,10 @@ public:
     /**
      * Collect (without deleting) every term reachable from every clause in
      * this state, and recursively from every child state, into out_visited.
-     * Clause term trees can alias across sibling clauses (see the
-     * ownership note above AbstractTerm's collectTermTree()/deleteTermTree()
-     * declarations), so the whole ExecutionState tree must be collected
-     * into ONE de-duplicated set before anything is deleted -- see
-     * World::~World().
+     * A clause's head/body can alias within itself (see the ownership note
+     * above AbstractTerm's collectTermTree()/deleteTermTree() declarations),
+     * so the whole ExecutionState tree is collected into ONE de-duplicated
+     * set before anything is deleted -- see World::~World().
      */
     void collectAllTermTrees( std::set<const AbstractTerm*>& out_visited );
 
@@ -571,31 +570,59 @@ private:
  * (vault-unify-parser.cpp) resolves repeated variable names within one
  * ClauseContext to the SAME VarTerm*, and that ClauseContext is shared
  * across an entire top-level clause (its head AND its body) or an entire
- * top-level query -- including any clause synthesized on the fly by an
- * `if( cond ) { ... }` statement (AnyTermFactory::operator()(IfStatementInput)),
- * which is appended as an independent Clause to the SAME database while the
- * enclosing clause/query is still being built, and shares its guard VarTerm
- * with the call-site term left behind in the enclosing term list.
+ * top-level query -- so e.g. a clause's own head and body legitimately
+ * share a repeated variable's VarTerm*.
  *
- * That means a term node can legitimately be reachable from more than one
- * "owner" (a clause's own head and body; two sibling clauses in the
- * database). Deleting such trees one owner at a time risks a double
- * free/use-after-free. The safe pattern is: collectTermTree() every root in
- * the whole set of trees that might alias each other into ONE
- * std::set (which de-duplicates by pointer identity and stops recursing
- * into anything already visited), then delete every pointer in that set
- * exactly once -- see World::~World()/ExecutionState::collectAllTermTrees()
- * for the concrete use (the whole clause database is one such aliasing
- * domain).
+ * `if( cond ) { ... }` statements used to make this worse by sharing a
+ * VarTerm across an auxiliary clause synthesized straight into the World's
+ * clause database and the call-site term left behind in the enclosing
+ * clause/query -- see AnyTermFactory::operator()(IfStatementInput)
+ * (vault-unify-parser.cpp), which no longer does this: it clones cond/body
+ * with cloneTermTree() (declared below) into fresh variables private to
+ * each synthesized clause, so the only remaining aliasing is the ordinary
+ * intra-clause kind (head/body sharing a repeated variable) described
+ * above.
+ *
+ * That still means a term node can be reachable from more than one place
+ * within the SAME clause (head and body). Deleting such a tree one owner
+ * at a time risks a double free/use-after-free. The safe pattern is:
+ * collectTermTree() every root that might alias another into ONE std::set
+ * (which de-duplicates by pointer identity and stops recursing into
+ * anything already visited), then delete every pointer in that set exactly
+ * once -- see World::~World()/ExecutionState::collectAllTermTrees() for the
+ * concrete use (the whole clause database is walked into one such set, a
+ * superset of what any single clause needs, but still safe and simple).
  *
  * deleteTermTree() is a convenience for the simple case: a single call site
  * that owns pTerm's entire tree exclusively, with no aliasing into anything
- * outside that one call. Do not use it on a clause's head/body, or on
- * anything that could have passed through an `if` statement -- use
- * collectTermTree() into a shared set instead.
+ * outside that one call -- e.g. a query's own Goal term trees (see
+ * ~SolveJob(), vault-unify-solvejob.cpp), now that they can no longer have
+ * been aliased into the World's clause database by an `if` statement. Do
+ * not use it on a clause's head/body -- those can still alias each other
+ * intra-clause -- use collectTermTree() into a shared set instead.
  */
 void collectTermTree( const AbstractTerm* pTerm, std::set<const AbstractTerm*>& out_visited );
 void deleteTermTree( const AbstractTerm* pTerm );
+
+/**
+ * Deep-clone pTerm's whole subtree for AnyTermFactory::operator()(IfStatementInput)'s
+ * `if` desugaring (vault-unify-parser.cpp), so a synthesized auxiliary
+ * clause can get its own variables instead of aliasing the enclosing
+ * clause/query's term tree.
+ *
+ * Every VarTerm encountered is looked up in varSubstitution and replaced
+ * by its mapped fresh VarTerm* -- the SAME source VarTerm* always maps to
+ * the SAME fresh VarTerm*, so shared structure (e.g. one variable used
+ * twice in cond+body) is preserved in the clone. Everything else (ConsTerm,
+ * MapTerm) is freshly allocated, with children cloned recursively; a
+ * MapTerm's Atom* keys are copied too, since ~MapTerm() deletes them (see
+ * MapTerm::getEntries()). A VarTerm missing from varSubstitution is an
+ * internal-error case -- the caller is expected to have built the map from
+ * every VarTerm actually occurring in the subtree first -- logged via
+ * VAULT_UNIFY_DI(ALWAYS, ...) and cloned as a fresh, unmapped VarTerm
+ * rather than crashing.
+ */
+AbstractTerm* cloneTermTree( const AbstractTerm* pTerm, const std::map<const VarTerm*, VarTerm*>& varSubstitution );
 
 class ConsTerm;
 
@@ -642,6 +669,21 @@ public:
         const UnifyContext* pUCTerm ) const;
 
     const AbstractTerm* getValue( const std::string& key ) const;
+
+    /**
+     * Enumerate this map's key/value pairs, for cloneTermTree()
+     * (vault-unify-terms.cpp), which cannot otherwise reach m_mapContents
+     * to reconstruct an equivalent MapTerm. Keys are returned as owned by
+     * THIS MapTerm still (see ~MapTerm()); a caller building a new MapTerm
+     * from them must copy each one (`new Atom(...)`) first, since a
+     * MapTerm's constructor takes ownership of whatever Atom* it is given.
+     */
+    void getEntries( std::vector<std::pair<const Atom*, AbstractTerm*> >& out_entries ) const {
+        MapTermMap::const_iterator it, itEnd = m_mapContents.end();
+        for( it = m_mapContents.begin(); it != itEnd; ++it ) {
+            out_entries.push_back( std::make_pair( it->second.first, it->second.second ) );
+        }
+    }
 
 protected:
 private:

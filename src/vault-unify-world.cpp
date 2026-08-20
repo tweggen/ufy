@@ -54,14 +54,24 @@ namespace unify {
  *    ExecutionState tree (root + any child states), collected into ONE
  *    de-duplicated set and deleted exactly once -- see the ownership note
  *    on collectTermTree()/deleteTermTree() in vault-unify.hpp for why a
- *    per-clause pass would risk a double free (repeated variables shared
- *    between a clause's own head/body, and `if` statement desugaring
- *    sharing a VarTerm between sibling clauses).
+ *    per-clause pass would risk a double free (a clause's own head and
+ *    body can still share a repeated variable's VarTerm*). `if` statement
+ *    desugaring (AnyTermFactory::operator()(IfStatementInput),
+ *    vault-unify-parser.cpp) used to also alias a VarTerm between sibling
+ *    clauses -- and into whichever query the `if` appeared in -- but no
+ *    longer does: it clones cond/body into fresh variables private to
+ *    each synthesized clause (cloneTermTree(), declared next to
+ *    collectTermTree()/deleteTermTree()), so that is no longer a reason
+ *    this pass has to span the whole ExecutionState tree in one set --
+ *    it still does, but only for the intra-clause reason above (and
+ *    because a single wide pass is simpler than one pass per clause).
  *
- * Deliberately NOT freed here: query Goal term trees (owned by whichever
- * SolveJob solved that query, already gone by the time World is destroyed)
- * -- see the comment on SolveJob's m_arenaGoals cleanup in
- * vault-unify-solvejob.cpp for why those are left alone.
+ * Deliberately NOT freed here: query Goal term trees. These are owned by
+ * whichever SolveJob solved that query and are actually gone by the time
+ * World is destroyed now -- ~SolveJob() (vault-unify-solvejob.cpp) frees
+ * them itself, which is only safe because the clause database no longer
+ * aliases into them (see the previous paragraph); see the comment on
+ * SolveJob's m_arenaGoals cleanup there for the detail.
  */
 World::~World()
 {

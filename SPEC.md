@@ -278,28 +278,39 @@ feature; no existing sample program uses prefix `-`, and it is not covered
 by a dedicated conformance test (documenting it here was judged more
 valuable than a ninth program for an effectively-dead operator).
 
-**`if (cond) { body }` — QUIRK, condition discarded**:
-`AnyTermFactory::operator()(const IfStatementInput&)` never reads
-`ifStatementInput.lhs` (the parsed condition) anywhere — confirmed by
-inspecting every line of the function; only `.rhs` (the body) is used.
-What it does instead: synthesizes a new 1-argument clause (e.g.
-`__if__3($__N)`, via `ClauseContext::nextAnonClauseName`/
-`nextAnonVarName`), whose body is the original `{ }` body with the *same*
-fresh variable `$__N` **prepended as a goal, in place of the discarded
-condition**; registers the clause on the world's root state; and returns a
-call `__if__3($__N)` spliced into the enclosing goal where the `if`
-statement was. Because `$__N` is never bound by anyone (the real condition
-was thrown away, and the call site passes that same fresh, still-unbound
-variable), the synthesized body's first goal is a bare, unbound `VarTerm`
-— which fails immediately in `SolveJob::startUnification` (section 5) for
-every candidate clause, every time. **An `if` statement's body never
-executes today, regardless of the condition** — see
-`test/conformance/if-statement.ufy` for a concrete demonstration with both
-a "true-looking" and a "false-looking" condition (both behave identically:
-the body's `print` never runs, and neither does anything queued after the
-`if` in that query, since the whole goal chain fails there). This is the
-most significant functional gap this reading found; `ROADMAP.md` does not
-currently flag it, and no existing sample program uses `if`.
+**`if (cond) { body }` — soft-if, `( cond, body ; true )`**:
+`AnyTermFactory::operator()(const IfStatementInput&)` builds `cond`
+(`ifStatementInput.lhs`, a single goal) and `body`
+(`ifStatementInput.rhs`, a goal's worth of statements) as term trees using
+the *enclosing* clause/query's own variable scope (`m_clauseContext`), the
+same way any other goal in that context would be built (including any
+nested pre-goal, e.g. from a `->` used inside `cond` or `body`). It then
+collects the distinct free `VarTerm`s occurring anywhere in `cond`+`body`
+and synthesizes a two-clause auxiliary predicate with a unique name (via
+`ClauseContext::nextAnonClauseName("if")`, e.g. `__if__3`), appended to
+`World`'s root `ExecutionState` in this order:
+```
+__if__3( V1..Vk ) { cond; body...; }   // then-branch, tried first
+__if__3( V1..Vk );                     // fallback, always succeeds
+```
+and returns a call `__if__3( origV1..origVk )` spliced into the enclosing
+goal chain where the `if` statement stood — `origV1..origVk` are the very
+same `VarTerm` objects already in use by the enclosing clause/query, so
+this call site is simply part of its term tree; `V1..Vk` are a **fresh**
+set of variables, generated independently for each of the two synthesized
+clauses (via `cloneTermTree`, `include/vault-unify.hpp`/
+`src/vault-unify-terms.cpp`), so neither synthesized clause shares a
+single term node with the enclosing clause/query or with each other.
+
+Semantically this is Prolog's `( cond, body ; true )`: if `cond` succeeds,
+`body` runs (once per solution of `cond`, on backtracking); if `cond`
+fails, the enclosing goal chain simply continues after the `if`, with
+whatever bindings (if any) `cond`/`body` made along the way. Because
+`ExecutionState::ClauseIterator` tries every candidate clause of a
+predicate in definition order (section 5) and this engine backtracks to
+find *every* solution (not just the first), both synthesized clauses are
+genuinely tried whenever `cond` can succeed at all — see the QUIRK below
+and `test/conformance/if-statement.ufy` for what that means in practice.
 
 ---
 
@@ -361,9 +372,12 @@ directly inside `startUnification`
 `src/vault-unify-clause-builtin-emit.cpp`), i.e. exactly when the search
 passes through that goal position — including once per backtracked
 alternative — and the output is **not** undone if a later goal in the same
-chain subsequently fails. See `test/conformance/if-statement.ufy`, where a
-"before" print survives even though the rest of that query deliberately
-fails afterward.
+chain subsequently fails. See `test/conformance/if-statement.ufy`'s first
+query: its `if` condition succeeds, but because this engine backtracks to
+find every solution and `if` has no cut yet (section 4/9), the line after
+the `if` is reached — and printed — twice: once continuing from the
+then-branch, once continuing from the fallback branch that is still tried
+afterward.
 
 ---
 
@@ -553,10 +567,12 @@ All verified by direct code reading, collected here for quick reference.
 - Prefix `-` does not implement negation: due to `case`/`default` label
   nesting, it always builds an anonymous, empty-named wrapper `ConsTerm`
   around its operand rather than negating a number (section 4).
-- `if (cond) { body }` discards `cond` entirely and gates `body` behind an
-  always-unbound, unsatisfiable variable goal — the body never executes,
-  regardless of the condition (section 4). The most significant functional
-  gap found; not flagged in `ROADMAP.md`, unused by any existing sample.
+- `if (cond) { body }` is a soft-if (`( cond, body ; true )`, section 4)
+  with no cut yet (`ROADMAP.md` Phase 2): the synthesized fallback clause
+  is tried on backtracking even after `cond` already succeeded once, so
+  whatever follows the `if` in the same goal chain can run again via the
+  fallback path — see `test/conformance/if-statement.ufy` (its first query
+  prints the line after the `if` twice for exactly this reason).
 - Strings, bareword atoms, and digit runs all fold into the same atom
   representation by spelling; a quoted string and a bareword atom (or
   number) with the same spelling are the same term (sections 1, 6). No

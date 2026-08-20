@@ -18,10 +18,9 @@ public:
      * owned by this StandardClause (a fresh `new Goal` per clause, never
      * shared -- see PrologParser::Context::createClause()). The body's
      * TERM trees (what the Goal's list points at) are NOT deleted here:
-     * they can alias the clause's own head (a repeated variable) and/or
-     * another clause's tree (`if` desugaring, see the note on
-     * Clause::~Clause()), so they are freed once, de-duplicated, by
-     * World::~World() before any Clause is destroyed.
+     * they can alias the clause's own head (a repeated variable -- see the
+     * note on Clause::~Clause()), so they are freed once, de-duplicated,
+     * by World::~World() before any Clause is destroyed.
      */
     virtual ~StandardClause() {
         delete m_pRightHandGoal;

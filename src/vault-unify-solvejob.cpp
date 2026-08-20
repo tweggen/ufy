@@ -835,11 +835,39 @@ SolveJob::~SolveJob()
      *    own them separately and must never be walked here, or those
      *    UnifyContexts would be double-freed.
      *
-     * 3) The Goal(s) adopted via adoptGoal(). Only the Goal object itself
-     *    is deleted, not the TERM trees it references - see adoptGoal()'s
-     *    doc comment for why pass 2 (program-lifetime cleanup) still
-     *    leaves those alone (they can alias a clause added straight to
-     *    World's database by an `if` statement inside this query).
+     * 3) The Goal(s) adopted via adoptGoal(), AND NOW their TERM trees too
+     *    (every term in each Goal's m_listAbstractTerms, deleted via
+     *    collectTermTree() into one de-duplicated set per Goal before the
+     *    Goal object itself is deleted -- a single query Goal can still
+     *    have its own internal aliasing, e.g. a repeated variable used
+     *    twice, so a per-term deleteTermTree() would risk a double free;
+     *    see the ownership note on collectTermTree()/deleteTermTree() in
+     *    include/vault-unify.hpp).
+     *
+     *    This used to be unsafe: if the query contained an
+     *    `if( cond ) { ... }` statement, the old desugaring in
+     *    AnyTermFactory::operator()(IfStatementInput) (vault-unify-parser.cpp)
+     *    aliased a VarTerm between the synthesized clause it appended
+     *    straight into World's (permanent) root ExecutionState and the
+     *    call-site term left behind in this query's own Goal -- freeing it
+     *    here would have left World's later, de-duplicated clause-database
+     *    cleanup (World::~World()) to delete an already-freed pointer. That
+     *    desugaring now clones cond/body into fresh variables private to
+     *    each synthesized clause (see cloneTermTree(), declared next to
+     *    collectTermTree()/deleteTermTree()), so a query's Goal term trees
+     *    no longer share anything with World's clause database and can
+     *    safely be freed here, independently of World's own lifetime. See
+     *    test/conformance/if-statement.ufy.
+     *
+     *    getSolutionList() (called from onFinished(), before a job is ever
+     *    destroyed) has already turned every solution into plain strings
+     *    (VarTermId -> std::string) by this point, so nothing outside this
+     *    job still needs these term trees once we get here. Solution
+     *    UnifyContexts (freed in step 2 above) hold SingleVarInstance
+     *    pointers into these same terms, but SingleVarInstance has no
+     *    custom destructor and nothing else in this class dereferences a
+     *    term, so freeing terms after (or before) the UnifyContext arena
+     *    is equally safe.
      */
     while( !m_stackContext.empty() ) {
         SolveContext* sc = m_stackContext.back();
@@ -861,7 +889,19 @@ SolveJob::~SolveJob()
 
     std::vector<const Goal*>::iterator itG, itGEnd = m_arenaGoals.end();
     for( itG = m_arenaGoals.begin(); itG != itGEnd; ++itG ) {
-        delete *itG;
+        const Goal* pGoal = *itG;
+        std::set<const AbstractTerm*> visitedTerms;
+        std::list<const AbstractTerm*>::const_iterator
+            itTerm = pGoal->m_listAbstractTerms.begin(),
+            itTermEnd = pGoal->m_listAbstractTerms.end();
+        for( ; itTerm != itTermEnd; ++itTerm ) {
+            collectTermTree( *itTerm, visitedTerms );
+        }
+        std::set<const AbstractTerm*>::const_iterator itV, itVEnd = visitedTerms.end();
+        for( itV = visitedTerms.begin(); itV != itVEnd; ++itV ) {
+            delete *itV;
+        }
+        delete pGoal;
     }
     m_arenaGoals.clear();
 }

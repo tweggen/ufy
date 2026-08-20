@@ -1,23 +1,27 @@
-// Conformance: `if (cond) { ... }` (SPEC.md sections 4 and 9).
-// QUIRK: AnyTermFactory::operator()(IfStatementInput)
-// (vault-unify-parser.cpp) never reads ifStatementInput.lhs -- the
-// condition is parsed but silently discarded. The synthesized clause's
-// body is instead guarded by a fresh, never-bound variable used directly
-// as a goal term, which can never unify with anything (SolveJob::
-// startUnification requires a ConsTerm to even attempt a match). So as
-// implemented today, BOTH branches below are unreachable: the "before"
-// print runs (side effects already happened), but the if body's print and
-// everything queued after the if in the same query never run, regardless
-// of the condition written.
+// Conformance: `if (cond) { ... }` soft-if semantics (SPEC.md sections 4
+// and 9): like Prolog's `( cond, body ; true )`. If cond succeeds, body
+// runs and execution continues after the if; if cond fails, execution
+// continues after the if directly. Prints before/after each `if` (and
+// inside its body) prove the rest of the query keeps running either way.
+//
+// QUIRK (no cut yet, ROADMAP Phase 2, SPEC.md section 9): the first query
+// below has a cond that succeeds, but since this engine backtracks to
+// find every solution (not just the first) and there is no cut to commit
+// to the then-branch, the synthesized fallback clause is ALSO tried after
+// the then-branch's solution is found -- so "after-then-query" prints
+// TWICE: once continuing from the then-branch, once continuing from the
+// (still attempted) fallback.
+
+flag( on );
 
 query {
-    print( "before-true-attempt" );
-    if( anything ) { print( "true-branch" ); }
-    print( "after-true-attempt" );
+    print( "before-then-query" );
+    if( flag( on ) ) { print( "then-branch" ); }
+    print( "after-then-query" );
 }
 
 query {
-    print( "before-false-attempt" );
-    if( nothing ) { print( "false-branch" ); }
-    print( "after-false-attempt" );
+    print( "before-else-query" );
+    if( flag( off ) ) { print( "else-branch" ); }
+    print( "after-else-query" );
 }

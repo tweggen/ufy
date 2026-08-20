@@ -56,12 +56,19 @@ ExecutionState* ExecutionState::fork()
 /**
  * ROADMAP Phase 1 (Ownership model), pass 2. See the ownership note above
  * collectTermTree()/deleteTermTree() in vault-unify.hpp: clause term trees
- * can alias across sibling clauses (`if` desugaring), so the WHOLE tree of
- * ExecutionStates must be walked into one de-duplicated set before any of
- * it is deleted. World::~World() does that before the root ExecutionState
- * (and this destructor, recursively) run, so by the time we get here,
- * deleting the Clause/ExecutionState *objects* is safe: Clause::~Clause()
- * and StandardClause::~StandardClause() no longer touch term memory.
+ * can alias within one clause (a repeated variable shared between its own
+ * head and body) -- `if` statement desugaring used to also alias a VarTerm
+ * across sibling clauses (and into whichever query the `if` appeared in),
+ * but AnyTermFactory::operator()(IfStatementInput) (vault-unify-parser.cpp)
+ * now clones cond/body into fresh, private variables per synthesized
+ * clause instead, so that cross-clause case no longer occurs. Either way,
+ * the WHOLE tree of ExecutionStates is walked into one de-duplicated set
+ * before any of it is deleted (a wider net than the intra-clause case
+ * strictly requires, but simpler than one pass per clause). World::~World()
+ * does that before the root ExecutionState (and this destructor,
+ * recursively) run, so by the time we get here, deleting the
+ * Clause/ExecutionState *objects* is safe: Clause::~Clause() and
+ * StandardClause::~StandardClause() no longer touch term memory.
  */
 void ExecutionState::collectAllTermTrees( std::set<const AbstractTerm*>& out_visited )
 {

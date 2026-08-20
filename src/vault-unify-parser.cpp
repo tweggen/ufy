@@ -22,6 +22,105 @@ namespace PrologParser {
 
 int ClauseContext::m_anonClauseIndex;
 
+namespace {
+
+/**
+ * Collect the distinct VarTerms reachable from pTerm, in first-encounter
+ * order (an otherwise-arbitrary but deterministic-within-one-call order),
+ * skipping anything already in out_visited. Used by
+ * AnyTermFactory::operator()(IfStatementInput) to find the free variables
+ * of an `if` statement's cond+body -- see there for why they need to be
+ * collected up front (to build each synthesized clause's own fresh
+ * variables via cloneTermTree(), and the call-site term left in the
+ * enclosing goal chain).
+ *
+ * pTerm's actual VarTerm nodes are not const in memory (they live on as
+ * ordinary VarTerm* in ClauseContext::m_mapSymbols and are reused directly
+ * at the if-statement's call site); the const-qualified traversal here
+ * only matches collectTermTree()'s style, so the const is cast away when
+ * a VarTerm is found and stored.
+ */
+void collectVarTermsOrdered(
+        const vault::unify::AbstractTerm* pTerm,
+        std::set<const vault::unify::AbstractTerm*>& out_visited,
+        std::vector<vault::unify::VarTerm*>& out_vars )
+{
+    if( !pTerm ) {
+        return;
+    }
+    if( !out_visited.insert( pTerm ).second ) {
+        return;
+    }
+    if( const vault::unify::VarTerm* pVarTerm = dynamic_cast<const vault::unify::VarTerm*>( pTerm ) ) {
+        out_vars.push_back( const_cast<vault::unify::VarTerm*>( pVarTerm ) );
+        return;
+    }
+    vault::unify::AbstractTermIterator* pIt = pTerm->abstractTermIterator();
+    if( pIt ) {
+        while( pIt->isValid() ) {
+            const vault::unify::TermTraversable* pChildTraversable = pIt->getTermTraversable();
+            if( pChildTraversable ) {
+                const vault::unify::AbstractTerm* pChildTerm =
+                    dynamic_cast<const vault::unify::AbstractTerm*>( pChildTraversable );
+                if( pChildTerm ) {
+                    collectVarTermsOrdered( pChildTerm, out_visited, out_vars );
+                }
+            }
+            pIt->next();
+        }
+        delete pIt;
+    }
+}
+
+/**
+ * Delete the structural (non-VarTerm) nodes of a scratch term tree built
+ * by AnyTermFactory::operator()(IfStatementInput) while assembling an
+ * `if` statement's cond+body via the enclosing ClauseContext -- once
+ * cloneTermTree() has copied that scratch tree into a synthesized clause,
+ * the ConsTerm/MapTerm scaffolding is no longer referenced from anywhere
+ * and must be freed here, or it leaks.
+ *
+ * VarTerm leaves are deliberately left alone (not deleted, not recursed
+ * into -- they are always leaves): every VarTerm reachable from cond+body
+ * is, by construction, exactly one of the "free variables" collected by
+ * collectVarTermsOrdered() above, which the if-statement's call-site term
+ * reuses directly. That call-site term becomes part of the enclosing
+ * clause/query's own tree, so those VarTerms must survive along with it --
+ * deleting them here would leave the call site holding a dangling pointer.
+ */
+void deleteScratchTermTree(
+        const vault::unify::AbstractTerm* pTerm,
+        std::set<const vault::unify::AbstractTerm*>& out_visited )
+{
+    if( !pTerm ) {
+        return;
+    }
+    if( !out_visited.insert( pTerm ).second ) {
+        return;
+    }
+    if( dynamic_cast<const vault::unify::VarTerm*>( pTerm ) ) {
+        return;
+    }
+    vault::unify::AbstractTermIterator* pIt = pTerm->abstractTermIterator();
+    if( pIt ) {
+        while( pIt->isValid() ) {
+            const vault::unify::TermTraversable* pChildTraversable = pIt->getTermTraversable();
+            if( pChildTraversable ) {
+                const vault::unify::AbstractTerm* pChildTerm =
+                    dynamic_cast<const vault::unify::AbstractTerm*>( pChildTraversable );
+                if( pChildTerm ) {
+                    deleteScratchTermTree( pChildTerm, out_visited );
+                }
+            }
+            pIt->next();
+        }
+        delete pIt;
+    }
+    delete pTerm;
+}
+
+} // anonymous namespace
+
 /**
  * Factory class to factor a Goal from the syntax tree.
  *
@@ -213,50 +312,180 @@ public:
         return out_pAbstractTerm;
     }
 
-    vault::unify::AbstractTerm* operator()( const IfStatementInput& ifStatementInput ) const 
+    /**
+     * `if( cond ) { body }` -- SOFT-IF semantics (SPEC.md sections 4, 9):
+     * like Prolog's `( cond, body ; true )`. Desugars to a two-clause
+     * auxiliary predicate appended to World's root ExecutionState:
+     *
+     *   __if_N( V1..Vk ) { clonedCond; clonedBody...; }   // then-branch,
+     *                                                      // tried first
+     *   __if_N( V1..Vk );                                 // fallback,
+     *                                                      // always succeeds
+     *
+     * plus a call site __if_N( origV1..origVk ) spliced into the
+     * ENCLOSING goal chain in place of the `if` statement. V1..Vk are the
+     * free variables of cond+body; origV1..origVk are the very same
+     * VarTerm objects already in use by the enclosing clause/query
+     * (m_clauseContext.m_mapSymbols), so the call site is simply part of
+     * the enclosing term tree. Each synthesized clause instead gets its
+     * OWN fresh variables (a fresh substitution built per clause, so the
+     * two synthesized clauses do not even alias each other) via
+     * cloneTermTree() -- see its declaration next to
+     * collectTermTree()/deleteTermTree() in include/vault-unify.hpp. That
+     * means neither synthesized clause shares a single term node with the
+     * enclosing clause/query, killing the aliasing the previous
+     * (broken -- see git history / ROADMAP) desugaring relied on.
+     *
+     * Caveat (SPEC.md section 9): there is no cut yet (ROADMAP Phase 2),
+     * so on backtracking -- which this engine always performs while
+     * searching for further solutions, see SPEC.md section 5 -- the
+     * fallback clause can still be tried after cond already succeeded
+     * once, resurrecting the "skip" branch. See
+     * test/conformance/if-statement.ufy for a concrete demonstration.
+     */
+    vault::unify::AbstractTerm* operator()( const IfStatementInput& ifStatementInput ) const
     {
-        vault::unify::AbstractTerm /* *lhs, *rhs, */ *pAbstractTerm = NULL;
+        // a. Build cond and body as term trees using the ENCLOSING
+        // clause/query's own variable scope (m_clauseContext), exactly
+        // like any other goal built in this context -- this is what lets
+        // us later tell which VarTerms are free (shared with the rest of
+        // the enclosing clause/query) instead of guessing from the AST.
+        // Each gets its own local pre-goal list (mirroring how
+        // Context::createGoal() always hands a fresh AnyTermFactory a
+        // fresh output list bound to the SAME ClauseContext), so any
+        // pre-goals from a nested desugaring (e.g. '->') land next to the
+        // term that needs them, not in the enclosing goal.
+        std::list<vault::unify::AbstractTerm*> lsCondPreGoals;
+        AnyTermFactory condFactory( m_clauseContext, lsCondPreGoals );
+        vault::unify::AbstractTerm* pCondTerm = condFactory( ifStatementInput.lhs );
 
-        /*
-         * If statement works like this: We declare a new anon clause.
-         * Declare new clase 
-         * userclause: pregoals, $cond, $goal, postgoals, cut
-         * userclause: pregoals, postgoals
-         */
-        // Define new clause
-        std::string strClauseName( m_clauseContext.nextAnonClauseName( "if" ) );
-        ConsTermInput cti;
-        cti.atom = AtomInput( strClauseName, 1 );
-        std::string strVarName = m_clauseContext.nextAnonVarName();
-        cti.values.insert( cti.values.begin(), AnyTermInput( ConsTermInput( AtomInput( strVarName, 1 ) ) ) );
-        ClauseInput ci;
-        ci.leftHandTerm = cti;
-        ci.rightHandGoal = ifStatementInput.rhs;
-        // And prepend the variable 
-        ci.rightHandGoal.consTerms.insert( ci.rightHandGoal.consTerms.begin(),
-            AnyStatementInput(
-                SingleGoalInput( 
-                    InfixTermsInput(
-                        AnyTermInput( 
-                            ConsTermInput( 
-                                AtomInput( strVarName, 1 )
-                                )
-                            )
-                        )
-                    )
-                )
-            );
-        // Now create the new clause.
-        Clause* pClause = NULL;
-        (void) m_clauseContext.m_context.createClause(
-            m_clauseContext, ci, pClause );
+        std::list<vault::unify::AbstractTerm*> lsBodyTerms;
+        (void) m_clauseContext.m_context.createGoal(
+            m_clauseContext, ifStatementInput.rhs, lsBodyTerms );
+
+        // All roots that make up the synthesized rule's body, in the
+        // order they must run in: cond's own pre-goals, then cond itself,
+        // then the body's statements (already pre-goal-inclusive, since
+        // createGoal() interleaves them itself).
+        std::vector<const vault::unify::AbstractTerm*> auxRuleRoots;
+        auxRuleRoots.reserve( lsCondPreGoals.size() + 1 + lsBodyTerms.size() );
+        {
+            std::list<vault::unify::AbstractTerm*>::const_iterator it, itEnd;
+            for( it = lsCondPreGoals.begin(), itEnd = lsCondPreGoals.end(); it != itEnd; ++it ) {
+                auxRuleRoots.push_back( *it );
+            }
+        }
+        auxRuleRoots.push_back( pCondTerm );
+        {
+            std::list<vault::unify::AbstractTerm*>::const_iterator it, itEnd;
+            for( it = lsBodyTerms.begin(), itEnd = lsBodyTerms.end(); it != itEnd; ++it ) {
+                auxRuleRoots.push_back( *it );
+            }
+        }
+
+        // b. Collect the distinct free VarTerms across cond+body.
+        std::vector<vault::unify::VarTerm*> freeVars;
+        {
+            std::set<const vault::unify::AbstractTerm*> visited;
+            std::vector<const vault::unify::AbstractTerm*>::const_iterator it, itEnd = auxRuleRoots.end();
+            for( it = auxRuleRoots.begin(); it != itEnd; ++it ) {
+                collectVarTermsOrdered( *it, visited, freeVars );
+            }
+        }
+        const int nVars = (int) freeVars.size();
+
+        // c. Unique auxiliary predicate name (existing anon-clause
+        // counter machinery, e.g. "__if__3").
+        vault::unify::Atom auxAtom( m_clauseContext.nextAnonClauseName( "if" ) );
+
         WorldPtr spWorld( m_clauseContext.m_context.getWorld() );
-        spWorld->getRootState()->appendClause( spWorld, pClause );
-        VAULT_UNIFY_DI( ALWAYS, "Added clause '%s'.\n", 
-            pClause->toString().c_str() );
-        // We evaluate to calling the clause.
-        pAbstractTerm = (*this)( cti );
-        return pAbstractTerm;
+
+        // d./e. Give each synthesized clause its OWN fresh substitution
+        // (and thus its own head variables) -- the Rule and the Fact
+        // clause below do not share a single VarTerm, let alone anything
+        // with the enclosing clause/query.
+        std::map<const vault::unify::VarTerm*, vault::unify::VarTerm*> subMapRule;
+        vault::unify::AbstractTerm** ppHeadArgsRule = nVars ? new vault::unify::AbstractTerm*[nVars] : NULL;
+        for( int i = 0; i < nVars; ++i ) {
+            vault::unify::VarTerm* pFreshVar = new vault::unify::VarTerm();
+            pFreshVar->setOriginalVarName( freeVars[i]->getOriginalVarName() );
+            subMapRule[freeVars[i]] = pFreshVar;
+            ppHeadArgsRule[i] = pFreshVar;
+        }
+        vault::unify::ConsTerm* pHeadRule = new vault::unify::ConsTerm( auxAtom, nVars, ppHeadArgsRule );
+
+        std::map<const vault::unify::VarTerm*, vault::unify::VarTerm*> subMapFact;
+        vault::unify::AbstractTerm** ppHeadArgsFact = nVars ? new vault::unify::AbstractTerm*[nVars] : NULL;
+        for( int i = 0; i < nVars; ++i ) {
+            vault::unify::VarTerm* pFreshVar = new vault::unify::VarTerm();
+            pFreshVar->setOriginalVarName( freeVars[i]->getOriginalVarName() );
+            subMapFact[freeVars[i]] = pFreshVar;
+            ppHeadArgsFact[i] = pFreshVar;
+        }
+        vault::unify::ConsTerm* pHeadFact = new vault::unify::ConsTerm( auxAtom, nVars, ppHeadArgsFact );
+
+        // Clone cond's pre-goals + cond + body into the Rule clause's
+        // body, via subMapRule -- shares nothing with the scratch trees
+        // built in step (a), nor with the Fact clause's own clone below.
+        std::list<const vault::unify::AbstractTerm*> lsClonedRuleBody;
+        {
+            std::vector<const vault::unify::AbstractTerm*>::const_iterator it, itEnd = auxRuleRoots.end();
+            for( it = auxRuleRoots.begin(); it != itEnd; ++it ) {
+                lsClonedRuleBody.push_back( vault::unify::cloneTermTree( *it, subMapRule ) );
+            }
+        }
+        vault::unify::Goal* pRuleGoal = new vault::unify::Goal(
+            lsClonedRuleBody.begin(), lsClonedRuleBody.end() );
+
+        Clause* pRuleClause = new vault::unify::StandardClause( pHeadRule, pRuleGoal );
+        Clause* pFactClause = new vault::unify::StandardClause( pHeadFact, NULL );
+
+        // Definition order: then-branch first, fallback second (so a
+        // depth-first, all-solutions search tries "cond succeeded" before
+        // "cond was skipped" -- see SPEC.md section 5 and the caveat
+        // above this function).
+        spWorld->getRootState()->appendClause( spWorld, pRuleClause );
+        spWorld->getRootState()->appendClause( spWorld, pFactClause );
+        VAULT_UNIFY_DI( ALWAYS, "Added clause '%s'.\n", pRuleClause->toString().c_str() );
+        VAULT_UNIFY_DI( ALWAYS, "Added clause '%s'.\n", pFactClause->toString().c_str() );
+
+        // The scratch cond/body trees built in step (a) (using the
+        // enclosing context) have now been fully cloned into the
+        // synthesized Rule clause; free their structural (non-VarTerm)
+        // nodes. The VarTerms among them are NOT scratch -- they are
+        // exactly `freeVars`, which the call site below reuses directly,
+        // so they remain reachable from (and owned along with) the
+        // enclosing clause/query's own term tree.
+        {
+            std::set<const vault::unify::AbstractTerm*> visited;
+            std::vector<const vault::unify::AbstractTerm*>::const_iterator it, itEnd = auxRuleRoots.end();
+            for( it = auxRuleRoots.begin(); it != itEnd; ++it ) {
+                deleteScratchTermTree( *it, visited );
+            }
+        }
+
+        // f. The call site: __if_N( origV1..origVk ), built from the
+        // ORIGINAL enclosing VarTerms. This is the if-statement's own
+        // contribution to the enclosing goal chain.
+        //
+        // g. K==0 (no free variables, as in e.g. `if( flag( on ) ) {...}`
+        // with no variables anywhere in cond/body) is handled the same
+        // way arity-0 calls always are in this parser (see
+        // operator()(ConsTermInput) above): nVars==0, ppCallArgs==NULL,
+        // ConsTerm's vector is constructed from an empty [ppTerms,
+        // ppTerms+0) range -- nothing special required.
+        vault::unify::AbstractTerm** ppCallArgs = nVars ? new vault::unify::AbstractTerm*[nVars] : NULL;
+        for( int i = 0; i < nVars; ++i ) {
+            ppCallArgs[i] = freeVars[i];
+        }
+        vault::unify::ConsTerm* pCallTerm = new vault::unify::ConsTerm( auxAtom, nVars, ppCallArgs );
+
+        // h. Deliberately not registering any TermDebugInfo for the
+        // synthesized clauses/call site -- the old code didn't either,
+        // and doing so here would mean sharing one TermDebugInfo across
+        // several term keys again (World::~World() already has to guard
+        // against exactly that for the '->' desugaring).
+        return pCallTerm;
     }
 
 

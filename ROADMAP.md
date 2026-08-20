@@ -98,6 +98,16 @@ Goal: defined semantics, defined ownership, real error reporting.
       `UnifyContext`s, `GoalPart`s and terms instantiated during solving;
       freed when the job's results are consumed. (This legitimizes the current
       allocate-freely style instead of fighting it.)
+      *(2026-08-20, passes 1+2 landed: per-job arena frees all solve-time
+      UnifyContexts/GoalParts/Goal objects at job end (finished jobs now
+      actually destruct); `~World` frees the whole clause database, debug
+      info, and builtin heads via a de-duplicating term sweep. Remaining
+      leaks per program are (a) parser-side orphan terms — intermediates
+      built during desugaring and then replaced, never owned (e.g. test2
+      14,065 B/523 allocs ≈ its pre-teardown baseline, i.e. the clause DB
+      itself is fully freed) — and (b) per-query goal term trees, deferred
+      because the current if-desugaring aliases their VarTerms into the
+      clause database (fix planned together with the if statement).)*
 - [ ] Run the test suite under ASan/LeakSanitizer; zero leaks per query.
       *(2026-08-20: `UNIFY_SANITIZE` CMake option + a `sanitize` CI job now
       build and run the golden-output suite under ASan+UBSan with leak

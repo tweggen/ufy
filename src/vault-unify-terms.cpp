@@ -137,6 +137,84 @@ void deleteTermTree( const AbstractTerm* pTerm )
 }
 
 
+/**
+ * See the ownership note above this declaration in include/vault-unify.hpp.
+ *
+ * Dispatches on pTerm's dynamic type (VarTerm/ConsTerm/MapTerm are the only
+ * concrete AbstractTerm kinds this module ever builds via the parser) and
+ * recurses into children. The transient `AbstractTerm**`/`const Atom**`
+ * arrays handed to the ConsTerm/MapTerm constructors are not retained by
+ * either constructor (they copy the pointer VALUES out into their own
+ * std::vector/std::map), so -- exactly like every other call site in this
+ * module that builds a ConsTerm/MapTerm this way (AnyTermFactory in
+ * vault-unify-parser.cpp) -- the arrays themselves are not freed here
+ * either; only what they point at is (via the returned clone's own
+ * ownership).
+ */
+AbstractTerm* cloneTermTree(
+        const AbstractTerm* pTerm,
+        const std::map<const VarTerm*, VarTerm*>& varSubstitution )
+{
+    if( !pTerm ) {
+        return NULL;
+    }
+
+    if( const VarTerm* pSrcVar = dynamic_cast<const VarTerm*>( pTerm ) ) {
+        std::map<const VarTerm*, VarTerm*>::const_iterator itSub =
+            varSubstitution.find( pSrcVar );
+        if( itSub != varSubstitution.end() ) {
+            return itSub->second;
+        }
+        // Internal error: every VarTerm in the subtree is expected to have
+        // been collected into varSubstitution before cloning. Do not
+        // crash -- clone a fresh, unmapped VarTerm instead.
+        VAULT_UNIFY_DI( ALWAYS,
+            "cloneTermTree: VarTerm '%s' missing from substitution map; "
+            "cloning as a fresh, unmapped variable.\n",
+            pSrcVar->toString().c_str() );
+        VarTerm* pFreshVar = new VarTerm();
+        pFreshVar->setOriginalVarName( pSrcVar->getOriginalVarName() );
+        return pFreshVar;
+    }
+
+    if( const ConsTerm* pSrcCons = dynamic_cast<const ConsTerm*>( pTerm ) ) {
+        int nTerms = pSrcCons->getArity();
+        AbstractTerm** ppTerms = nTerms ? new AbstractTerm*[nTerms] : NULL;
+        for( int i = 0; i < nTerms; ++i ) {
+            ppTerms[i] = cloneTermTree( pSrcCons->getTermAt( i ), varSubstitution );
+        }
+        ConsTerm* pCloneCons = new ConsTerm(
+            Atom( pSrcCons->getName().value() ), nTerms, ppTerms );
+        pCloneCons->setNegated( pSrcCons->isNegated() );
+        return pCloneCons;
+    }
+
+    if( const MapTerm* pSrcMap = dynamic_cast<const MapTerm*>( pTerm ) ) {
+        std::vector<std::pair<const Atom*, AbstractTerm*> > entries;
+        pSrcMap->getEntries( entries );
+        int nTuples = (int) entries.size();
+        const Atom** ppAtoms = nTuples ? new const Atom*[nTuples] : NULL;
+        AbstractTerm** ppTerms = nTuples ? new AbstractTerm*[nTuples] : NULL;
+        for( int i = 0; i < nTuples; ++i ) {
+            // MapTerm owns (and ~MapTerm() deletes) whatever Atom* keys it
+            // is constructed with, so the clone needs its own copies --
+            // it must not share Atom* pointers with pSrcMap.
+            ppAtoms[i] = new Atom( entries[i].first->value() );
+            ppTerms[i] = cloneTermTree( entries[i].second, varSubstitution );
+        }
+        MapTerm* pCloneMap = new MapTerm( ppAtoms, ppTerms, nTuples );
+        return pCloneMap;
+    }
+
+    // Internal error: no other concrete AbstractTerm kind exists in this
+    // module. Log and give up rather than silently dropping the term.
+    VAULT_UNIFY_DI( ALWAYS,
+        "cloneTermTree: term '%s' is neither VarTerm, ConsTerm nor MapTerm; "
+        "cannot clone.\n", pTerm->toString().c_str() );
+    return NULL;
+}
+
+
 };
 };
 
