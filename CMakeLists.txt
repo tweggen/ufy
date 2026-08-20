@@ -99,7 +99,15 @@ target_include_directories(vault-unify-core
         # this into a real public/private split is header-hygiene cleanup for
         # a later phase, not this CMake port.
         "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    PRIVATE
+        # combine/include: the repo-wide shared headers. Only
+        # vault-unify-xdebug-tcp.cpp uses it (vault::BoostAsioIoService from
+        # vault/vault.hpp); VAULT_NO_PPLX below keeps that header from
+        # dragging cpprest's pplx into this cpprest-free core build.
+        "${CMAKE_CURRENT_SOURCE_DIR}/../../include"
 )
+
+target_compile_definitions(vault-unify-core PRIVATE VAULT_NO_PPLX)
 
 target_link_libraries(vault-unify-core
     PUBLIC

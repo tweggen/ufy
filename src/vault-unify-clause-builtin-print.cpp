@@ -7,7 +7,8 @@
  */
 
 #include <string>
- 
+#include <iostream>
+
 #include <boost/shared_ptr.hpp>
 
 #include <list>
