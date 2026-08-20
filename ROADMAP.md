@@ -171,8 +171,13 @@ Goal: defined semantics, defined ownership, real error reporting.
 Goal: enough language to write real programs (the home-automation rules are
 the reference workload).
 
-- [ ] Arithmetic and comparison builtins (`+ - * /`, `< > <= >= == !=`) with a
+- [x] Arithmetic and comparison builtins (`+ - * /`, `< > <= >= == !=`) with a
       defined evaluation construct (`is`-style or expression goals).
+      *(2026-08-20: C-style expression goals — `$y = 2 + 3 * 4;` evaluates
+      when a side of `=` is arithmetic (plain `=` stays unification),
+      comparisons are goals with numeric-then-string semantics, int64,
+      division by zero → UnifyError. SPEC.md §4.1; conformance goldens
+      pin precedence, negatives, and silent comparison failure.)*
 - [ ] Cut (`!` in Prolog's sense) or a committed-choice construct; reconcile
       with the current prefix-`!` negation syntax.
 - [ ] `findall` / aggregation over solutions.

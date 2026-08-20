@@ -1,0 +1,8 @@
+print: five-less-than-ten
+print: string-comparison
+print: numbers-equal
+print: numbers-not-equal
+print: less-equal-holds
+print: greater-equal-holds
+print: arithmetic-in-comparison
+print: variable-comparison
