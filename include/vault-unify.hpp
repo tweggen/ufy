@@ -26,13 +26,32 @@
 #include <vector>
 #include <list>
 
+/*
+ * Debug trace categories. Guarded so a build can override single
+ * categories from the compiler command line (e.g. -DVAULT_UNIFY_ITERATE=1)
+ * without editing this header.
+ */
+#if !defined( VAULT_UNIFY_ALWAYS )
 #define VAULT_UNIFY_ALWAYS 1
+#endif
+#if !defined( VAULT_UNIFY_SOLUTION )
 #define VAULT_UNIFY_SOLUTION 0
+#endif
+#if !defined( VAULT_UNIFY_ITERATE )
 #define VAULT_UNIFY_ITERATE 0
+#endif
+#if !defined( VAULT_UNIFY_UNIFY )
 #define VAULT_UNIFY_UNIFY 1
+#endif
+#if !defined( VAULT_UNIFY_SCHEDULE )
 #define VAULT_UNIFY_SCHEDULE 0
+#endif
+#if !defined( VAULT_UNIFY_SERVER )
 #define VAULT_UNIFY_SERVER 1
+#endif
+#if !defined( VAULT_UNIFY_PARSER )
 #define VAULT_UNIFY_PARSER 0
+#endif
 #define VAULT_UNIFY_DI( X, ... ) do { if( VAULT_UNIFY_ ## X ) { fprintf( stderr, __FILE__ ":%s():%d:", __func__, __LINE__ ); fprintf( stderr, __VA_ARGS__ ); } } while(0)
 
 
