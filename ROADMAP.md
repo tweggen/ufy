@@ -61,18 +61,20 @@ refactoring. Nothing else starts before the test harness exists.
       in CI for now; compile validation happens on the Linux CI job below —
       the Windows dev machine has no Boost toolchain.)*
 - [ ] Build clean on a modern compiler with `-Wall -Wextra`; fix or triage
-      every warning. *(Flags are wired into CMake; awaiting the first Linux
-      CI build for the actual warning list.)*
+      every warning. *(Builds green on Ubuntu/GCC in CI with 54 warnings to
+      triage: 33× `-Wdeprecated-copy`, 20× `-Wunused-parameter`,
+      1× `-Wunused-result`.)*
 - [x] Remove committed backup files (`*.cpp~`, `*.ufy~`) and add them to
       `.gitignore`.
-- [ ] Golden-output test harness: run a `.ufy` program, diff emitted solutions
+- [x] Golden-output test harness: run a `.ufy` program, diff emitted solutions
       against an expected file. Seed from `test-engine.ufy`, `test2.ufy`,
       `test/mapsyntax.ufy`, `pathfinder.ufy`.
-      *(Harness landed: `test/run-golden-test.sh` + CTest registration with
-      skip-until-golden semantics and `UNIFY_UPDATE_GOLDEN=1` regeneration.
-      Still open: the golden `.expected` files themselves — bootstrap them
-      from the `unify-sample-outputs` artifact of the first green CI run,
-      see `test/golden/README.md`.)*
+      *(`test/run-golden-test.sh` + CTest, `UNIFY_UPDATE_GOLDEN=1`
+      regeneration. The seeded golden files are empty because none of the
+      four sample programs contains a query — they pin "parses cleanly,
+      runs, exits, no output" for now, which already catches hangs and
+      crashes. Programs with real queries/solutions are Phase 2's "restore
+      the example programs" item.)*
 - [x] Wire the harness into CI (even a single GitHub Actions job on Linux).
       *(`.github/workflows/unify-ci.yml`: Ubuntu + apt Boost, build, ctest,
       sample-output artifact for golden-file bootstrapping.)*
@@ -82,6 +84,13 @@ refactoring. Nothing else starts before the test harness exists.
       joinable `boost::thread` (would `std::terminate()` with modern Boost);
       threads are now kept in `Engine::m_lsWorkerThreads`, to be joined once
       a shutdown path exists (Phase 5.1).
+- [x] *(Found by the first golden runs)* `Engine::Engine()` left
+      `m_isDebugHalted` (and `m_pDebugListener`) uninitialized;
+      `executionLoop()` gates on that bool, so depending on heap layout —
+      which varied with the size of the loaded `.ufy` file — the scheduler
+      slept forever and larger programs (`test2`, `pathfinder`) deadlocked
+      while small ones ran. Diagnosed via gdb-in-CI; both members are now
+      initialized.
 
 ## Phase 1 — Correctness core
 
