@@ -162,7 +162,15 @@ int main( int argc, char** argv )
     rt.setupDone();
 
 #if !defined( _WIN32 )
-    StderrParseErrorSniffer sniffer;
+    /*
+     * UNIFY_RUN_NO_SNIFF=1 disables the stderr capture below. Needed when
+     * diagnosing hangs: with the sniffer active, everything the engine
+     * writes to stderr sits in an unflushed tmpfile and is lost if the
+     * process is killed before sniffer.stop() runs.
+     */
+    const bool noSniff =
+        getenv( "UNIFY_RUN_NO_SNIFF" ) && getenv( "UNIFY_RUN_NO_SNIFF" )[0] == '1';
+    StderrParseErrorSniffer* pSniffer = noSniff ? NULL : new StderrParseErrorSniffer();
 #endif
 
     /*
@@ -221,10 +229,13 @@ int main( int argc, char** argv )
 
     int result = 0;
 #if !defined( _WIN32 )
-    sniffer.stop();
-    if( sniffer.sawParseError() ) {
-        fprintf( stderr, "unify-run: parse error(s) while reading '%s'.\n", argv[1] );
-        result = 1;
+    if( pSniffer ) {
+        pSniffer->stop();
+        if( pSniffer->sawParseError() ) {
+            fprintf( stderr, "unify-run: parse error(s) while reading '%s'.\n", argv[1] );
+            result = 1;
+        }
+        delete pSniffer;
     }
 #endif
 

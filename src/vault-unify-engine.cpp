@@ -407,6 +407,12 @@ Engine::Engine()
 {
     m_nThreadsWaiting = 0;
     m_debugTargetState = DebugListener::REGULAR;
+    m_lastDebugTargetState = DebugListener::REGULAR;
+    // These two were never initialized: executionLoop() gates on
+    // m_isDebugHalted and the DEBUGHALTED path calls m_pDebugListener,
+    // so garbage here stalls the scheduler or crashes.
+    m_isDebugHalted = false;
+    m_pDebugListener = NULL;
 }
 
 
