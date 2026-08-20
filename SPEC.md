@@ -95,35 +95,65 @@ use the same `%` operator for their contents, so `{}` and `[]` also do not
 parse, even though `MapTerm` itself supports zero entries when built
 programmatically (`MapTerm::MapTerm`, `include/vault-unify.hpp`).
 
-**Top-level queries**: `m_ruleQuery %= (m_ruleQueryGoal >> '?');` where
-`m_ruleQueryGoal %= qi::eps >> (m_ruleQueryStatement % ',');` and
-`m_ruleQueryStatement %= m_ruleIfStatement | m_ruleSingleGoal;`. A query is
-one or more statements (each an `if` or a bare single goal, **no**
-`;` terminator) separated by `,` and followed by `?`, e.g. the one real
-example in the existing samples (commented out in `test/mapsyntax.ufy`,
-still written in the pre-fix `;`-separated form there since it's inert):
-`point( $objPoint ), print( $objPoint) ?`. All of a query's statements
-flatten into one `Goal` (`Context::createGoal`,
+**Top-level queries**: `m_ruleQuery %= qi::lit("query") >> '{' >>
+m_ruleGoal >> '}';` — the keyword `query` followed by a brace-delimited
+block of `;`-terminated statements, reusing the very same `m_ruleGoal`
+grammar a rule body uses (`m_ruleGoal %= qi::eps >> +(m_ruleAnyStatement);`
+with `m_ruleAnyStatement %= m_ruleIfStatement | m_ruleSingleGoal >> ';';`):
+each statement is an `if` or a bare single goal terminated by `;`, e.g.
+```
+query {
+    color( $x );
+    print( $x );
+}
+```
+All of a query's statements flatten into one `Goal` (`Context::createGoal`,
 `src/vault-unify-parser.cpp`) — one flat conjunctive term list, solved as a
-single goal chain (section 5); a rule body uses the separate `m_ruleGoal`
-grammar (`m_ruleGoal %= qi::eps >> +(m_ruleAnyStatement);` with
-`m_ruleAnyStatement %= m_ruleIfStatement | m_ruleSingleGoal >> ';';`), whose
-statements stay `;`-terminated and has no trailing `?`.
+single goal chain (section 5), exactly as for a rule body. A file may
+contain any number of `query { ... }` blocks, each spawning its own
+`SolveJob` in order (section 5).
 
-Queries and clause/rule bodies deliberately use two different separators
-now. Until 2026-08-20 both a top-level query and a `;`-terminated fact were
-parsed by the same `m_ruleGoal`/`m_ruleAnyStatement` rules, and
+**`query` is a reserved word for a zero-argument top-level head**:
 `m_ruleEvent %= (m_ruleQuery) | (m_ruleClause);` tries the query
+alternative first. A clause head is a cons term whose argument list is
+*optional* (`m_ruleConsTerm %= m_ruleAtom >> -('(' >> ... >> ')');`), so
+`query { ... }` is *also* syntactically a valid rule definition — an
+atom `query` with no args, followed by a `{ ... }` body — under
+`m_ruleClause`. Because `m_ruleQuery` is tried first and (for exactly this
+input shape) always succeeds, it always wins: **a rule literally named
+`query` with no arguments can no longer be defined**; the bare atom `query`
+at the start of a top-level form is unconditionally read as a query block.
+A clause headed by the atom `query` remains expressible as soon as it
+takes at least one argument, e.g. `query( a ) { ... }` or `query( a );`,
+since `m_ruleQuery` requires `{` to immediately follow the `query` keyword
+with no `(` in between; for that input `m_ruleQuery` fails (no word
+boundary is needed: `qi::lit("query")` matches the literal text, then the
+next expected token `{` fails to match `(`, or, for an identifier like
+`query23(...)`, fails to match `2`), the whole alternative backtracks, and
+`m_ruleClause` reparses the same input from the start, this time consuming
+`query23` (or `query`, followed by its parenthesized args) as an ordinary
+atom via `m_ruleId`.
+
+Queries and clause/rule bodies deliberately share one `;`-terminated
+statement grammar (`m_ruleGoal`) now, distinguished only by the `query { }`
+wrapper. A comma-separated, `?`-terminated query form (`g1, g2 ?`, with no
+`;` inside) existed only transiently on 2026-08-20, introduced to fix a
+prior ambiguity where queries and facts were indistinguishable (see below)
+and then immediately superseded, the same day, by the current
+`query { ... }` block form for a more C/Java-like feel — consistent `;`
+statement termination and `{ }` blocks everywhere in the language, and one
+query syntax instead of two. Before that transient fix, both a top-level
+query and a `;`-terminated fact were parsed by the same `m_ruleGoal`/
+`m_ruleAnyStatement` rules with no distinguishing keyword or wrapper, and
+`m_ruleEvent %= (m_ruleQuery) | (m_ruleClause);` tried the query
 alternative first: since a fact `f(a);` is itself a valid `;`-terminated
 statement, any run of facts immediately preceding a `?` anywhere later in
 the file was swallowed whole into one giant query goal, leaving zero
 clauses parsed from those facts — a grammar ambiguity, not a semantic
-choice. The fix gives queries their own `m_ruleQueryGoal`/
-`m_ruleQueryStatement` rules built on `,` instead of `;`, so a trailing `;`
-after a top-level term is now unambiguously a clause/fact, while `,` or `?`
-after one is unambiguously part of a query; the old `goal; goal; ?` form no
-longer parses (a parse error: it now reads as one or more facts followed by
-a dangling `?`).
+choice. The `query { ... }` keyword-block form fixes this the same way the
+transient comma form did (a query is no longer parseable as a prefix of
+plain facts) while additionally giving the language a single, uniform
+statement/block syntax.
 
 **`if` statement**: `m_ruleIfStatement %= qi::lit("if") >> qi::lit("(") >>
 m_ruleSingleGoal >> qi::lit(")") >> qi::lit("{") >> m_ruleGoal >>

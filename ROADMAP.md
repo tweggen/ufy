@@ -121,11 +121,18 @@ Goal: defined semantics, defined ownership, real error reporting.
       rule (`goal; goal; ?`) greedily swallowed every preceding
       `;`-terminated fact into the query goal, so programs defining facts
       and then querying them defined no clauses at all (confirmed via a
-      full solver trace in CI). Queries now use comma-separated goals
-      (`g1, g2 ?`), making `;` unambiguously "clause" — no pre-existing
-      program used queries, so nothing breaks.
-- [ ] Propagate `UnifyError` as an error (with message) instead of mapping it
+      full solver trace in CI). Queries are now `query { g1; g2; }` blocks
+      (C/Java feel per the language owner; a comma-`?` form existed only
+      transiently on the way there), making `;`-terminated top-level terms
+      unambiguously clauses — no pre-existing program used queries, so
+      nothing breaks. NOTE: `query` is thereby reserved as the head of a
+      zero-argument rule; `query(...)` with arguments remains usable.
+- [x] Propagate `UnifyError` as an error (with message) instead of mapping it
       to "did not unify".
+      *(2026-08-20: masking sites fixed — including one where a subterm
+      error became silent *success* in `ConsTerm`/`MapTerm` — errors are
+      logged, recorded per job via `SolveJob::getErrorCount()`, and drive
+      `unify-run`'s exit code. The search itself is unchanged.)*
 - [ ] Write a short language spec (`SPEC.md`): clause selection order,
       negation-as-failure semantics (incl. the `UnifyLast`/`UnifyNotLast`/
       `m_foundClause` rules), `if` statement, `->` deref, map/array

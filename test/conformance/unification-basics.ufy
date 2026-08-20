@@ -8,6 +8,17 @@
 number( one );
 pair( a, b );
 
-number( $x ), print( $x ) ?
-pair( $y, $z ), print( $y ) ?
-pair( a, b, c ), print( "should-not-print-arity-mismatch" ) ?
+query {
+    number( $x );
+    print( $x );
+}
+
+query {
+    pair( $y, $z );
+    print( $y );
+}
+
+query {
+    pair( a, b, c );
+    print( "should-not-print-arity-mismatch" );
+}

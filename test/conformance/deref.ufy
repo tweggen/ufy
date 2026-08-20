@@ -8,6 +8,17 @@
 
 place( { name: "kitchen", level: 1 } );
 
-place( $p ), print( $p->name ) ?
-place( $p ), print( $p->level ) ?
-place( $p ), print( $p->missing ) ?
+query {
+    place( $p );
+    print( $p->name );
+}
+
+query {
+    place( $p );
+    print( $p->level );
+}
+
+query {
+    place( $p );
+    print( $p->missing );
+}

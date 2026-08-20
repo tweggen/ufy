@@ -554,19 +554,19 @@ public:
             |   ( m_ruleConsTerm >> ';' )
             ;
 
-        m_ruleQueryStatement %=
-                m_ruleIfStatement
-            |   m_ruleSingleGoal
-            ;
-
-        m_ruleQueryGoal %=
-                qi::eps >> ( m_ruleQueryStatement % ',' )
-            ;
-
+        // NOTE: the bare atom "query" (no parens, i.e. a zero-argument
+        // clause head) is a reserved word at the start of a top-level
+        // form: `query { ... }` always parses as the query block below,
+        // never as a rule named "query" with an empty body. A clause
+        // headed by "query" is still expressible as long as it takes at
+        // least one argument, e.g. `query( a ) { ... }` or `query( a );`,
+        // since m_ruleQuery requires '{' to immediately follow the
+        // "query" keyword (no '(' in between) and therefore fails and
+        // backtracks to m_ruleClause for those forms.
         m_ruleQuery %=
-                (m_ruleQueryGoal >> '?')
+                qi::lit( "query" ) >> '{' >> m_ruleGoal >> '}'
             ;
-        
+
         m_ruleEvent %=
                 (m_ruleQuery)
             |   (m_ruleClause)
@@ -587,8 +587,6 @@ public:
         m_ruleSingleGoal.name( "SingleGoal" );
         m_ruleGoal.name( "Goal" );
         m_ruleClause.name( "Clause" );
-        m_ruleQueryStatement.name( "QueryStatement" );
-        m_ruleQueryGoal.name( "QueryGoal" );
         m_ruleQuery.name( "Query" );
         m_ruleEvent.name( "Event" );
 
@@ -670,8 +668,6 @@ public:
     qi::rule<Iterator, AnyStatementInput(), Skipper> m_ruleAnyStatement;
     qi::rule<Iterator, GoalInput(), Skipper> m_ruleGoal;
     qi::rule<Iterator, ClauseInput(), Skipper> m_ruleClause;
-    qi::rule<Iterator, AnyStatementInput(), Skipper> m_ruleQueryStatement;
-    qi::rule<Iterator, GoalInput(), Skipper> m_ruleQueryGoal;
     qi::rule<Iterator, QueryInput(), Skipper> m_ruleQuery;
     qi::rule<Iterator, EventInput(), Skipper> m_ruleEvent;
 private:

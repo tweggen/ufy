@@ -9,8 +9,27 @@
 code( "205" );
 label( ok );
 
-code( $c ), print( $c ) ?
-205 = "205", print( "number-equals-quoted-string" ) ?
-label( "ok" ), print( "quoted-string-matches-bareword-fact" ) ?
-"abc" = abc, print( "quoted-string-matches-bareword-atom" ) ?
-1 = 2, print( "should-not-print-different-numbers" ) ?
+query {
+    code( $c );
+    print( $c );
+}
+
+query {
+    205 = "205";
+    print( "number-equals-quoted-string" );
+}
+
+query {
+    label( "ok" );
+    print( "quoted-string-matches-bareword-fact" );
+}
+
+query {
+    "abc" = abc;
+    print( "quoted-string-matches-bareword-atom" );
+}
+
+query {
+    1 = 2;
+    print( "should-not-print-different-numbers" );
+}

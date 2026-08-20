@@ -6,7 +6,22 @@
 
 to_1( $a ) { $a = 1; }
 
-to_1( $v ), print( $v ) ?
-1 = 1, print( "equal-constants" ) ?
-1 = 2, print( "should-not-print-unequal-constants" ) ?
-$w = five, print( $w ) ?
+query {
+    to_1( $v );
+    print( $v );
+}
+
+query {
+    1 = 1;
+    print( "equal-constants" );
+}
+
+query {
+    1 = 2;
+    print( "should-not-print-unequal-constants" );
+}
+
+query {
+    $w = five;
+    print( $w );
+}
