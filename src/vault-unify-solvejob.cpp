@@ -161,17 +161,17 @@ int SolveJob::startJob( Engine* pEngine )
 {
     m_pEngine = pEngine;
 
-    GoalPart* pGoalPart = new GoalPart( 
+    GoalPart* pGoalPart = adoptGoalPart( new GoalPart(
         m_pGoal,                // Externally provided goal
         NULL,                   // no parent Goal Part
         0,                      // No associated unifycontextid (no vars contained)
-        vault::unify::Goal::GoalIterator() );
+        vault::unify::Goal::GoalIterator() ) );
     // pEngine->logChange() << *pGoalPart;
 
-    UnifyContext* pRootUnifyContext = new UnifyContext(
+    UnifyContext* pRootUnifyContext = adoptUnifyContext( new UnifyContext(
         NULL,                   // no parent unify context
         GoalPartCursor(),
-        ExecutionState::ClauseIterator() );
+        ExecutionState::ClauseIterator() ) );
     // pEngine->logChange() << *pRootUnifyContext;
         
     // Create a root UnifyContext.
@@ -582,10 +582,10 @@ int SolveJob::performSlice()
          * be created to iterate through it.
          */
 
-        UnifyContext* pUCCand = new UnifyContext( 
+        UnifyContext* pUCCand = adoptUnifyContext( new UnifyContext(
             sc->m_pUnifyContext,
             sc->m_csCurrent,
-            sc->m_itNextChildClause );
+            sc->m_itNextChildClause ) );
 
         /*
          * Begin unification of the current goal term with the current
@@ -653,8 +653,9 @@ int SolveJob::performSlice()
              
             VAULT_UNIFY_DI( ITERATE, "Does not unify.\n" );
 
-            // delete candidate again.
-            delete pUCCand;
+            // pUCCand is arena-owned (adoptUnifyContext() above); it is
+            // freed with the rest of the job's arena in ~SolveJob(), not
+            // deleted here.
 
             // ... and try the next child clause.
 
@@ -729,12 +730,12 @@ int SolveJob::performSlice()
                 GoalPart* newGoalPart = NULL;
                 Goal::GoalIterator itNext( sc->m_csCurrent.getGoalIterator() );
                 itNext.next();
-                newGoalPart = new GoalPart(
+                newGoalPart = adoptGoalPart( new GoalPart(
                     pUCCand->m_pGoal,
                     sc->m_csCurrent.getGoalPart(),
                     pUCCand, // The unify context we origin in.
                     itNext // might already be invalid.
-                    );
+                    ) );
                 scChild = new SolveContext(
                     m_pStartState,      // ExecutionState
                     sc,                 // SolveContext
@@ -780,6 +781,12 @@ int SolveJob::setGoal( const Goal* pGoal )
 }
 
 
+void SolveJob::adoptGoal( const Goal* pGoal )
+{
+    m_arenaGoals.push_back( pGoal );
+}
+
+
 SolveJob& SolveJob::setWorld( WorldPtr spWorld )
 {
     m_spWorld = spWorld;
@@ -800,6 +807,62 @@ int SolveJob::triggerRelease()
 SolveJob::~SolveJob()
 {
     VAULT_UNIFY_DI( ALWAYS, "Destroying job %lld.\n", (long long) getId() );
+
+    /*
+     * ROADMAP Phase 1 ("Ownership model"): release everything this job
+     * owns, in an order that is safe regardless of whether the job ran to
+     * completion or was aborted mid-search.
+     *
+     * 1) SolveContexts still left on m_stackContext (job aborted
+     *    mid-search, e.g. debugger STOP/DETACH in performSlice() sets
+     *    Job::FINISHED without draining the stack via discardTop()).
+     *    SolveContexts are NOT arena-owned - they only reference arena
+     *    objects (m_pUnifyContext, m_pMyGoalPart) - and ~SolveContext() is
+     *    empty (does not touch either), so it does not matter whether we
+     *    free these before or after the arenas below.
+     *
+     * 2) The GoalPart arena, then the UnifyContext arena. Both GoalPart
+     *    and UnifyContext use compiler-generated destructors that only
+     *    tear down their own members (maps, GoalPartCursor,
+     *    ExecutionState::ClauseIterator, ...); neither one deletes the
+     *    peers it merely points to (parent goal part, parent/origin unify
+     *    context, ...), so freeing them in either order is safe. We free
+     *    GoalParts first since a GoalPart's m_pOriginUnifyContext points
+     *    at the UnifyContext that created it.
+     *
+     *    m_listUnifySolutions is a list of pointers into
+     *    m_arenaUnifyContexts (populated by emitSolution()); it does not
+     *    own them separately and must never be walked here, or those
+     *    UnifyContexts would be double-freed.
+     *
+     * 3) The Goal(s) adopted via adoptGoal(). Pass 1 (this change) only
+     *    adopts the Goal object itself, not the TERM trees it references -
+     *    those are parse-time allocations, out of scope here (see
+     *    adoptGoal()'s doc comment).
+     */
+    while( !m_stackContext.empty() ) {
+        SolveContext* sc = m_stackContext.back();
+        m_stackContext.pop_back();
+        delete sc;
+    }
+
+    std::vector<GoalPart*>::iterator itGP, itGPEnd = m_arenaGoalParts.end();
+    for( itGP = m_arenaGoalParts.begin(); itGP != itGPEnd; ++itGP ) {
+        delete *itGP;
+    }
+    m_arenaGoalParts.clear();
+
+    std::vector<UnifyContext*>::iterator itUC, itUCEnd = m_arenaUnifyContexts.end();
+    for( itUC = m_arenaUnifyContexts.begin(); itUC != itUCEnd; ++itUC ) {
+        delete *itUC;
+    }
+    m_arenaUnifyContexts.clear();
+
+    std::vector<const Goal*>::iterator itG, itGEnd = m_arenaGoals.end();
+    for( itG = m_arenaGoals.begin(); itG != itGEnd; ++itG ) {
+        delete *itG;
+    }
+    m_arenaGoals.clear();
 }
 
 

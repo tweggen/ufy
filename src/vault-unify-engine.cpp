@@ -145,16 +145,23 @@ void Engine::executionLoop()
 
         case Job::FINISHED:
             {
-                VAULT_UNIFY_DI( ALWAYS, "Job %lld finished.\n", 
+                VAULT_UNIFY_DI( ALWAYS, "Job %lld finished.\n",
                     (long long) spJob->getId() );
                 if( spJob->m_onFinished ) {
                     spJob->m_onFinished( spJob );
                 }
-                // We can now at this job to the zombie list.
-                {
-                    Guard g( m_mutex );
-                    m_lsZombieJobs.push_back( spJob );
-                }
+                /*
+                 * ROADMAP Phase 1 ("Ownership model"): let the job actually
+                 * die instead of parking it in m_lsZombieJobs forever (which
+                 * meant ~SolveJob, and therefore its per-job arena, never
+                 * ran). m_onFinished is the last consumer of this job - e.g.
+                 * the REST server's onFinished callback already called
+                 * getSolutionList() and replied to the HTTP request by the
+                 * time the call above returns - so it is safe to just let
+                 * spJob go out of scope here: it was already popped off
+                 * m_lsReadyJobs above, so this is the only remaining
+                 * reference, and the shared_ptr's refcount drops to zero.
+                 */
                 spJob->triggerRelease();
             }
             break;

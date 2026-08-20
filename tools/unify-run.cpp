@@ -133,7 +133,13 @@ int main( int argc, char** argv )
 
     vault::unify::SolveJob* pBarrier = new vault::unify::SolveJob();
     pBarrier->setWorld( rt.getWorld() );
-    pBarrier->setGoal( new vault::unify::Goal() );
+    {
+        vault::unify::Goal* pBarrierGoal = new vault::unify::Goal();
+        pBarrier->setGoal( pBarrierGoal );
+        // Adopt the empty barrier Goal so it is freed along with pBarrier
+        // itself (see ROADMAP Phase 1: SolveJob arena) instead of leaking.
+        pBarrier->adoptGoal( pBarrierGoal );
+    }
     pBarrier->onFinished(
         [&waitMutex, &waitCond, &barrierDone]( boost::shared_ptr<vault::unify::Job> ) {
             vault::unify::Guard g( waitMutex );

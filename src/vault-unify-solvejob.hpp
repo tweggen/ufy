@@ -3,6 +3,7 @@
 
 #include <map>
 #include <string>
+#include <vector>
 
 namespace vault {
 namespace unify {
@@ -130,6 +131,19 @@ public:
     int setGoal( const Goal* );
 
     /**
+     * Adopt a Goal object (typically the one just passed to setGoal())
+     * so this job takes ownership of it: it will be deleted when this
+     * job is destroyed, instead of leaking or requiring the caller to
+     * track its lifetime.
+     *
+     * ROADMAP Phase 1 (Ownership model), pass 1: this adopts only the
+     * Goal object itself, not the TERM trees it references (its
+     * m_listAbstractTerms). Those are parse-time allocations and are
+     * out of scope for this pass; do not delete them here.
+     */
+    void adoptGoal( const Goal* );
+
+    /**
      * Return a textual representation of the result bindings as key/value pairs.
      */
     SolutionListPtr getSolutionList() const;
@@ -176,7 +190,28 @@ private:
      */
     void recordError( const std::string& strError );
 
-    /** 
+    /**
+     * Adopt a UnifyContext instantiated while solving this job into the
+     * job's arena (see m_arenaUnifyContexts): it will be deleted when this
+     * job is destroyed. Returns its argument unchanged so it can be used
+     * inline at the `new` call site, e.g.
+     * `UnifyContext* uc = adoptUnifyContext( new UnifyContext( ... ) );`.
+     */
+    UnifyContext* adoptUnifyContext( UnifyContext* pUnifyContext ) {
+        m_arenaUnifyContexts.push_back( pUnifyContext );
+        return pUnifyContext;
+    }
+
+    /**
+     * Adopt a GoalPart instantiated while solving this job into the job's
+     * arena (see m_arenaGoalParts). See adoptUnifyContext().
+     */
+    GoalPart* adoptGoalPart( GoalPart* pGoalPart ) {
+        m_arenaGoalParts.push_back( pGoalPart );
+        return pGoalPart;
+    }
+
+    /**
      * The goal to solve.
      */
     const Goal* m_pGoal;
@@ -202,6 +237,21 @@ private:
     /// The list of leaf nodes containing solutions.
     std::list<UnifyContext*> m_listUnifySolutions;
 
+    /**
+     * ROADMAP Phase 1 ("Ownership model"): the per-job arena.
+     *
+     * Every UnifyContext and GoalPart instantiated while solving this job
+     * is registered here (via adoptUnifyContext()/adoptGoalPart()) and
+     * owned by this job: they are freed in ~SolveJob(), not one at a time
+     * while solving. m_listUnifySolutions above and every SolveContext's
+     * m_pUnifyContext/m_pMyGoalPart are non-owning references into these
+     * arenas - they must never be deleted directly.
+     */
+    std::vector<UnifyContext*> m_arenaUnifyContexts;
+    std::vector<GoalPart*> m_arenaGoalParts;
+
+    /// Goal objects adopted via adoptGoal(); freed in ~SolveJob().
+    std::vector<const Goal*> m_arenaGoals;
 
     Engine* m_pEngine;
 

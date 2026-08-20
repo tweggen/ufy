@@ -162,6 +162,11 @@ int RuntimeContext::parseExecuteSegment(
                 jobSolve->setWorld( m_spWorld );
                 // jobSolve->setExecutionState( m_esRoot );
                 jobSolve->setGoal( pGoal );
+                // Query Goal is only referenced (not owned) by pGoal/setGoal;
+                // adopt it here so it is deleted with the job that solves it
+                // (ROADMAP Phase 1: SolveJob arena, pass 1 - query Goal
+                // ownership).
+                jobSolve->adoptGoal( pGoal );
                 jobSolve->onFinished( onFinished );
                 VAULT_UNIFY_DI( ALWAYS, "line %d: Adding goal '%s'.\n",
                     lastStartLine,

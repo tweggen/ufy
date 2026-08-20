@@ -1419,6 +1419,12 @@ public:
      * The job and all of its resources have been released.
      * The job object itselv now can be unreferenced, i.e.
      * deleted synchronously.
+     *
+     * ROADMAP Phase 1: nothing calls this any more (executionLoop() used
+     * to park every FINISHED job in m_lsZombieJobs forever instead of
+     * letting it go out of scope; it now just lets the shared_ptr die so
+     * the job's arena is freed). Left in place, unused, in case a future
+     * consumer needs to retrieve a finished job asynchronously.
      */
     void onJobReleased( boost::shared_ptr<Job> spJob );
     // terminateJob();
@@ -1493,6 +1499,12 @@ private:
     /**
      * A list of termianted jobs, bothe regular and by exception.
      * They are waiting for somebody to read the status.
+     *
+     * ROADMAP Phase 1: no longer populated. executionLoop() used to push
+     * every FINISHED job here and never remove it (nothing calls
+     * onJobReleased()), which meant a job - and its per-job arena - was
+     * never destructed. Left declared, unused, alongside onJobReleased()
+     * in case a future asynchronous consumer needs it.
      */
     std::list<boost::shared_ptr<Job> > m_lsZombieJobs;
 
