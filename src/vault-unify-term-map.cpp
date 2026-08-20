@@ -40,11 +40,11 @@ UnifyResult MapTerm::unifyTerm(
 
 
 UnifyResult MapTerm::unifyConsTerm(
-        Engine* pEngine,
-        UnifyContext* pUCStackTop,
-        UnifyContext* pUCOther,
-        UnifyContext* pUCMine,
-        const ConsTerm* pOther ) const
+        Engine* /*pEngine*/,
+        UnifyContext* /*pUCStackTop*/,
+        UnifyContext* /*pUCOther*/,
+        UnifyContext* /*pUCMine*/,
+        const ConsTerm* /*pOther*/ ) const
 {
     // A map term does not unify with a cons term.
     return UnifyNot;

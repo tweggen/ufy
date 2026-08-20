@@ -115,11 +115,11 @@ UnifyResult ConsTerm::unifyVarTerm(
 }
 
 UnifyResult ConsTerm::unifyMapTerm(
-        Engine* pEngine,
-        UnifyContext* pUCStackTop,
-        UnifyContext* pUCOther,
-        UnifyContext* pUCMine,
-        const MapTerm* pOther ) const
+        Engine* /*pEngine*/,
+        UnifyContext* /*pUCStackTop*/,
+        UnifyContext* /*pUCOther*/,
+        UnifyContext* /*pUCMine*/,
+        const MapTerm* /*pOther*/ ) const
 {
     /*
      * These are terms of different types.

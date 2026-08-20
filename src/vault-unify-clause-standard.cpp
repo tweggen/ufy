@@ -57,7 +57,7 @@ vault::unify::Clause::UnificationState StandardClause::startUnification(
         UnifyContext* pUCOriginal,
         UnifyContext* pUCCand,
         const Goal*& out_pGoal,
-        ClauseContinuationContext*& inout_pCCC ) const
+        ClauseContinuationContext*& /*inout_pCCC*/ ) const
 {
     UnifyResult unifyResult;
 

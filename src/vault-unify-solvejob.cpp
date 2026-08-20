@@ -116,9 +116,9 @@ SolveJob::SolutionListPtr SolveJob::getSolutionList() const
                     (*m)[itVar->second] = value.c_str();
                 } else {
                     VAULT_UNIFY_DI( SOLUTION, "%lld::VT%lld" /* ",%lld" */ "= %lld does not seem to be instantiated yet.\n"
-                        , (uint64_t) aid.getUnifyContextId()
-                        , (uint64_t) aid.getVarTermId()
-                        , (uint64_t) iid
+                        , (long long) aid.getUnifyContextId()
+                        , (long long) aid.getVarTermId()
+                        , (long long) iid
                         );
                 }                    
 
@@ -356,7 +356,7 @@ int SolveJob::getDebugStack( std::list<StackFrame>& out_lsStack )
 }
 
 
-int SolveJob::getDebugProperties( std::list<DebugProperty>& out_lsProperties, uint64_t frameId )
+int SolveJob::getDebugProperties( std::list<DebugProperty>& out_lsProperties, uint64_t /*frameId*/ )
 {
     // Look up current debug location from map.
     if( !m_stackContext.empty() ) {
@@ -387,15 +387,15 @@ int SolveJob::getDebugProperties( std::list<DebugProperty>& out_lsProperties, ui
                         std::string strValue;
                         char internalName[50];
                         snprintf( internalName, 50, "%lldVT%lld" /* ",%lld" */ "IID%lld"
-                            , (uint64_t) aid.getUnifyContextId()
-                            , (uint64_t) aid.getVarTermId()
-                            , (uint64_t) iid
+                            , (long long) aid.getUnifyContextId()
+                            , (long long) aid.getVarTermId()
+                            , (long long) iid
                             );
                         if( spInstance ) {
                             const UnifyContext* pUCInstance = spInstance->getUnifyContext();
                             if( pUCInstance ) {
                                 char prefix[50];
-                                snprintf( prefix, 50, "%lld::", (uint64_t) pUCInstance->getUnifyContextId() );
+                                snprintf( prefix, 50, "%lld::", (long long) pUCInstance->getUnifyContextId() );
                                 //strValue += prefix;
                             }
                             const AbstractTerm* pTerm = spInstance->getTerm();
@@ -572,7 +572,7 @@ int SolveJob::performSlice()
 
         VAULT_UNIFY_DI( ITERATE, "Testing child clause '%s' within unify context %lld.\n"
             , cl->toString().c_str()
-            , (uint64_t) sc->m_pUnifyContext->getUnifyContextId() );
+            , (long long) sc->m_pUnifyContext->getUnifyContextId() );
 
         /*
          * We will now begin to unify the next record. 

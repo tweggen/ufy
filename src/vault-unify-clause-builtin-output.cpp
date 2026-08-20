@@ -29,7 +29,7 @@ vault::unify::Clause::UnificationState OutputBuiltinClause::startUnification(
         UnifyContext* pUCOriginal,
         UnifyContext* pUCCand,
         const Goal*& out_pGoal,
-        ClauseContinuationContext*& inout_pCCC ) const
+        ClauseContinuationContext*& /*inout_pCCC*/ ) const
 {
     // We don't unify to a particular goal.
     out_pGoal = NULL;

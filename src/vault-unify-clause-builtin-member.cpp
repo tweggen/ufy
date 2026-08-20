@@ -30,9 +30,9 @@ vault::unify::Clause::UnificationState MemberBuiltinClause::startUnification(
         Engine* pEngine,
         UnifyContext* pUCStackTop,
         UnifyContext* pUCOriginal,
-        UnifyContext* pUCCand,
+        UnifyContext* /*pUCCand*/,
         const Goal*& out_pGoal,
-        ClauseContinuationContext*& inout_pCCC ) const
+        ClauseContinuationContext*& /*inout_pCCC*/ ) const
 {
     VAULT_UNIFY_DI( UNIFY, "Called.\n" );
 

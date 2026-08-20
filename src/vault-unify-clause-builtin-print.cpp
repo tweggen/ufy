@@ -21,8 +21,8 @@ namespace vault {
 namespace unify {
 
 
-void PrintBuiltinClause::output( 
-        Engine* pEngine,
+void PrintBuiltinClause::output(
+        Engine* /*pEngine*/,
         const std::string& outputString ) const
 {
     std::cout << "print: " << outputString << std::endl;

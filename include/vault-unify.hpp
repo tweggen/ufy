@@ -155,13 +155,14 @@ struct Goal
             m_it = m_goal->m_listAbstractTerms.begin();
             m_itEnd = m_goal->m_listAbstractTerms.end();
         }
-        GoalIterator( const GoalIterator& other ) 
+        GoalIterator( const GoalIterator& other )
                 : m_goal( other.m_goal )
                 , m_idx( other.m_idx )
                 , m_it( other.m_it )
                 , m_itEnd( other.m_itEnd )
                 {}
-        
+        GoalIterator& operator=( const GoalIterator& other ) = default;
+
         virtual bool isValid() const {
             return m_goal && m_it != m_itEnd; 
         }

@@ -198,7 +198,7 @@ void Engine::addUserEventListener( UserEventListener* listener )
 }
 
 
-void Engine::removeUserEventListener( UserEventListener* listener )
+void Engine::removeUserEventListener( UserEventListener* /*listener*/ )
 {
     // TXWTODO: Write me
 }

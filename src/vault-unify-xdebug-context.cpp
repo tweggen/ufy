@@ -217,7 +217,9 @@ int XDebugContext::onConnected()
     // TXWTODO: Setup with the main file that we debug.
     std::string strFilePath;
     char cwd[PATH_MAX];
-    getcwd( cwd, sizeof( cwd ) );
+    if( !getcwd( cwd, sizeof( cwd ) ) ) {
+        cwd[0] = '\0';
+    }
     if( '/' != *m_initialFileName.c_str() ) {
 //      strFilePath = "file://localhost";
         strFilePath = "file://";
@@ -247,7 +249,7 @@ int XDebugContext::onConnected()
 
 
 
-void XDebugContext::sendRunResponse( std::string id, DebugListener::ExecutionStatus )
+void XDebugContext::sendRunResponse( std::string /*id*/, DebugListener::ExecutionStatus )
 {
 
 }

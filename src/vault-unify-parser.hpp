@@ -89,6 +89,7 @@ struct AnyTermInput {
 #endif
     {};
     AnyTermInput( const AnyTermInput& other ) : term( other.term ) {}
+    AnyTermInput& operator=( const AnyTermInput& other ) { term = other.term; return *this; }
     AnyTermInput( const ConsTermInput& cti ) : term( cti ) {}
     AnyTermInput( const MapTermInput& mti ) : term( mti ) {}
     AnyTermInput( const ArrayTermInput& ati ) : term( ati ) {}
@@ -435,7 +436,7 @@ struct annotation_f {
         do_annotate(v, f, first);
     }
   private:
-    void static do_annotate( AtomInput& ai, It f, It const first ) {
+    void static do_annotate( AtomInput& ai, It f, It const /*first*/ ) {
         ai.line   = get_line(f);
     }
     static void do_annotate(...) {}
