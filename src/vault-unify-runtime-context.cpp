@@ -187,6 +187,29 @@ int RuntimeContext::parseExecuteSegment(
     return errorCount;
 }
 
+/**
+ * ROADMAP Phase 1 (Ownership model), pass 2: frees the WorldChangeSink
+ * allocated by setupDone() below. m_pEngine is intentionally NOT deleted:
+ * Engine's worker thread (see Engine::addWorkerThread()/executionLoop())
+ * has no shutdown path yet (ROADMAP Phase 5.1), so deleting the Engine
+ * object out from under a thread that may still reference it would be
+ * unsafe; the Engine (and its thread, and its job queues) is left alive
+ * and leaked, exactly as it already was before this pass. m_spWorld (a
+ * shared_ptr) is released via ordinary member destruction right after this
+ * body returns, which runs ~World() once this is the last reference.
+ *
+ * All current callers only let a RuntimeContext go out of scope once every
+ * job it started has finished and its worker thread is idle again (see
+ * unify-run.cpp's barrier-job wait), so m_pWorldChangeSink is never in use
+ * by an in-flight performSlice() at this point.
+ */
+RuntimeContext::~RuntimeContext()
+{
+    delete m_pWorldChangeSink;
+    m_pWorldChangeSink = NULL;
+}
+
+
 int RuntimeContext::setupDone()
 {
     /*

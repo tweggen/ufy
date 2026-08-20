@@ -25,6 +25,7 @@
 #include <map>
 #include <vector>
 #include <list>
+#include <set>
 
 /*
  * Debug trace categories. Guarded so a build can override single
@@ -323,6 +324,17 @@ public:
      */
     int appendClause( WorldPtr spWorld, Clause* );
 
+    /**
+     * Collect (without deleting) every term reachable from every clause in
+     * this state, and recursively from every child state, into out_visited.
+     * Clause term trees can alias across sibling clauses (see the
+     * ownership note above AbstractTerm's collectTermTree()/deleteTermTree()
+     * declarations), so the whole ExecutionState tree must be collected
+     * into ONE de-duplicated set before anything is deleted -- see
+     * World::~World().
+     */
+    void collectAllTermTrees( std::set<const AbstractTerm*>& out_visited );
+
     Engine* m_pEngine;
     
     ExecutionState* m_pParent;
@@ -549,6 +561,41 @@ public:
 #endif
 private:
 };
+
+
+/**
+ * ROADMAP Phase 1 (Ownership model), pass 2: program-lifetime term memory.
+ *
+ * Term trees allocated at parse time (clause heads/bodies, builtin clause
+ * heads) are NOT simply "one tree per owner": AnyTermFactory
+ * (vault-unify-parser.cpp) resolves repeated variable names within one
+ * ClauseContext to the SAME VarTerm*, and that ClauseContext is shared
+ * across an entire top-level clause (its head AND its body) or an entire
+ * top-level query -- including any clause synthesized on the fly by an
+ * `if( cond ) { ... }` statement (AnyTermFactory::operator()(IfStatementInput)),
+ * which is appended as an independent Clause to the SAME database while the
+ * enclosing clause/query is still being built, and shares its guard VarTerm
+ * with the call-site term left behind in the enclosing term list.
+ *
+ * That means a term node can legitimately be reachable from more than one
+ * "owner" (a clause's own head and body; two sibling clauses in the
+ * database). Deleting such trees one owner at a time risks a double
+ * free/use-after-free. The safe pattern is: collectTermTree() every root in
+ * the whole set of trees that might alias each other into ONE
+ * std::set (which de-duplicates by pointer identity and stops recursing
+ * into anything already visited), then delete every pointer in that set
+ * exactly once -- see World::~World()/ExecutionState::collectAllTermTrees()
+ * for the concrete use (the whole clause database is one such aliasing
+ * domain).
+ *
+ * deleteTermTree() is a convenience for the simple case: a single call site
+ * that owns pTerm's entire tree exclusively, with no aliasing into anything
+ * outside that one call. Do not use it on a clause's head/body, or on
+ * anything that could have passed through an `if` statement -- use
+ * collectTermTree() into a shared set instead.
+ */
+void collectTermTree( const AbstractTerm* pTerm, std::set<const AbstractTerm*>& out_visited );
+void deleteTermTree( const AbstractTerm* pTerm );
 
 class ConsTerm;
 
@@ -1339,7 +1386,15 @@ class World
 {
 public:
     World();
-    ~World() {}
+    /**
+     * ROADMAP Phase 1 (Ownership model), pass 2: frees the clause database
+     * (every clause's head/body term trees, as one de-duplicated pass --
+     * see collectTermTree()/ExecutionState::collectAllTermTrees()), then
+     * the TermDebugInfo/FileDebugInfo entries, before the root
+     * ExecutionState (and everything it owns) is destroyed automatically
+     * right after this destructor's body returns. See vault-unify-world.cpp.
+     */
+    ~World();
 
     void init();
 
@@ -1609,6 +1664,17 @@ class FileDebugInfo;
 
 class RuntimeContext {
 public:
+
+    /**
+     * ROADMAP Phase 1 (Ownership model), pass 2: frees the WorldChangeSink
+     * allocated by setupDone(). Does NOT delete m_pEngine: Engine's worker
+     * thread has no shutdown path yet (ROADMAP Phase 5.1), so the Engine is
+     * intentionally left alive/leaked, exactly as before this pass.
+     * Releasing m_spWorld (a shared_ptr, decremented automatically via
+     * normal member destruction after this body runs) triggers ~World()
+     * once this is the last reference.
+     */
+    ~RuntimeContext();
 
     int setupDone();
 

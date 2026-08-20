@@ -16,7 +16,10 @@
 #include <vault-unification.hpp>
 
 #include <vault-unify-clause-builtin.hpp>
+#include <vault-unify-clause-standard.hpp>
 #include <vault-unify-debug.hpp>
+
+#include <set>
 
 namespace vault {
 namespace unify {
@@ -50,8 +53,53 @@ ExecutionState* ExecutionState::fork()
 }
 
 
+/**
+ * ROADMAP Phase 1 (Ownership model), pass 2. See the ownership note above
+ * collectTermTree()/deleteTermTree() in vault-unify.hpp: clause term trees
+ * can alias across sibling clauses (`if` desugaring), so the WHOLE tree of
+ * ExecutionStates must be walked into one de-duplicated set before any of
+ * it is deleted. World::~World() does that before the root ExecutionState
+ * (and this destructor, recursively) run, so by the time we get here,
+ * deleting the Clause/ExecutionState *objects* is safe: Clause::~Clause()
+ * and StandardClause::~StandardClause() no longer touch term memory.
+ */
+void ExecutionState::collectAllTermTrees( std::set<const AbstractTerm*>& out_visited )
+{
+    std::list<Clause*>::const_iterator itClause, itClauseEnd = m_listClauses.end();
+    for( itClause = m_listClauses.begin(); itClause != itClauseEnd; ++itClause ) {
+        const Clause* pClause = *itClause;
+        collectTermTree( pClause->leftHandTerm(), out_visited );
+
+        const StandardClause* pStandardClause = dynamic_cast<const StandardClause*>( pClause );
+        if( pStandardClause && pStandardClause->rightHandGoal() ) {
+            const Goal* pGoal = pStandardClause->rightHandGoal();
+            std::list<const AbstractTerm*>::const_iterator itTerm, itTermEnd = pGoal->m_listAbstractTerms.end();
+            for( itTerm = pGoal->m_listAbstractTerms.begin(); itTerm != itTermEnd; ++itTerm ) {
+                collectTermTree( *itTerm, out_visited );
+            }
+        }
+    }
+
+    std::list<ExecutionState*>::const_iterator itChild, itChildEnd = m_listChildStates.end();
+    for( itChild = m_listChildStates.begin(); itChild != itChildEnd; ++itChild ) {
+        (*itChild)->collectAllTermTrees( out_visited );
+    }
+}
+
+
 ExecutionState::~ExecutionState()
 {
+    std::list<ExecutionState*>::const_iterator itChild, itChildEnd = m_listChildStates.end();
+    for( itChild = m_listChildStates.begin(); itChild != itChildEnd; ++itChild ) {
+        delete *itChild;
+    }
+    m_listChildStates.clear();
+
+    std::list<Clause*>::const_iterator itClause, itClauseEnd = m_listClauses.end();
+    for( itClause = m_listClauses.begin(); itClause != itClauseEnd; ++itClause ) {
+        delete *itClause;
+    }
+    m_listClauses.clear();
 }
 
 

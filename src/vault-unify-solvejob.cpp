@@ -835,10 +835,11 @@ SolveJob::~SolveJob()
      *    own them separately and must never be walked here, or those
      *    UnifyContexts would be double-freed.
      *
-     * 3) The Goal(s) adopted via adoptGoal(). Pass 1 (this change) only
-     *    adopts the Goal object itself, not the TERM trees it references -
-     *    those are parse-time allocations, out of scope here (see
-     *    adoptGoal()'s doc comment).
+     * 3) The Goal(s) adopted via adoptGoal(). Only the Goal object itself
+     *    is deleted, not the TERM trees it references - see adoptGoal()'s
+     *    doc comment for why pass 2 (program-lifetime cleanup) still
+     *    leaves those alone (they can alias a clause added straight to
+     *    World's database by an `if` statement inside this query).
      */
     while( !m_stackContext.empty() ) {
         SolveContext* sc = m_stackContext.back();

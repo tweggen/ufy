@@ -263,21 +263,26 @@ const std::string MapTerm::toContextString(
 
 
 
+/**
+ * ROADMAP Phase 1 (Ownership model), pass 2: the Atom* keys are allocated
+ * fresh for this MapTerm alone (AnyTermFactory::operator()(ArrayTermInput)/
+ * operator()(MapTermInput), vault-unify-parser.cpp -- each entry gets its
+ * own `new Atom`, never shared with any other MapTerm), so freeing them
+ * here is safe regardless of when/how this destructor runs.
+ *
+ * The AbstractTerm* VALUES are intentionally NOT freed here: they are
+ * ordinary child terms reachable via abstractTermIterator() (see the
+ * TermIterator above), so they are already covered by whatever
+ * collectTermTree()/deleteTermTree() pass is deleting this MapTerm itself
+ * (see the ownership note in vault-unify.hpp). Deleting them here too would
+ * double-free them.
+ */
 MapTerm::~MapTerm()
 {
-#if 0
-    // TXWTODO: Do we really need to delete the contents here?
-
-    +
-    +
-    while( !m_mapContents.empty() ) {
-        MapTermMap::iterator itBegin = m_mapContents.begin();
-        MapTermValue mapPair = itBegin->second;
-        m_mapContents.erase( itBegin );
-        delete mapPair.first;
-        delete mapPair.second;
+    MapTermMap::const_iterator it, itEnd = m_mapContents.end();
+    for( it = m_mapContents.begin(); it != itEnd; ++it ) {
+        delete it->second.first;
     }
-#endif
 }
 
 

@@ -121,6 +121,14 @@ vault::unify::Clause::UnificationState OutputBuiltinClause::startUnification(
 }
 
 
+/**
+ * ROADMAP Phase 1 (Ownership model), pass 2: the head term passed to the
+ * base Clause() constructor is not freed here (or in Clause::~Clause()) --
+ * it is freed once, as part of the whole clause-database de-duplicated
+ * pass World::~World() performs before any Clause object is destroyed. See
+ * the ownership note on collectTermTree()/deleteTermTree() in
+ * vault-unify.hpp.
+ */
 OutputBuiltinClause::~OutputBuiltinClause()
 {
 }

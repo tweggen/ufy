@@ -172,6 +172,8 @@ vault::unify::Clause::UnificationState MemberBuiltinClause::startUnification(
 }
 
 
+// See OutputBuiltinClause::~OutputBuiltinClause() (vault-unify-clause-builtin-output.cpp)
+// for why the head term is not freed here.
 MemberBuiltinClause::~MemberBuiltinClause()
 {
 }

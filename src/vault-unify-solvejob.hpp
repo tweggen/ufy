@@ -136,10 +136,25 @@ public:
      * job is destroyed, instead of leaking or requiring the caller to
      * track its lifetime.
      *
-     * ROADMAP Phase 1 (Ownership model), pass 1: this adopts only the
-     * Goal object itself, not the TERM trees it references (its
-     * m_listAbstractTerms). Those are parse-time allocations and are
-     * out of scope for this pass; do not delete them here.
+     * ROADMAP Phase 1 (Ownership model): this adopts only the Goal object
+     * itself, not the TERM trees it references (its m_listAbstractTerms).
+     *
+     * Pass 1 left those out of scope as parse-time allocations. Pass 2
+     * (program-lifetime cleanup) deliberately still does not free them,
+     * for a stronger reason than "out of scope": a query's goal terms can
+     * alias the clause database. If the query contains an
+     * `if( cond ) { ... }` statement, AnyTermFactory::operator()(IfStatementInput)
+     * (vault-unify-parser.cpp) appends a synthesized clause straight into
+     * World's root ExecutionState WHILE building this query's own term
+     * list, and that clause's head shares its guard VarTerm with the
+     * call-site term left behind in this Goal (both come from the same
+     * ClauseContext, not reset in between). World outlives every SolveJob,
+     * so if ~SolveJob() deleted that shared VarTerm here, World's later,
+     * de-duplicated clause-database cleanup (see World::~World()) would
+     * delete an already-freed pointer. See test/conformance/if-statement.ufy
+     * for a golden test that exercises exactly this construct inside a
+     * query. Do not delete m_listAbstractTerms here without also solving
+     * that aliasing.
      */
     void adoptGoal( const Goal* );
 

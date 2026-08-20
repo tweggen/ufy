@@ -85,6 +85,58 @@ const TermTraversable* Goal::GoalIterator::getTermTraversable() const {
     return dynamic_cast<const TermTraversable*>( *m_it );
 }
 
+
+/**
+ * ROADMAP Phase 1 (Ownership model), pass 2. See the ownership note above
+ * the declarations of collectTermTree()/deleteTermTree() in vault-unify.hpp.
+ *
+ * Walks pTerm's children generically via the existing TermTraversable /
+ * AbstractTermIterator machinery (ConsTerm's sub-terms, MapTerm's values;
+ * VarTerm is a leaf and returns a NULL iterator), rather than reaching into
+ * ConsTerm/MapTerm internals directly.
+ */
+void collectTermTree( const AbstractTerm* pTerm, std::set<const AbstractTerm*>& out_visited )
+{
+    if( !pTerm ) {
+        return;
+    }
+    if( !out_visited.insert( pTerm ).second ) {
+        // Already visited (an aliased/shared sub-term) -- do not recurse
+        // into it again.
+        return;
+    }
+
+    AbstractTermIterator* pIt = pTerm->abstractTermIterator();
+    if( pIt ) {
+        while( pIt->isValid() ) {
+            const TermTraversable* pChildTraversable = pIt->getTermTraversable();
+            if( pChildTraversable ) {
+                const AbstractTerm* pChildTerm = dynamic_cast<const AbstractTerm*>( pChildTraversable );
+                if( pChildTerm ) {
+                    collectTermTree( pChildTerm, out_visited );
+                }
+            }
+            pIt->next();
+        }
+        delete pIt;
+    }
+}
+
+
+void deleteTermTree( const AbstractTerm* pTerm )
+{
+    if( !pTerm ) {
+        return;
+    }
+    std::set<const AbstractTerm*> visited;
+    collectTermTree( pTerm, visited );
+    std::set<const AbstractTerm*>::const_iterator it, itEnd = visited.end();
+    for( it = visited.begin(); it != itEnd; ++it ) {
+        delete *it;
+    }
+}
+
+
 };
 };
 
