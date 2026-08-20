@@ -137,8 +137,12 @@ void SolveJob::discardTop( SolveContext*& sc )
     VAULT_UNIFY_DI( UNIFY, "Popping Solve context.\n" );
     SolveContext* scTop = m_stackContext.back();
     if( sc != scTop ) {
-        // TXWTODO: Debug code.
-        abort();
+        // TXWTODO: This invariant (sc must be the current stack top) should never be
+        // violated. Rather than aborting the whole process, log and back out, treating
+        // this as "nothing to discard" so the caller can keep running.
+        VAULT_UNIFY_DI( ALWAYS, "Internal error in discardTop(): sc (%p) does not match m_stackContext.back() (%p). Not discarding.\n",
+            (void*) sc, (void*) scTop );
+        return;
     }
     m_stackContext.pop_back();
     delete sc;

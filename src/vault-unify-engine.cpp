@@ -225,7 +225,16 @@ void Engine::emitEvent( const std::string& str )
 void Engine::addWorkerThread()
 {
     VAULT_UNIFY_DI( SCHEDULE, "Adding new worker thread.\n" );
-    boost::thread btWorker( &Engine::executionLoop, this );
+    /*
+     * Modern boost::thread (like std::thread) calls std::terminate() if a
+     * still-joinable thread object is destroyed. A local here would go out
+     * of scope (and terminate the process) as soon as this function
+     * returns, so keep it alive on the heap, owned by the engine.
+     * TXWTODO: join on engine shutdown (ROADMAP Phase 5.1)
+     */
+    boost::thread* pbtWorker = new boost::thread( &Engine::executionLoop, this );
+    Guard g( m_mutex );
+    m_lsWorkerThreads.push_back( pbtWorker );
 }
 
 

@@ -1490,6 +1490,15 @@ private:
     bool m_isDebugHalted;
 
     DebugListener::ChangeReason m_lastDebugTargetState;
+
+    /**
+     * Worker threads started by addWorkerThread(). Kept here so the
+     * boost::thread objects stay alive for the life of the engine instead
+     * of being destroyed (and calling std::terminate() on a still-joinable
+     * thread) as soon as addWorkerThread() returns.
+     * TXWTODO: join on engine shutdown (ROADMAP Phase 5.1)
+     */
+    std::list<boost::thread*> m_lsWorkerThreads;
 };
 
 
