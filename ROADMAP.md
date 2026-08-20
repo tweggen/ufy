@@ -105,9 +105,12 @@ Goal: defined semantics, defined ownership, real error reporting.
       leaks per program are (a) parser-side orphan terms — intermediates
       built during desugaring and then replaced, never owned (e.g. test2
       14,065 B/523 allocs ≈ its pre-teardown baseline, i.e. the clause DB
-      itself is fully freed) — and (b) per-query goal term trees, deferred
-      because the current if-desugaring aliases their VarTerms into the
-      clause database (fix planned together with the if statement).)*
+      itself is fully freed) — and (b) *(resolved)* per-query goal term
+      trees: freed by `~SolveJob` since the if-statement rework removed the
+      aliasing (conformance programs dropped to 360–975 B). Reaching zero
+      now only needs the parser-orphan cleanup: intermediate terms built
+      during AST→term conversion and then replaced (e.g. by the `->`
+      desugaring) that no owner ever adopts.)*
 - [ ] Run the test suite under ASan/LeakSanitizer; zero leaks per query.
       *(2026-08-20: `UNIFY_SANITIZE` CMake option + a `sanitize` CI job now
       build and run the golden-output suite under ASan+UBSan with leak
