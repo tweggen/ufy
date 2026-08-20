@@ -53,18 +53,35 @@ Sketched but not functional (these drive the roadmap):
 Goal: build cleanly and reproducibly, and put a safety net under all later
 refactoring. Nothing else starts before the test harness exists.
 
-- [ ] Port the build to CMake (or pin the exact boost version for Boot.Jam);
+- [x] Port the build to CMake (or pin the exact boost version for Boot.Jam);
       dependencies via vcpkg or Conan.
+      *(2026-08-20: `CMakeLists.txt` with `vault-unify-core` static lib,
+      `UNIFY_BUILD_XDEBUG` / `UNIFY_BUILD_REST` options, and a new
+      `tools/unify-run.cpp` CLI runner. Boost comes from the system package
+      in CI for now; compile validation happens on the Linux CI job below —
+      the Windows dev machine has no Boost toolchain.)*
 - [ ] Build clean on a modern compiler with `-Wall -Wextra`; fix or triage
-      every warning.
-- [ ] Remove committed backup files (`*.cpp~`, `*.ufy~`) and add them to
+      every warning. *(Flags are wired into CMake; awaiting the first Linux
+      CI build for the actual warning list.)*
+- [x] Remove committed backup files (`*.cpp~`, `*.ufy~`) and add them to
       `.gitignore`.
 - [ ] Golden-output test harness: run a `.ufy` program, diff emitted solutions
       against an expected file. Seed from `test-engine.ufy`, `test2.ufy`,
       `test/mapsyntax.ufy`, `pathfinder.ufy`.
-- [ ] Wire the harness into CI (even a single GitHub Actions job on Linux).
-- [ ] Remove the debug `abort()` in `SolveJob::discardTop()`; return/log an
+      *(Harness landed: `test/run-golden-test.sh` + CTest registration with
+      skip-until-golden semantics and `UNIFY_UPDATE_GOLDEN=1` regeneration.
+      Still open: the golden `.expected` files themselves — bootstrap them
+      from the `unify-sample-outputs` artifact of the first green CI run,
+      see `test/golden/README.md`.)*
+- [x] Wire the harness into CI (even a single GitHub Actions job on Linux).
+      *(`.github/workflows/unify-ci.yml`: Ubuntu + apt Boost, build, ctest,
+      sample-output artifact for golden-file bootstrapping.)*
+- [x] Remove the debug `abort()` in `SolveJob::discardTop()`; return/log an
       internal error instead.
+- [x] *(Found during the port)* Fix `Engine::addWorkerThread()` destroying a
+      joinable `boost::thread` (would `std::terminate()` with modern Boost);
+      threads are now kept in `Engine::m_lsWorkerThreads`, to be joined once
+      a shutdown path exists (Phase 5.1).
 
 ## Phase 1 — Correctness core
 
