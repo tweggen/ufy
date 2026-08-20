@@ -178,8 +178,14 @@ the reference workload).
       comparisons are goals with numeric-then-string semantics, int64,
       division by zero → UnifyError. SPEC.md §4.1; conformance goldens
       pin precedence, negatives, and silent comparison failure.)*
-- [ ] Cut (`!` in Prolog's sense) or a committed-choice construct; reconcile
+- [x] Cut (`!` in Prolog's sense) or a committed-choice construct; reconcile
       with the current prefix-`!` negation syntax.
+      *(2026-08-20: the keyword goal `cut;` — prefix `!` stays negation.
+      Standard clause-scoped Prolog semantics incl. query-level cut,
+      implemented as a solver-level prune (clause-iterator invalidation
+      from stack top through the entry context). `if` gained a cut after
+      its condition and is now a true committed if-then-else. Conformance
+      goldens pin all four cut behaviours.)*
 - [ ] `findall` / aggregation over solutions.
 - [ ] String operations (concat, compare, match).
 - [ ] Runtime `assert` / `retract` — required for device/sensor state changes.
