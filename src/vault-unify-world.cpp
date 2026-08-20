@@ -47,7 +47,7 @@ namespace unify {
  *    them, in case that ever changes. This is done first, while every
  *    AbstractTerm* map key (whatever it points at, or used to) is still
  *    exactly the value it was inserted with; nothing here dereferences a
- *    key, only the mapped TermDebugInfo*/FileDebugInfo* values.
+ *    key, only the mapped TermDebugInfo / FileDebugInfo pointer values.
  *
  * 2) Clause database term trees. Every clause's head term, and (for
  *    StandardClause) every term in its body Goal's list, across the WHOLE
