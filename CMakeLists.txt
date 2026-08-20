@@ -28,6 +28,10 @@
 #                       one POSIX ::access() call in vault-unify-xdebug.cpp,
 #                       so it is excluded by default on non-UNIX platforms
 #                       rather than patched.
+#   UNIFY_SANITIZE      (default empty) comma-separated -fsanitize= value(s),
+#                       e.g. "address,undefined". Applied to both targets via
+#                       add_compile_options/add_link_options. Not supported
+#                       under MSVC.
 #
 
 cmake_minimum_required(VERSION 3.16)
@@ -40,6 +44,19 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "Build type" FORCE)
+endif()
+
+# UNIFY_SANITIZE: comma-separated -fsanitize= value(s), e.g. "address,undefined".
+# Empty (the default) builds with no sanitizer. This is a standalone project
+# with exactly two targets (vault-unify-core, unify-run), so applying the
+# flags directory-wide via add_compile_options/add_link_options here -- rather
+# than duplicating target_compile_options/target_link_options on each target
+# -- is the simplest correct approach; it also automatically reaches the
+# test/ subdirectory's targets, if any. Not supported under MSVC.
+set(UNIFY_SANITIZE "" CACHE STRING "Sanitizer(s) to build with (e.g. 'address,undefined'); empty disables")
+if(NOT MSVC AND UNIFY_SANITIZE)
+    add_compile_options(-fsanitize=${UNIFY_SANITIZE} -fno-omit-frame-pointer)
+    add_link_options(-fsanitize=${UNIFY_SANITIZE})
 endif()
 
 option(UNIFY_BUILD_REST "Build the REST server frontend (needs cpprestsdk + rest-server)" OFF)

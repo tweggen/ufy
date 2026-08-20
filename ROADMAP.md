@@ -101,6 +101,13 @@ Goal: defined semantics, defined ownership, real error reporting.
       freed when the job's results are consumed. (This legitimizes the current
       allocate-freely style instead of fighting it.)
 - [ ] Run the test suite under ASan/LeakSanitizer; zero leaks per query.
+      *(2026-08-20: `UNIFY_SANITIZE` CMake option + a `sanitize` CI job now
+      build and run the golden-output suite under ASan+UBSan with leak
+      detection disabled, gating CI on memory errors (use-after-free,
+      overflow, UB) immediately; an informational, non-gating leak report
+      (`unify-leak-report` artifact) runs the sample programs with leak
+      detection on, to track progress towards the zero-leaks exit criterion
+      here, which still requires the Ownership model item above.)*
 - [ ] Re-enable Spirit `on_error` handlers; parse errors report file, line,
       column and the offending line.
 - [ ] Propagate `UnifyError` as an error (with message) instead of mapping it
