@@ -1,0 +1,16 @@
+// Conformance: strings and numbers as atoms (SPEC.md sections 1 and 6).
+// The lexer routes identifiers, digit runs and quoted strings through the
+// same m_ruleAtom alternative (ClauseParser ctor, vault-unify-parser.hpp),
+// and AnyTermFactory::operator()(ConsTermInput) builds a ConsTerm/Atom from
+// the resulting name regardless of which alternative matched. So a quoted
+// string, a bareword atom and a digit run with the same spelling are the
+// *same* atom and unify with each other.
+
+code( "205" );
+label( ok );
+
+code( $c ); print( $c ); ?
+205 = "205"; print( "number-equals-quoted-string" ); ?
+label( "ok" ); print( "quoted-string-matches-bareword-fact" ); ?
+"abc" = abc; print( "quoted-string-matches-bareword-atom" ); ?
+1 = 2; print( "should-not-print-different-numbers" ); ?

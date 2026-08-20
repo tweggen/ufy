@@ -1,0 +1,12 @@
+// Conformance: infix '=' (SPEC.md section 4 and 8).
+// The parser desugars `lhs = rhs` into a goal unify(lhs, rhs)
+// (AnyTermFactory::operator()(InfixTermsInput), op=='='), resolved by
+// UnifyBuiltinClause (vault-unify-clause-builtin-unify.cpp), which just
+// forwards to the normal double-dispatch unifyTerm on its two arguments.
+
+to_1( $a ) { $a = 1; }
+
+to_1( $v ); print( $v ); ?
+1 = 1; print( "equal-constants" ); ?
+1 = 2; print( "should-not-print-unequal-constants" ); ?
+$w = five; print( $w ); ?

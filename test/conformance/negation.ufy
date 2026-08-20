@@ -1,0 +1,13 @@
+// Conformance: prefix '!' negation-as-failure (SPEC.md section 7).
+// UnifyContext::getUnificationResult(): if negated and the underlying
+// unification actually matched, the negation fails; if it did not match
+// but a clause of the same name+arity was found (m_foundClause), the
+// negation succeeds; if no clause of that name+arity exists at all, the
+// negation ALSO fails (QUIRK: this differs from textbook NAF, where an
+// undefined goal's negation should succeed).
+
+fruit( apple );
+
+!fruit( apple ); print( "should-not-print-fact-holds" ); ?
+!fruit( banana ); print( "negation-succeeds-arg-mismatch" ); ?
+!nosuchpredicate( x ); print( "should-not-print-undefined-predicate" ); ?

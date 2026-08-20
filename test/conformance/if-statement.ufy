@@ -1,0 +1,19 @@
+// Conformance: `if (cond) { ... }` (SPEC.md sections 4 and 9).
+// QUIRK: AnyTermFactory::operator()(IfStatementInput)
+// (vault-unify-parser.cpp) never reads ifStatementInput.lhs -- the
+// condition is parsed but silently discarded. The synthesized clause's
+// body is instead guarded by a fresh, never-bound variable used directly
+// as a goal term, which can never unify with anything (SolveJob::
+// startUnification requires a ConsTerm to even attempt a match). So as
+// implemented today, BOTH branches below are unreachable: the "before"
+// print runs (side effects already happened), but the if body's print and
+// everything queued after the if in the same query never run, regardless
+// of the condition written.
+
+print( "before-true-attempt" );
+if( anything ) { print( "true-branch" ); }
+print( "after-true-attempt" ); ?
+
+print( "before-false-attempt" );
+if( nothing ) { print( "false-branch" ); }
+print( "after-false-attempt" ); ?

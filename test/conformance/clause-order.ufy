@@ -1,0 +1,10 @@
+// Conformance: clause selection order (SPEC.md section 5).
+// ExecutionState::ClauseIterator yields clauses of a state in the order
+// they were appended (list::push_back), i.e. textual definition order.
+// Expect one "print:" line per fact, in the order the facts appear below.
+
+color( red );
+color( green );
+color( blue );
+
+color( $x ); print( $x ); ?

@@ -1,0 +1,9 @@
+// Conformance: map/map unification (SPEC.md section 6).
+// MapTerm::unifyMapTerm requires equal size first, then walks both maps'
+// (std::map-sorted) key/value pairs pairwise: same key set required, and
+// every value at a shared key must itself unify. Any key/size mismatch
+// fails the whole unification (no partial/subset match).
+
+{ x: 1, y: 2 } = { x: 1, y: 2 }; print( "maps-equal" ); ?
+{ x: 1, y: 2 } = { x: 1, y: 3 }; print( "should-not-print-value-mismatch" ); ?
+{ x: 1, y: 2 } = { x: 1 }; print( "should-not-print-size-mismatch" ); ?

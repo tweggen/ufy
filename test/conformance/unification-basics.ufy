@@ -1,0 +1,13 @@
+// Conformance: basic ConsTerm unification (SPEC.md section 6).
+// - An unbound var unifies with (binds to) whatever constant it is matched
+//   against (VarTerm::unifyConsTerm / genericUnifyVarWithKnown).
+// - Two cons terms with the same name but different arity never unify
+//   (ConsTerm::unifyConsTerm), so a mismatched call fails silently: it
+//   produces no solution and thus no "print:" line at all.
+
+number( one );
+pair( a, b );
+
+number( $x ); print( $x ); ?
+pair( $y, $z ); print( $y ); ?
+pair( a, b, c ); print( "should-not-print-arity-mismatch" ); ?

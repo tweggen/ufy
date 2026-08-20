@@ -1,0 +1,13 @@
+// Conformance: '->' member deref (SPEC.md section 4 and 8).
+// The parser desugars `expr -> key` into a pre-goal
+// __builtin_member_deref(expr, key, $__N) plus a fresh var $__N substituted
+// in place of the expression (Context::createGoal /
+// AnyTermFactory::operator()(InfixTermsInput), op=='\0'). The builtin
+// (vault-unify-clause-builtin-member.cpp) fails silently if the key is not
+// present in the map, which fails the whole enclosing goal.
+
+place( { name: "kitchen", level: 1 } );
+
+place( $p ); print( $p->name ); ?
+place( $p ); print( $p->level ); ?
+place( $p ); print( $p->missing ); ?

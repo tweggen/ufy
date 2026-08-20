@@ -109,8 +109,13 @@ Goal: defined semantics, defined ownership, real error reporting.
       test-engine 1,312 B/49 allocs, mapsyntax 3,072 B/120,
       test2 14,129 B/524, pathfinder 19,497 B/745. Reaching zero leaks
       still requires the Ownership model item above.)*
-- [ ] Re-enable Spirit `on_error` handlers; parse errors report file, line,
+- [x] Re-enable Spirit `on_error` handlers; parse errors report file, line,
       column and the offending line.
+      *(Implemented at the `phrase_parse` call site instead: the grammar has
+      no expectation points, so `on_error<fail>` could never fire. gcc-style
+      diagnostics on stderr; `parseExecuteSegment` returns the error count;
+      `unify-run` exits 1 on parse errors; negative golden test
+      `test/parse-error.ufy` pins the behaviour.)*
 - [ ] Propagate `UnifyError` as an error (with message) instead of mapping it
       to "did not unify".
 - [ ] Write a short language spec (`SPEC.md`): clause selection order,

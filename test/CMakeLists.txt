@@ -76,3 +76,48 @@ set_tests_properties("unify-golden-parse-error" PROPERTIES
     TIMEOUT 120
     ENVIRONMENT "UNIFY_EXPECT_EXIT=1"
 )
+
+#
+# Conformance tests (ROADMAP.md Phase 1: "Add a conformance test per rule",
+# see ../SPEC.md). Each program in test/conformance/ exercises exactly one
+# rule documented in SPEC.md; the expected output for each is derived by
+# hand in that program's own header comment (see SPEC.md for the citations
+# backing that prediction). Same harness, same golden-file conventions as
+# UNIFY_GOLDEN_TESTS above; golden files live at
+# golden/conformance-<name>.expected and, like the pre-existing sample
+# programs, do not exist yet in this environment (no Boost toolchain here
+# to build unify-run and generate them) -- these tests SKIP until a golden
+# file is generated on a machine that can build the module.
+#
+
+set(UNIFY_CONFORMANCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/conformance")
+
+# name -> path to the .ufy program (relative to test/conformance/).
+set(UNIFY_CONFORMANCE_TESTS
+    "clause-order|${UNIFY_CONFORMANCE_DIR}/clause-order.ufy"
+    "unification-basics|${UNIFY_CONFORMANCE_DIR}/unification-basics.ufy"
+    "map-unify|${UNIFY_CONFORMANCE_DIR}/map-unify.ufy"
+    "deref|${UNIFY_CONFORMANCE_DIR}/deref.ufy"
+    "infix-unify|${UNIFY_CONFORMANCE_DIR}/infix-unify.ufy"
+    "negation|${UNIFY_CONFORMANCE_DIR}/negation.ufy"
+    "if-statement|${UNIFY_CONFORMANCE_DIR}/if-statement.ufy"
+    "strings-numbers|${UNIFY_CONFORMANCE_DIR}/strings-numbers.ufy"
+)
+
+foreach(UNIFY_CONFORMANCE_TEST ${UNIFY_CONFORMANCE_TESTS})
+    string(REPLACE "|" ";" UNIFY_CONFORMANCE_TEST_PARTS "${UNIFY_CONFORMANCE_TEST}")
+    list(GET UNIFY_CONFORMANCE_TEST_PARTS 0 UNIFY_CONFORMANCE_NAME)
+    list(GET UNIFY_CONFORMANCE_TEST_PARTS 1 UNIFY_CONFORMANCE_PROGRAM)
+
+    add_test(
+        NAME "unify-golden-conformance-${UNIFY_CONFORMANCE_NAME}"
+        COMMAND "${BASH_PROGRAM}" "${UNIFY_GOLDEN_RUNNER}"
+                "$<TARGET_FILE:unify-run>"
+                "${UNIFY_CONFORMANCE_PROGRAM}"
+                "${UNIFY_GOLDEN_DIR}/conformance-${UNIFY_CONFORMANCE_NAME}.expected"
+    )
+    set_tests_properties("unify-golden-conformance-${UNIFY_CONFORMANCE_NAME}" PROPERTIES
+        SKIP_RETURN_CODE 77
+        TIMEOUT 120
+    )
+endforeach()
