@@ -171,6 +171,9 @@ void World::init()
     m_rootState.appendClause( spWorld, new PrintBuiltinClause() );
     m_rootState.appendClause( spWorld, new EmitBuiltinClause() );
     m_rootState.appendClause( spWorld, new MemberBuiltinClause() );
+    // ROADMAP Phase 2: Arithmetic and comparison builtins (SPEC.md).
+    m_rootState.appendClause( spWorld, new ArithEvalBuiltinClause() );
+    m_rootState.appendClause( spWorld, new CompareBuiltinClause() );
 }
 
 

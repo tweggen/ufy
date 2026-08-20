@@ -1253,7 +1253,61 @@ public:
     UnifyContext(
             UnifyContext* parentUnifyContext,
             const GoalPartCursor& itTerm,
-            const ExecutionState::ClauseIterator& itClause ); 
+            const ExecutionState::ClauseIterator& itClause );
+
+    /**
+     * ROADMAP Phase 2 (Arithmetic and comparison builtins): frees terms
+     * adopted via adoptTerm() below. See adoptTerm()'s comment for why
+     * this is a NEW ownership need distinct from every other term this
+     * module allocates: everywhere else, a term built at parse time is
+     * reachable from a Goal/clause head that an existing sweep already
+     * frees (World::~World() / ~SolveJob(), both via collectTermTree()),
+     * and a term built at solve time by e.g. UnifyBuiltinClause/
+     * MemberBuiltinClause is never a NEW allocation -- it is always one of
+     * the existing goal/clause terms it was handed. ArithEvalBuiltinClause
+     * (vault-unify-clause-builtin-arith.cpp) is the first builtin to
+     * allocate a genuinely new term (the evaluated numeric result) at
+     * solve time: nothing else points at it structurally (it is reachable
+     * only via whatever VarTerm binding it gets unified into, and
+     * VarTerm::abstractTermIterator() returns NULL -- collectTermTree()
+     * never follows a variable's runtime binding, by design, only the
+     * static term tree), so it would otherwise leak.
+     *
+     * This destructor only ever needs to `delete` a leaf (0-arity) atom
+     * ConsTerm -- see adoptTerm()'s comment -- so a plain, non-recursive
+     * delete is correct and sufficient; no collectTermTree()-style
+     * traversal is needed here.
+     */
+    ~UnifyContext();
+
+    /**
+     * Adopt pTerm (built fresh at solve time, e.g. an evaluated arithmetic
+     * result) into THIS UnifyContext: it is deleted in ~UnifyContext().
+     * This UnifyContext is itself always one of the per-job arena entries
+     * in SolveJob::m_arenaUnifyContexts (every UnifyContext instantiated
+     * while solving a job is adopted there via
+     * SolveJob::adoptUnifyContext() -- see that class), so pTerm's
+     * lifetime becomes tied to the job's own arena cleanup in
+     * ~SolveJob(), exactly like everything else that job owns.
+     *
+     * Only ever used for a single, freshly allocated 0-arity ConsTerm
+     * (see ArithEvalBuiltinClause::startUnification(),
+     * vault-unify-clause-builtin-arith.cpp) -- never for a term shared
+     * with, or reachable from, any clause/query term tree, so there is no
+     * risk of this colliding with collectTermTree()'s de-duplicated
+     * sweeps (World::~World(), ~SolveJob()'s Goal-arena cleanup): those
+     * never reach an adopted term in the first place (see this class's
+     * destructor comment), and this method is never called twice for the
+     * same pTerm.
+     *
+     * Returns its argument unchanged so it can be used inline at the `new`
+     * call site, matching the existing adoptUnifyContext()/adoptGoalPart()
+     * idiom (SolveJob, vault-unify-solvejob.hpp).
+     */
+    AbstractTerm* adoptTerm( AbstractTerm* pTerm ) {
+        m_lsAdoptedTerms.push_back( pTerm );
+        return pTerm;
+    }
 
     std::string toString() const;
     
@@ -1393,6 +1447,12 @@ public:
      * Wether we found a clause to match by signature.
      */
     bool m_foundClause;
+
+    /**
+     * Terms adopted via adoptTerm() (see its comment): freed one at a
+     * time (plain `delete`, not collectTermTree()) in ~UnifyContext().
+     */
+    std::vector<AbstractTerm*> m_lsAdoptedTerms;
 };
 
 

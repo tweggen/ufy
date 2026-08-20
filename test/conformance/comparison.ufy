@@ -1,0 +1,57 @@
+// Conformance: comparison goals (SPEC.md sections 4 and 8).
+// `lhs OP rhs;` (OP in `< <= > >= == !=`) desugars to
+// `__builtin_compare("OP", lhs, rhs)`
+// (AnyTermFactory::operator()(const CompareTermInput&),
+// vault-unify-parser.cpp), resolved by CompareBuiltinClause
+// (vault-unify-clause-builtin-arith.cpp): numeric (int64) comparison when
+// both sides resolve to integers (including through an arithmetic
+// sub-expression, e.g. `2 + 3 == 5`), lexicographic string comparison
+// otherwise. A comparison that does not hold simply fails the goal -- the
+// same silent failure every other unification failure in this engine has
+// (no print, no error).
+
+query {
+    5 < 10;
+    print( "five-less-than-ten" );
+}
+
+query {
+    10 < 5;
+    print( "should-not-print-ten-less-than-five" );
+}
+
+query {
+    "abc" < "abd";
+    print( "string-comparison" );
+}
+
+query {
+    5 == 5;
+    print( "numbers-equal" );
+}
+
+query {
+    5 != 6;
+    print( "numbers-not-equal" );
+}
+
+query {
+    5 <= 5;
+    print( "less-equal-holds" );
+}
+
+query {
+    6 >= 5;
+    print( "greater-equal-holds" );
+}
+
+query {
+    2 + 3 == 5;
+    print( "arithmetic-in-comparison" );
+}
+
+query {
+    $x = 7;
+    $x >= 7;
+    print( "variable-comparison" );
+}

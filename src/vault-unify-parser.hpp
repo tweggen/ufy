@@ -59,6 +59,8 @@ struct ConsTermInput;
 struct InfixTermsInput;
 struct PrefixTermInput;
 struct MapPairInput;
+struct ArithTermInput;
+struct CompareTermInput;
 
 struct MapTermInput {
     MapTermInput() {};
@@ -73,17 +75,19 @@ struct ArrayTermInput {
 
 typedef boost::variant<
 #if USE_NIL
-        unifynil, 
+        unifynil,
 #endif
         boost::recursive_wrapper<ConsTermInput>,
         boost::recursive_wrapper<MapTermInput>,
         boost::recursive_wrapper<ArrayTermInput>,
         boost::recursive_wrapper<PrefixTermInput>,
-        boost::recursive_wrapper<InfixTermsInput>
+        boost::recursive_wrapper<InfixTermsInput>,
+        boost::recursive_wrapper<ArithTermInput>,
+        boost::recursive_wrapper<CompareTermInput>
         > AnyTermRecursiveType;
 
 struct AnyTermInput {
-    AnyTermInput() 
+    AnyTermInput()
 #if USE_NIL
     : term( unifynil() )
 #endif
@@ -95,6 +99,17 @@ struct AnyTermInput {
     AnyTermInput( const ArrayTermInput& ati ) : term( ati ) {}
     AnyTermInput( const PrefixTermInput& pti ) : term( pti ) {}
     AnyTermInput( const InfixTermsInput& iti ) : term( iti ) {}
+    // Arithmetic ('*','/','+','-') and comparison ('==','!=','<=','>=',
+    // '<','>') precedence levels, inserted between m_rulePrefixTerm and
+    // m_ruleInfixTerm ('=') -- ROADMAP Phase 2 "Arithmetic and comparison
+    // builtins" (see SPEC.md). Each level's own struct doubles as an
+    // AnyTermInput variant alternative for the same reason PrefixTermInput/
+    // InfixTermsInput above do: the ENCLOSING level's field type is
+    // AnyTermInput, so Spirit needs this converting ctor to build one from
+    // whatever concrete attribute type the next level down actually
+    // produces.
+    AnyTermInput( const ArithTermInput& ati ) : term( ati ) {}
+    AnyTermInput( const CompareTermInput& cti ) : term( cti ) {}
 
     AnyTermRecursiveType term;
 };
@@ -130,6 +145,47 @@ struct PrefixTermInput {
 
     boost::optional<char> first;
     InfixTermsInput rhs;
+};
+
+
+/**
+ * One (operator, operand) step of a left-associative multiplicative
+ * ('*','/') or additive ('+','-') chain -- e.g. `a * b / c` is
+ * ArithTermInput{ lhs=a, rhsList=[ {op='*',second=b}, {op='/',second=c} ] }.
+ * Both m_ruleMultiplicative and m_ruleAdditive produce this same struct
+ * (only the set of operator characters the grammar rule matches differs);
+ * AnyTermFactory::operator()(const ArithTermInput&) folds rhsList
+ * left-to-right regardless of which level produced it, since precedence
+ * is already resolved by the grammar's nesting.
+ */
+struct ArithTermRhsInput {
+    ArithTermRhsInput() {}
+    char op;
+    AnyTermInput second;
+};
+
+struct ArithTermInput {
+    ArithTermInput() {}
+    AnyTermInput lhs;
+    std::vector<ArithTermRhsInput> rhsList;
+};
+
+
+/**
+ * Comparison level ('==','!=','<=','>=','<','>'): single-shot (at most one
+ * operator), non-associative -- `a < b < c` is not meaningful here and is
+ * not supported, matching the task's design (SPEC.md).
+ */
+struct CompareTermRhsInput {
+    CompareTermRhsInput() {}
+    std::string op;
+    AnyTermInput second;
+};
+
+struct CompareTermInput {
+    CompareTermInput() {}
+    AnyTermInput lhs;
+    boost::optional<CompareTermRhsInput> rhs;
 };
 
 
@@ -250,6 +306,30 @@ BOOST_FUSION_ADAPT_STRUCT(
     vault::unify::PrologParser::PrefixTermInput,
     (boost::optional<char>, first)
     (vault::unify::PrologParser::InfixTermsInput, rhs)
+)
+
+BOOST_FUSION_ADAPT_STRUCT(
+    vault::unify::PrologParser::ArithTermRhsInput,
+    (char, op)
+    (vault::unify::PrologParser::AnyTermInput, second)
+)
+
+BOOST_FUSION_ADAPT_STRUCT(
+    vault::unify::PrologParser::ArithTermInput,
+    (vault::unify::PrologParser::AnyTermInput, lhs)
+    (std::vector<vault::unify::PrologParser::ArithTermRhsInput>, rhsList)
+)
+
+BOOST_FUSION_ADAPT_STRUCT(
+    vault::unify::PrologParser::CompareTermRhsInput,
+    (std::string, op)
+    (vault::unify::PrologParser::AnyTermInput, second)
+)
+
+BOOST_FUSION_ADAPT_STRUCT(
+    vault::unify::PrologParser::CompareTermInput,
+    (vault::unify::PrologParser::AnyTermInput, lhs)
+    (boost::optional<vault::unify::PrologParser::CompareTermRhsInput>, rhs)
 )
 
 BOOST_FUSION_ADAPT_STRUCT(
@@ -523,8 +603,39 @@ public:
                 -qi::char_( '-' ) >> m_ruleAssignmentPart
             ;
 
+        // Arithmetic/comparison precedence levels (ROADMAP Phase 2,
+        // SPEC.md section 4): inserted between m_rulePrefixTerm and the
+        // existing '=' level (m_ruleInfixTerm). Binary '-' is included
+        // alongside '+ * /' -- see SPEC.md for the trace showing this does
+        // not conflict with the hyphens used elsewhere in this grammar
+        // (they all belong to the quoted-string rule m_unescapedString or
+        // to the unrelated "->" token, never to a bareword).
+        // NOTE: deliberately NOT qi::char_("*/") / qi::char_("+-") -- a
+        // char-set string spec treats "ch1-ch2" as an inclusive range, and
+        // while a trailing/leading lone '-' with no partner char cannot
+        // form one, spelling the alternatives out avoids any doubt (in
+        // particular, must never accidentally include ',', the argument
+        // separator, in the additive operator set).
+        m_ruleMultiplicative %=
+                ( m_rulePrefixTerm >> *( ( qi::char_( '*' ) | qi::char_( '/' ) ) >> m_rulePrefixTerm ) )
+            ;
+
+        m_ruleAdditive %=
+                ( m_ruleMultiplicative >> *( ( qi::char_( '+' ) | qi::char_( '-' ) ) >> m_ruleMultiplicative ) )
+            ;
+
+        // Longest-match ordering matters: "=="/"!="/"<="/">=" must be tried
+        // before "<"/">" so e.g. `a <= b` cannot half-match as `a < ...`.
+        m_ruleComparison %=
+                ( m_ruleAdditive >> -(
+                        ( qi::string( "==" ) | qi::string( "!=" )
+                        | qi::string( "<=" ) | qi::string( ">=" )
+                        | qi::string( "<" )  | qi::string( ">" ) )
+                    >> m_ruleAdditive ) )
+            ;
+
         m_ruleInfixTerm %=
-                ( m_rulePrefixTerm >> ( -( qi::char_( "=" ) >> m_rulePrefixTerm ) ) )
+                ( m_ruleComparison >> ( -( qi::char_( "=" ) >> m_ruleComparison ) ) )
             ;
 
         m_ruleAnyTerm %=
@@ -579,6 +690,9 @@ public:
         m_ruleConsTerm.name( "ConsTerm" );
         m_ruleInfixTerm.name( "InfixTerm" );
         m_rulePrefixTerm.name( "PrefixTerm" );
+        m_ruleMultiplicative.name( "Multiplicative" );
+        m_ruleAdditive.name( "Additive" );
+        m_ruleComparison.name( "Comparison" );
         m_ruleAssignmentPart.name( "AssignmentPart" );
         m_ruleMapPair.name( "MapPair" );
         m_ruleMapTerm.name( "MapTerm" );
@@ -656,6 +770,9 @@ public:
     qi::rule<Iterator, ConsTermInput(), Skipper> m_ruleConsTerm;
     qi::rule<Iterator, InfixTermsInput(), Skipper> m_ruleInfixTerm;
     qi::rule<Iterator, PrefixTermInput(), Skipper> m_rulePrefixTerm;
+    qi::rule<Iterator, ArithTermInput(), Skipper> m_ruleMultiplicative;
+    qi::rule<Iterator, ArithTermInput(), Skipper> m_ruleAdditive;
+    qi::rule<Iterator, CompareTermInput(), Skipper> m_ruleComparison;
     qi::rule<Iterator, InfixTermsInput(), Skipper> m_ruleAssignmentPart;
     qi::rule<Iterator, InfixTermsInput(), Skipper> m_ruleArrayDeref;
     qi::rule<Iterator, MapPairInput(), Skipper> m_ruleMapPair;

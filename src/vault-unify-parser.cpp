@@ -234,7 +234,72 @@ public:
         return termResult;
     }
 
-    vault::unify::AbstractTerm* operator()( const InfixTermsInput& infixTermsInput ) const 
+    /**
+     * Fold a multiplicative ('*','/') or additive ('+','-') chain
+     * left-to-right into nested `__builtin_arith(opAtom, lhs, rhs)`
+     * ConsTerms -- e.g. `2 + 3 * 4` (parsed as additive(lhs=2,
+     * rhsList=[{op='+',second=multiplicative(lhs=3,
+     * rhsList=[{op='*',second=4}])}])) becomes
+     * `__builtin_arith("+", 2, __builtin_arith("*", 3, 4))`. Both
+     * m_ruleMultiplicative and m_ruleAdditive produce this same
+     * ArithTermInput struct; precedence is already resolved by the
+     * grammar's nesting (a multiplicative chain is always fully built
+     * before it ever becomes one operand of an enclosing additive chain),
+     * so this fold does not need to know which level it came from.
+     *
+     * Every ConsTerm allocated here (the op atom and the __builtin_arith
+     * wrapper) becomes part of the enclosing clause/query's own term
+     * tree exactly like any other ConsTerm this factory builds -- reachable
+     * from the flat Goal term list Context::createGoal() assembles, and
+     * freed by the same collectTermTree()-based sweep that already owns
+     * every other parse-time term (World::~World() for a clause,
+     * ~SolveJob() for a query). No new ownership mechanism is needed here.
+     */
+    vault::unify::AbstractTerm* operator()( const ArithTermInput& arithTermInput ) const
+    {
+        vault::unify::AbstractTerm* acc = (*this)( arithTermInput.lhs );
+
+        std::vector<ArithTermRhsInput>::const_iterator it, itEnd = arithTermInput.rhsList.end();
+        for( it = arithTermInput.rhsList.begin(); it != itEnd; ++it ) {
+            vault::unify::AbstractTerm* rhsTerm = (*this)( it->second );
+            std::string opStr( 1, it->op );
+            vault::unify::ConsTerm* pOpAtom = new vault::unify::ConsTerm( opStr.c_str() );
+            vault::unify::ConsTerm* pArith = new vault::unify::ConsTerm(
+                "__builtin_arith", pOpAtom, acc, rhsTerm );
+            acc = pArith;
+        }
+
+        return acc;
+    }
+
+    /**
+     * Comparison level ('==','!=','<=','>=','<','>'): single-shot, unlike
+     * the arithmetic chain above. No operator present -> just the lhs,
+     * unchanged (the same "single operand" fast path InfixTermsInput uses
+     * below). Otherwise builds `__builtin_compare(opAtom, lhs, rhs)`,
+     * resolved by CompareBuiltinClause
+     * (vault-unify-clause-builtin-arith.cpp). Ownership: same reasoning as
+     * operator()(const ArithTermInput&) above -- ordinary parse-time
+     * ConsTerms, no new ownership mechanism needed.
+     */
+    vault::unify::AbstractTerm* operator()( const CompareTermInput& compareTermInput ) const
+    {
+        vault::unify::AbstractTerm* lhs = (*this)( compareTermInput.lhs );
+
+        if( !compareTermInput.rhs ) {
+            return lhs;
+        }
+        const CompareTermRhsInput& cmpRhs = compareTermInput.rhs.get();
+        vault::unify::AbstractTerm* rhs = (*this)( cmpRhs.second );
+
+        vault::unify::ConsTerm* pOpAtom = new vault::unify::ConsTerm( cmpRhs.op.c_str() );
+        vault::unify::ConsTerm* pCompare = new vault::unify::ConsTerm(
+            "__builtin_compare", pOpAtom, lhs, rhs );
+
+        return pCompare;
+    }
+
+    vault::unify::AbstractTerm* operator()( const InfixTermsInput& infixTermsInput ) const
     {
         vault::unify::AbstractTerm *lhs, *rhs, *out_pAbstractTerm = NULL;
         vault::unify::AbstractTerm *pPreGoal1 = NULL;
@@ -289,9 +354,45 @@ public:
 
             break;
         }
-        case '=':
-            atomName = "unify";
+        case '=': {
+            // Arithmetic-in-'=' desugar (ROADMAP Phase 2, SPEC.md section
+            // 4): if either side is a `__builtin_arith` tree (built by
+            // operator()(const ArithTermInput&) above), unify's plain
+            // structural-equality semantics would never match it against
+            // the evaluated result, so `=` means something different here:
+            // evaluate the arithmetic side and unify the *result* with the
+            // other side, via `__builtin_eval(arithSide, otherSide)`
+            // (ArithEvalBuiltinClause, vault-unify-clause-builtin-arith.cpp).
+            // A plain `=` between ordinary terms (neither side arithmetic)
+            // is completely unchanged: still "unify".
+            //
+            // If BOTH sides happen to be arithmetic (e.g. `$x + 1 = $y + 2`),
+            // the lhs wins arbitrarily (not a case any conformance test or
+            // sample program exercises; not over-engineered here) -- the
+            // rhs is then unified as a structural term against the
+            // computed number, which simply will not unify.
+            vault::unify::ConsTerm* pLhsCons = dynamic_cast<vault::unify::ConsTerm*>( lhs );
+            vault::unify::ConsTerm* pRhsCons = dynamic_cast<vault::unify::ConsTerm*>( rhs );
+            bool lhsIsArith = pLhsCons && 3==pLhsCons->getArity()
+                && pLhsCons->getName().value() == "__builtin_arith";
+            bool rhsIsArith = pRhsCons && 3==pRhsCons->getArity()
+                && pRhsCons->getName().value() == "__builtin_arith";
+
+            if( lhsIsArith || rhsIsArith ) {
+                atomName = "__builtin_eval";
+                if( lhsIsArith ) {
+                    out_pAbstractTerm = new vault::unify::ConsTerm( atomName.c_str(), lhs, rhs );
+                } else {
+                    out_pAbstractTerm = new vault::unify::ConsTerm( atomName.c_str(), rhs, lhs );
+                }
+                if( pTermDebugInfo ) {
+                    spWorld->setTermDebugInfo( out_pAbstractTerm, pTermDebugInfo );
+                }
+            } else {
+                atomName = "unify";
+            }
             break;
+        }
         case '[':
             atomName = "__builtin_array_deref";
             break;

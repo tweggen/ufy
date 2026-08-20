@@ -105,7 +105,60 @@ public:
         UnifyContext* pUCOriginal,
         UnifyContext* pUCCand,
         const Goal*& out_pGoal,
-        ClauseContinuationContext*& inout_pCCC ) const;    
+        ClauseContinuationContext*& inout_pCCC ) const;
+};
+
+
+/**
+ * ROADMAP Phase 2: "Arithmetic and comparison builtins with a defined
+ * evaluation construct" (SPEC.md). What `$y = $x + 1;` desugars to when
+ * either side of `=` contains arithmetic operators
+ * (AnyTermFactory::operator()(const InfixTermsInput&), case '=',
+ * vault-unify-parser.cpp): evaluates the `__builtin_arith(...)` tree given
+ * as its first argument (int64 semantics; leading '-' accepted when
+ * reading a number; division by zero is a `UnifyError`) and unifies the
+ * (possibly negative) result -- a fresh atom, e.g. "-5" -- with its second
+ * argument.
+ */
+class ArithEvalBuiltinClause
+        : public SimpleBuiltinClause
+{
+public:
+    ArithEvalBuiltinClause();
+    virtual ~ArithEvalBuiltinClause();
+
+    virtual vault::unify::Clause::UnificationState startUnification(
+        Engine* pEngine,
+        UnifyContext* pUCStackTop,
+        UnifyContext* pUCOriginal,
+        UnifyContext* pUCCand,
+        const Goal*& out_pGoal,
+        ClauseContinuationContext*& inout_pCCC ) const;
+};
+
+
+/**
+ * ROADMAP Phase 2: what a comparison goal (`$x < 5;`, plus `<= > >= == !=`)
+ * desugars to (AnyTermFactory::operator()(const CompareTermInput&),
+ * vault-unify-parser.cpp). Numeric (int64) comparison when both resolved
+ * sides are integer atoms (or evaluate to one via `__builtin_arith`);
+ * lexicographic string comparison otherwise. Succeeds (`UnifyLast`) or
+ * fails (`UnifyNot`); an unresolved/unbound side is a `UnifyError`.
+ */
+class CompareBuiltinClause
+        : public SimpleBuiltinClause
+{
+public:
+    CompareBuiltinClause();
+    virtual ~CompareBuiltinClause();
+
+    virtual vault::unify::Clause::UnificationState startUnification(
+        Engine* pEngine,
+        UnifyContext* pUCStackTop,
+        UnifyContext* pUCOriginal,
+        UnifyContext* pUCCand,
+        const Goal*& out_pGoal,
+        ClauseContinuationContext*& inout_pCCC ) const;
 };
 
 

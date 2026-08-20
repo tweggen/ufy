@@ -102,6 +102,8 @@ set(UNIFY_CONFORMANCE_TESTS
     "negation|${UNIFY_CONFORMANCE_DIR}/negation.ufy"
     "if-statement|${UNIFY_CONFORMANCE_DIR}/if-statement.ufy"
     "strings-numbers|${UNIFY_CONFORMANCE_DIR}/strings-numbers.ufy"
+    "arithmetic|${UNIFY_CONFORMANCE_DIR}/arithmetic.ufy"
+    "comparison|${UNIFY_CONFORMANCE_DIR}/comparison.ufy"
 )
 
 foreach(UNIFY_CONFORMANCE_TEST ${UNIFY_CONFORMANCE_TESTS})

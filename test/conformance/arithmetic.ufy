@@ -1,0 +1,40 @@
+// Conformance: arithmetic in '=' (SPEC.md sections 4 and 8).
+// `$y = <expr>;` desugars to `__builtin_eval(<expr>, $y)` whenever either
+// side of `=` contains an arithmetic operator (`+ - * /`)
+// (AnyTermFactory::operator()(const InfixTermsInput&), case '=',
+// vault-unify-parser.cpp), resolved by ArithEvalBuiltinClause
+// (vault-unify-clause-builtin-arith.cpp). int64 semantics: '*'/'/' bind
+// tighter than '+'/'-', both left-associative; '/' is C++ integer division
+// (truncates toward zero); a result may be negative, printed with a
+// leading '-' (e.g. "-7"); division by zero is a UnifyError, which fails
+// the goal silently from stdout's point of view (no print reached).
+
+query {
+    $y = 2 + 3 * 4;
+    print( $y );
+}
+
+query {
+    $y = 2 + 3 * 4 - 1;
+    print( $y );
+}
+
+query {
+    $y = 20 / 4 + 1;
+    print( $y );
+}
+
+query {
+    $y = 10 - 3;
+    print( $y );
+}
+
+query {
+    $y = 3 - 10;
+    print( $y );
+}
+
+query {
+    $y = 5 / 0;
+    print( "should-not-print-division-by-zero" );
+}

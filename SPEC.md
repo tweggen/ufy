@@ -47,10 +47,14 @@ reset after each clause/query (`clauseContext.reset()`,
 so variable scope is exactly one clause body or one top-level query.
 
 **Numbers**: `m_ruleNumber %= + qi::char_("0-9");` — unsigned digit runs
-only; no floats, no literal negative numbers (the `-` prefix does something
-else entirely, section 4). A number reaches the same `m_ruleAtom`
-alternative as an identifier or string and becomes an ordinary 0-arity
-`ConsTerm` — **numbers are not a distinct term kind** (sections 6, 9).
+only; no floats, no literal negative numbers written by hand (the leading
+`-` prefix rule does something else entirely, section 4). A number reaches
+the same `m_ruleAtom` alternative as an identifier or string and becomes an
+ordinary 0-arity `ConsTerm` — **numbers are not a distinct term kind**
+(sections 6, 9). That said, an *evaluated* arithmetic result (section 4.1)
+can be negative — its atom text simply carries a leading `-` (e.g. `"-7"`),
+and both arithmetic evaluation and comparison accept that leading `-` when
+reading a number back in.
 
 **Strings**: `m_unescapedString %= qi::lit('"') >> qi::no_skip[
 *(m_unescapedChar | "\\x" >> qi::hex | qi::char_ - '"' - '\\') ] >>
@@ -74,7 +78,7 @@ top-level query: `m_ruleEvent %= (m_ruleQuery) | (m_ruleClause);`.
 (`src/vault-unify-runtime-context.cpp`) parses one event at a time; each
 clause is appended to the root execution state immediately, each query
 spawns a `SolveJob` immediately (section 5) — so later events only ever see
-earlier clauses (plus the four builtins, registered up front by
+earlier clauses (plus the six builtins, registered up front by
 `World::init`, `src/vault-unify-world.cpp`).
 
 **Facts/rules**: `m_ruleClause %= (m_ruleConsTerm >> '{' >> m_ruleGoal >>
@@ -278,6 +282,125 @@ feature; no existing sample program uses prefix `-`, and it is not covered
 by a dedicated conformance test (documenting it here was judged more
 valuable than a ninth program for an effectively-dead operator).
 
+### 4.1 Arithmetic and comparison expressions (ROADMAP Phase 2)
+
+Grammar precedence chain, each level inserted between the pre-existing
+`m_rulePrefixTerm` (leading `-`, section 4 above) and `m_ruleInfixTerm`
+(`=`, below), narrowest-binding first:
+
+| level              | operators                          | associativity   |
+|---------------------|------------------------------------|-----------------|
+| `m_ruleMultiplicative` | `*` `/`                          | left            |
+| `m_ruleAdditive`       | `+` `-`                          | left            |
+| `m_ruleComparison`     | `==` `!=` `<=` `>=` `<` `>`      | none (single-shot) |
+| `m_ruleInfixTerm`      | `=`                               | (unchanged, section 4) |
+
+`m_ruleComparison`'s operator alternative tries the two-character operators
+before the one-character ones (`qi::string("==") | "!=" | "<=" | ">=" |
+"<" | ">"`), so `a <= b` cannot half-match as `a < ...` followed by a
+dangling `=`; conversely `!=` cannot be confused with the *prefix* `!`
+(section 4 above), since that only ever matches at the very start of a
+`SingleGoal`, never mid-expression. There is no parenthesized grouping
+(`(...)`) for sub-expressions — the only place `(` is grammatically valid
+is immediately after an atom, as a call's argument list
+(`m_ruleConsTerm %= m_ruleAtom >> -('(' >> ... >> ')')`) — so precedence can
+only be overridden by the table above, not by parentheses.
+
+**Binary `-` trace (why it does not conflict with existing hyphens)**:
+`test2.ufy`/`pathfinder.ufy` contain hyphenated text like `"m1-sc01-ro01"`
+and `"ozw0x0184e7b70x05"`; every such hyphen, without exception (checked by
+searching every `.ufy` file in this module), appears **inside a quoted
+string literal**. A string is consumed as one atomic token by
+`m_unescapedString` (section 1) — `qi::char_ - '"' - '\\'` accepts a bare
+`-` exactly like any other non-quote, non-backslash character — entirely
+inside `m_ruleAtom`, several precedence levels below where a bareword's
+individual characters would ever reach the new multiplicative/additive
+rules. The grammar never even *tries* to interpret a hyphen as an operator
+until after the enclosing string's closing `"` has already been consumed
+whole. The only two other hyphen appearances in this module's `.ufy`
+sources are `->` (member deref, its own two-character `qi::lit` token,
+matched before `m_rulePrefixTerm`'s lone `-` ever gets a chance — section
+4) and Prolog-style `:-` in `pathfinder.ufy`'s single (already
+non-conforming, non-`.ufy`-grammar) rule head, unrelated to this grammar's
+`-` handling entirely. So introducing binary `-` changes nothing about how
+either sample program parses; `+ * /` and `-` are all implemented in v1.
+
+**`lhs OP rhs`** (comparison goal, e.g. `$x < 5;`):
+`AnyTermFactory::operator()(const CompareTermInput&)` builds
+`__builtin_compare(opAtom, lhs, rhs)` (`opAtom` a 0-arity `ConsTerm` holding
+the operator text, e.g. `"<"`), resolved by `CompareBuiltinClause`
+(section 8). No operator present (the common case — every ordinary term
+still flows through this level) just returns `lhs` unchanged, exactly like
+`InfixTermsInput`'s existing single-operand fast path.
+
+**`lhs + rhs` / `lhs * rhs` / ...** (arithmetic sub-expression):
+`AnyTermFactory::operator()(const ArithTermInput&)` folds a
+multiplicative/additive chain left-to-right into nested
+`__builtin_arith(opAtom, lhs, rhs)` `ConsTerm`s, e.g. `2 + 3 * 4` becomes
+`__builtin_arith("+", 2, __builtin_arith("*", 3, 4))`. This alone is inert
+— nothing matches `__builtin_arith` as a goal name — it only ever appears
+as a sub-term inside `__builtin_eval`'s or `__builtin_compare`'s arguments.
+
+**`lhs = rhs` with arithmetic** — dual behavior of `=`:
+`AnyTermFactory::operator()(const InfixTermsInput&)`, `case '=':`, now
+checks whether either already-built side is a `__builtin_arith` `ConsTerm`
+(arity 3, name `"__builtin_arith"`). If so, it desugars to
+`__builtin_eval(arithSide, otherSide)` instead of `unify(lhs, rhs)`
+(`ArithEvalBuiltinClause`, section 8) — evaluating the arithmetic side and
+unifying the *result* with the other side, since plain structural `unify`
+could never match an unevaluated `__builtin_arith` tree against a number. A
+plain `=` between two ordinary terms (neither side arithmetic) is
+completely unchanged — still `unify(lhs, rhs)`. If *both* sides happen to
+contain arithmetic (e.g. `$x + 1 = $y + 2`), the left side is evaluated and
+the right side is unified, unevaluated, against the result — an unlikely
+construct no sample program or conformance test uses, deliberately not
+over-engineered further.
+
+**Evaluation semantics**: int64 only (no floats); `evaluateArith()`
+(`vault-unify-clause-builtin-arith.cpp`, shared by both builtins below)
+resolves a `VarTerm` via `AbstractTerm::getBoundTerm()` (an unbound
+variable is a `UnifyError`), evaluates a `__builtin_arith` node bottom-up,
+and otherwise requires a 0-arity `ConsTerm` atom whose text parses fully as
+an int64 (`strtoll` plus a full-string check, so e.g. `"12abc"` is rejected,
+not silently truncated) — a leading `-` is accepted when reading (section
+1). `/` is C++ integer division (truncates toward zero); dividing by zero
+is a `UnifyError`, which — like any other `UnifyError` — fails that one
+candidate (there is exactly one `__builtin_eval`/`__builtin_compare`
+clause, so the whole goal position then fails) and is recorded on the
+`SolveJob` (`getErrorCount()`/`getLastError()`), which `unify-run` surfaces
+via its exit code (ROADMAP Phase 1) — see
+`test/conformance/arithmetic.ufy`'s division-by-zero query for a
+demonstration (no stdout, but the run does not exit clean).
+
+**Comparison semantics**: each side is resolved the same way arithmetic
+operands are (`resolveCompareSide()`), additionally evaluating a
+`__builtin_arith` side to an int64 first. If *both* resolved sides are
+integers (whether from a plain numeric atom or an evaluated arithmetic
+expression), the operator applies to the int64 values; otherwise both
+sides' raw atom text is compared lexicographically (`std::string::compare`)
+— so `"abc" < "abd"` works, and mixing a numeric side with a non-numeric
+one falls back to comparing their textual forms. Succeeds (`UnifyLast`) or
+fails (`UnifyNot`) like any other goal; an unresolved/unbound operand is a
+`UnifyError`, same as evaluation. See `test/conformance/comparison.ufy`.
+
+**Ownership of the evaluated result**: `ArithEvalBuiltinClause` is the
+first builtin in this module to allocate a genuinely *new* term at solve
+time (the freshly computed numeric result) rather than reusing one already
+in the goal/clause tree. Nothing reaches it structurally (only a `VarTerm`
+binding does, and `VarTerm::abstractTermIterator()` returns `NULL`, so the
+existing `collectTermTree()`-based sweeps — `World::~World()`,
+`~SolveJob()` — never see it), so it needs its own ownership:
+`UnifyContext::adoptTerm()` (`include/vault-unify.hpp`) registers it, and
+the new `~UnifyContext()` frees every adopted term with a plain `delete`
+(never a recursive `collectTermTree()` walk — every adopted term today is
+always exactly one leaf 0-arity atom, never a subtree). Every `UnifyContext`
+is itself always one of `SolveJob`'s own per-job arena entries
+(`m_arenaUnifyContexts`, `vault-unify-solvejob.hpp`), so the adopted term's
+lifetime rides along with the job's existing arena cleanup in
+`~SolveJob()`.
+
+---
+
 **`if (cond) { body }` — soft-if, `( cond, body ; true )`**:
 `AnyTermFactory::operator()(const IfStatementInput&)` builds `cond`
 (`ifStatementInput.lhs`, a single goal) and `body`
@@ -319,8 +442,10 @@ and `test/conformance/if-statement.ufy` for what that means in practice.
 **Clause database**: one `ExecutionState` per `World`
 (`World::m_rootState`, `include/vault-unify.hpp`). `World::init()`
 (`src/vault-unify-world.cpp`) appends, in order, `UnifyBuiltinClause`,
-`PrintBuiltinClause`, `EmitBuiltinClause`, `MemberBuiltinClause`, before any
-source-file clause is parsed. `ExecutionState::appendClause` always
+`PrintBuiltinClause`, `EmitBuiltinClause`, `MemberBuiltinClause`,
+`ArithEvalBuiltinClause`, `CompareBuiltinClause` (section 8, the last two
+ROADMAP Phase 2), before any source-file clause is parsed.
+`ExecutionState::appendClause` always
 `push_back`s (`src/vault-unify-execution-state.cpp`), so **clause order
 within one predicate name is exactly source definition order** (builtins
 first, then facts/rules top-to-bottom) — see
@@ -502,7 +627,7 @@ from being bound by whichever candidate does end up contributing
 
 ## 8. Builtins
 
-All four appended to the root state, in this order, before any user clause
+All six appended to the root state, in this order, before any user clause
 (`World::init`, `src/vault-unify-world.cpp`).
 
 **`unify($a, $b)`** — `UnifyBuiltinClause`
@@ -553,6 +678,28 @@ unifies the value against argument 2. A missing key, non-map left side, or
 non-atom key all fail the whole goal silently — see
 `test/conformance/deref.ufy`.
 
+**`__builtin_eval($expr, $out)`** — `ArithEvalBuiltinClause`
+(`src/vault-unify-clause-builtin-arith.cpp`, ROADMAP Phase 2). What
+`$y = <expr>;` desugars to whenever `<expr>` (or the other side of `=`)
+contains an arithmetic operator (section 4.1). Head declared arity 2,
+checked manually like `unify`. Evaluates argument 0 (`evaluateArith()`,
+same file) and unifies the result — a fresh, `UnifyContext::adoptTerm()`-
+owned 0-arity `ConsTerm` atom holding the decimal (possibly `-`-prefixed)
+value — against argument 1. An unbound variable, a non-numeric atom, or
+division by zero anywhere in the expression is a `UnifyError` (section
+4.1).
+
+**`__builtin_compare($op, $a, $b)`** — `CompareBuiltinClause`
+(`src/vault-unify-clause-builtin-arith.cpp`, ROADMAP Phase 2). What a
+comparison goal (`$x < 5;` and the other five operators) desugars to
+(section 4.1). Head declared arity 3, checked manually. Resolves argument 0
+to an atom (the operator text) and arguments 1/2 via the same resolution
+`__builtin_eval` uses (evaluating a `__builtin_arith` side, if present);
+numeric (int64) comparison if both resolved sides are integers,
+lexicographic string comparison otherwise. Unlike every builtin above, this
+one can genuinely fail *without* being a syntax/name/arity mismatch — a
+false comparison is `UnifyNot`, same as any other failed goal.
+
 ---
 
 ## 9. Known deviations and quirks
@@ -575,8 +722,10 @@ All verified by direct code reading, collected here for quick reference.
   prints the line after the `if` twice for exactly this reason).
 - Strings, bareword atoms, and digit runs all fold into the same atom
   representation by spelling; a quoted string and a bareword atom (or
-  number) with the same spelling are the same term (sections 1, 6). No
-  arithmetic exists anywhere in this module as a consequence.
+  number) with the same spelling are the same term (sections 1, 6). This
+  is also why a numeric-looking atom that arrived via a quoted string
+  (`"5"`) is just as usable in arithmetic/comparison as a bareword digit
+  run (section 4.1) — both are the same atom.
 - `SolveJob::startUnification`'s per-candidate prefilter gates on **name
   only**; the neighboring arity check only feeds `m_foundClause`
   (negation, section 7) and does not itself block a wrong-arity
@@ -592,10 +741,12 @@ All verified by direct code reading, collected here for quick reference.
   they print/emit however many arguments the goal literally has, comma
   joined (section 8).
 - Builtin predicate names (`unify`, `print`, `emit`,
-  `__builtin_member_deref`) are appended before any user clause; a user
-  rule reusing one of those names would not shadow the builtin — both would
-  each contribute a solution branch, since every same-named candidate is
-  tried (section 5).
+  `__builtin_member_deref`, `__builtin_eval`, `__builtin_compare`,
+  `__builtin_arith`) are appended before any user clause (the last one is
+  never a clause name — it only ever appears as a sub-term, section 4.1); a
+  user rule reusing one of those names would not shadow the builtin — both
+  would each contribute a solution branch, since every same-named candidate
+  is tried (section 5).
 - `ExecutionState::fork()` and the resulting parent-state clause fallback
   are fully implemented but never invoked anywhere in this module today
   (section 5) — not a bug, just currently-unused machinery.

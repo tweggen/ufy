@@ -397,7 +397,7 @@ UnifyResult UnifyContext::getUnificationResult() const
 UnifyContext::UnifyContext(
         UnifyContext* parentUnifyContext,
         const GoalPartCursor& csTerm,
-        const ExecutionState::ClauseIterator& itClause ) 
+        const ExecutionState::ClauseIterator& itClause )
     : m_pParentUnifyContext( parentUnifyContext )
     , m_csTermToUnify( csTerm )
     , m_pGoal( NULL )
@@ -409,6 +409,21 @@ UnifyContext::UnifyContext(
 {
     static UnifyContextId uidNextUnifyContext = 1;
     m_uidUnifyContext = ++uidNextUnifyContext;
+}
+
+
+/**
+ * See adoptTerm()'s comment (include/vault-unify.hpp) for why this exists
+ * and why a plain, non-recursive `delete` per adopted term is correct and
+ * sufficient (every adopted term today is a single leaf 0-arity ConsTerm,
+ * never a subtree).
+ */
+UnifyContext::~UnifyContext()
+{
+    std::vector<AbstractTerm*>::const_iterator it, itEnd = m_lsAdoptedTerms.end();
+    for( it = m_lsAdoptedTerms.begin(); it != itEnd; ++it ) {
+        delete *it;
+    }
 }
 
 
