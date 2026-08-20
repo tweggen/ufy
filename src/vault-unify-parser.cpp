@@ -414,14 +414,17 @@ public:
     }
 
     /**
-     * `if( cond ) { body }` -- SOFT-IF semantics (SPEC.md sections 4, 9):
-     * like Prolog's `( cond, body ; true )`. Desugars to a two-clause
-     * auxiliary predicate appended to World's root ExecutionState:
+     * `if( cond ) { body }` -- real if-then-else semantics (SPEC.md
+     * sections 4, 9; ROADMAP Phase 2 "Cut"): like Prolog's
+     * `( cond, !, body ; true )`. Desugars to a two-clause auxiliary
+     * predicate appended to World's root ExecutionState:
      *
-     *   __if_N( V1..Vk ) { clonedCond; clonedBody...; }   // then-branch,
+     *   __if_N( V1..Vk ) { clonedCond; __builtin_cut; clonedBody...; }
+     *                                                      // then-branch,
      *                                                      // tried first
      *   __if_N( V1..Vk );                                 // fallback,
-     *                                                      // always succeeds
+     *                                                      // tried only if
+     *                                                      // cond fails
      *
      * plus a call site __if_N( origV1..origVk ) spliced into the
      * ENCLOSING goal chain in place of the `if` statement. V1..Vk are the
@@ -437,12 +440,19 @@ public:
      * enclosing clause/query, killing the aliasing the previous
      * (broken -- see git history / ROADMAP) desugaring relied on.
      *
-     * Caveat (SPEC.md section 9): there is no cut yet (ROADMAP Phase 2),
-     * so on backtracking -- which this engine always performs while
-     * searching for further solutions, see SPEC.md section 5 -- the
-     * fallback clause can still be tried after cond already succeeded
-     * once, resurrecting the "skip" branch. See
-     * test/conformance/if-statement.ufy for a concrete demonstration.
+     * The `__builtin_cut` inserted right after clonedCond (see below) is
+     * the reserved term SolveJob::performSlice() (vault-unify-solvejob.cpp)
+     * recognizes directly -- once cond succeeds for the first time, it
+     * commits: no further clause is tried for the __if_N(...) call site
+     * (so the fallback below never runs once cond has succeeded at least
+     * once) and cond itself does not backtrack for a second solution
+     * either. If cond fails outright, the then-branch clause never reaches
+     * the cut at all, and the fallback (always succeeds, empty body) runs
+     * normally -- exactly if-then-else. This used to be a soft-if
+     * (`( cond, body ; true )`, no commit, SPEC.md section 9 QUIRK) before
+     * cut existed; see test/conformance/if-statement.ufy, whose first
+     * query used to print the line after the `if` twice for exactly that
+     * reason and now prints it once.
      */
     vault::unify::AbstractTerm* operator()( const IfStatementInput& ifStatementInput ) const
     {
@@ -533,11 +543,22 @@ public:
         // Clone cond's pre-goals + cond + body into the Rule clause's
         // body, via subMapRule -- shares nothing with the scratch trees
         // built in step (a), nor with the Fact clause's own clone below.
+        // Right after cond's own clone, splice in a fresh `__builtin_cut`
+        // term (ROADMAP Phase 2 "Cut", see the doc comment above): it
+        // needs no cloning/substitution (it has no VarTerm of its own),
+        // and it is a genuinely new, parse-time-allocated term reachable
+        // from pRuleGoal's Goal::m_listAbstractTerms exactly like every
+        // other term of this synthesized clause below -- freed by the
+        // same collectTermTree()-based sweep that already owns the rest
+        // of it (World::~World()), so no new ownership tracking is needed.
         std::list<const vault::unify::AbstractTerm*> lsClonedRuleBody;
         {
             std::vector<const vault::unify::AbstractTerm*>::const_iterator it, itEnd = auxRuleRoots.end();
             for( it = auxRuleRoots.begin(); it != itEnd; ++it ) {
                 lsClonedRuleBody.push_back( vault::unify::cloneTermTree( *it, subMapRule ) );
+                if( *it == pCondTerm ) {
+                    lsClonedRuleBody.push_back( new vault::unify::ConsTerm( "__builtin_cut" ) );
+                }
             }
         }
         vault::unify::Goal* pRuleGoal = new vault::unify::Goal(
@@ -600,6 +621,24 @@ public:
     {
         vault::unify::AbstractTerm* out_pAbstractTerm = NULL;
         std::string consTermInputName = consTermInput.atom.name;
+
+        // ROADMAP Phase 2 (Cut): the bareword goal `cut` (zero arguments)
+        // is a reserved word -- mirroring how `query` is reserved for a
+        // zero-argument top-level head (SPEC.md) -- for the committed-
+        // choice construct SolveJob::performSlice() (vault-unify-solvejob.cpp)
+        // recognizes directly by this exact internal name; cut is NEVER a
+        // registered Clause/builtin (it needs access to the SolveContext
+        // stack itself, which no Clause ever gets). Renamed here, at
+        // term-construction time, so every position a bareword ConsTerm
+        // can occur in -- a goal statement, a clause head, or a plain
+        // argument -- is covered by one change. `cut(...)` with one or
+        // more arguments is completely unaffected: a normal clause/call
+        // named "cut", exactly like `query(a)` stays a normal clause head
+        // once it takes an argument.
+        if( consTermInputName=="cut" && consTermInput.values.empty() ) {
+            consTermInputName = "__builtin_cut";
+        }
+
         // Atom used, if at all, only to copy-construct ConsTerm::m_name
         // (which stores it BY VALUE) below -- a stack instance avoids
         // orphaning a heap Atom on every single call (both the VarTerm

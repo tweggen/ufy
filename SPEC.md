@@ -21,7 +21,7 @@ programs — see `test/golden/README.md`); `run-golden-test.sh` reports
 
 Contents: 1. Lexical elements · 2. Program structure · 3. Terms ·
 4. Desugarings · 5. Execution model · 6. Unification ·
-7. Negation-as-failure · 8. Builtins · 9. Deviations and quirks.
+7. Negation-as-failure · 8. Cut · 9. Builtins · 10. Deviations and quirks.
 
 ---
 
@@ -623,9 +623,146 @@ any bindings it made, is discarded), so `!` does not protect a variable
 from being bound by whichever candidate does end up contributing
 `UnifyLast`.
 
+**Reconciliation with cut (section 8, ROADMAP Phase 2)**: prefix `!` and
+the goal statement `cut;` are unrelated constructs that happen to share a
+symbol family in Prolog folklore but nothing else here. `!` stays exactly
+as described above — a per-candidate result transform applied while
+walking the *same* backtracking machinery as any other goal, explicitly
+**not** committing (previous paragraph). `cut` is a distinct reserved goal
+name (not an operator, not spelled `!`) that actually does commit — it
+prunes choice points on the solver's own `SolveContext` stack, something
+no per-candidate transform like negation could do. Introducing `cut`
+required no change to `!`'s grammar or semantics at all.
+
 ---
 
-## 8. Builtins
+## 8. Cut
+
+ROADMAP Phase 2 ("Cut (`!` in Prolog's sense) or a committed-choice
+construct; reconcile with the current prefix-`!` negation syntax"). The
+cut is the keyword goal statement `cut;` — a C-feel goal statement, not a
+punctuation operator — deliberately distinct from prefix `!`, which
+remains negation-as-failure, completely unchanged (section 7). The two
+share nothing: `!` is parsed as an operator prefixing a `SingleGoal`
+(`AnyTermFactory::operator()(const SingleGoalInput&)`,
+`src/vault-unify-parser.cpp`) and read per-candidate inside
+`UnifyContext::getUnificationResult()`; `cut` is a distinct reserved goal
+name, recognized structurally before clause iteration ever begins
+(`SolveJob::performSlice()`, `src/vault-unify-solvejob.cpp`). Writing
+`!cut;` parses (negation applies to whatever ConsTerm the rest of the
+statement evaluates to) but is not a construct this module gives any
+useful meaning to and is not used anywhere.
+
+**Reservation**: `cut` is a reserved word for a zero-argument goal, the
+same shape as the `query` reservation (section 2): a user clause literally
+named bare `cut` with no arguments can no longer be defined as such (the
+bareword is renamed to the reserved internal name before a `Clause` is
+ever built), but `cut(a)`, `cut(a, b)`, … remain perfectly ordinary
+clause heads/calls, unaffected — exactly as `query(a) { ... }` remains
+expressible once it takes an argument. Unlike `query` (a purely
+grammar-positional reservation — `m_ruleQuery` only ever fires at the
+start of a top-level form), `cut`'s reservation is by exact name+arity,
+applied wherever a bareword `ConsTerm` is built at all —
+`AnyTermFactory::operator()(const ConsTermInput&)` renames `cut` (zero
+values) to the internal atom `__builtin_cut` before constructing the
+`ConsTerm`, covering a goal statement, a clause head, or a plain data
+argument with the one change. `cut` is deliberately **not** a registered
+`Clause`/builtin (contrast every predicate in section 9 below): a builtin
+only ever sees the two `UnifyContext`s and the `Engine` (`Clause::
+startUnification`'s signature, `include/vault-unify.hpp`), never the
+`SolveJob`'s own `SolveContext` stack — and cutting requires reaching
+into exactly that stack to prune choice points. `SolveJob::performSlice()`
+checks the current goal term for this exact reserved name before it ever
+consults a clause iterator; a `__builtin_cut` term is never looked up in
+any `ExecutionState`'s clause list.
+
+**Semantics** — standard Prolog cut, scoped to the clause (or query)
+containing it. When `cut` executes in the body of clause C that was
+selected for goal G, it succeeds exactly once and commits: (a) no further
+clause alternatives are tried for G, and (b) goals in C's body to the LEFT
+of the cut (and G's own bindings) do not backtrack into new solutions.
+Goals AFTER the cut backtrack normally within their own subtree — a cut
+never reaches forward. A cut in a query's own top-level goal chain commits
+the query up to that point; the query itself is "the clause" in that case,
+there being no enclosing call that selected it.
+
+**Mechanism** (`SolveJob::performSlice()`): `SolveContext` forms a call
+tree via `m_parentSolveContext`, mirrored 1:1 onto the flat, genuinely
+LIFO `m_stackContext` (`SolveContext*` are only ever removed from its
+back, in `discardTop()`) — so at any moment, walking `m_stackContext` from
+back to front visits exactly the still-live contexts in push order, most
+recent first. Every `GoalPart` (a clause/query body, or a fragment
+continuing after one) is the `m_pMyGoalPart` of exactly one
+`SolveContext` — the one pushed for that body's first term, in the
+"non-terminal" branch of `performSlice()`'s unification-success handling
+— every other `SolveContext` covering a later term of the same body is
+instead pushed by the "terminal continuation" branch, which always passes
+`pNewGoalPart=NULL`. So, given the `SolveContext` `sc` currently executing
+`cut`, with `X = sc->m_csCurrent.getGoalPart()` (the `GoalPart` — clause
+body or query root — that owns the cut): walking `sc`'s
+`m_parentSolveContext` chain up to the unique ancestor `p` with
+`p->m_pMyGoalPart==X` finds the choice point for X's own first body term;
+`p->m_parentSolveContext` is then the context that matched G against
+clause C and pushed `p` — the ENTRY context whose `m_itNextChildClause`
+enumerates G's remaining alternatives. At query top level `p` has no
+parent (it is the root `SolveContext` `SolveJob::startJob()` pushes
+directly) — there being no enclosing call to also cut off, `p` itself is
+the entry context in that case.
+
+Pruning invalidates (`ExecutionState::ClauseIterator::invalidate()`,
+`include/vault-unify.hpp` — a `bool` `isValid()` now checks first,
+independent of and checked before the pre-existing parent-`ExecutionState`
+fallback walk) every context's `m_itNextChildClause` from `m_stackContext`'s
+back down to and including the entry context — never popping anything, so
+continuations already found above the cut keep running; a pruned context
+simply falls into the ordinary "no next child clause" `discardTop()` path
+once the search naturally backtracks into it. This provably covers exactly
+the right set: everything between the current top and the entry context
+(inclusive) is, by the stack's LIFO discipline, exactly what was pushed
+since the entry context ran — every choice point for a goal to the left of
+the cut (including one left behind by a fully-resolved sibling subtree,
+e.g. a preceding goal that itself called into a further user-defined
+rule — correctly pruned, it is still "to the left"), the choice point for
+X's first body term itself, and G's own remaining alternatives — while
+nothing belonging to a goal after the cut is ever touched, because no
+`SolveContext` for it exists yet. It also invalidates `sc`'s own iterator
+(guarding a corner case: were a user clause literally named bare `cut` to
+exist — parsed to this very same reserved name, see above — it would
+otherwise wrongly unify with the cut term itself once backtracking
+returns to `sc`).
+
+Having pruned, `cut` then advances exactly like an ordinary terminal
+clause match (fact/no-continuation): `GoalPartCursor csNext( sc-
+>m_csCurrent ); csNext.next();`, pushing a child `SolveContext` carrying
+forward `sc->m_pUnifyContext` unchanged (`cut` binds nothing new, so no
+fresh `UnifyContext` is created) with `pNewGoalPart=NULL` — identical
+shape to `performSlice()`'s existing `!haveNewGoal` push.
+
+**Upgrading `if` to real if-then-else** (section 4): the synthesized
+then-clause now reads `__if_N( V1..Vk ) { clonedCond; __builtin_cut;
+clonedBody...; }` — cond's first success now commits against the fallback
+clause, so `if` is a true if-then-else instead of the previous soft-if
+(`( cond, body ; true )`, no commit — old section 9 QUIRK, since
+superseded): if cond fails, the then-clause never reaches the cut and the
+fallback (always succeeds, empty body) runs; if cond succeeds, cut prunes
+the fallback and cond's own remaining alternatives. See
+`test/conformance/if-statement.ufy` — its first query used to print the
+line after the `if` twice (once via the then-branch, once via the
+still-tried fallback); with cut it prints once.
+
+**Conformance**: `test/conformance/cut.ufy` — (a) first-solution commit
+across a rule's own body (`first($x) { c($x); cut; }` against three `c/1`
+facts, prints the first only); (b) cut also stops backtracking into goals
+to the LEFT of the cut, not merely the enclosing call (`pair($x,$y) {
+a($x); b($y); cut; }` against two facts each of `a/1`/`b/1`, prints only
+the very first pair); (c) goals AFTER the cut are unaffected and backtrack
+normally (`after() { cut; c($z); print($z); }`, prints all three `c/1`
+solutions); (d) cut at query top level (`query { c($x); cut; print($x);
+}`, prints only the first).
+
+---
+
+## 9. Builtins
 
 All six appended to the root state, in this order, before any user clause
 (`World::init`, `src/vault-unify-world.cpp`).
@@ -702,7 +839,7 @@ false comparison is `UnifyNot`, same as any other failed goal.
 
 ---
 
-## 9. Known deviations and quirks
+## 10. Known deviations and quirks
 
 All verified by direct code reading, collected here for quick reference.
 
@@ -714,12 +851,15 @@ All verified by direct code reading, collected here for quick reference.
 - Prefix `-` does not implement negation: due to `case`/`default` label
   nesting, it always builds an anonymous, empty-named wrapper `ConsTerm`
   around its operand rather than negating a number (section 4).
-- `if (cond) { body }` is a soft-if (`( cond, body ; true )`, section 4)
-  with no cut yet (`ROADMAP.md` Phase 2): the synthesized fallback clause
-  is tried on backtracking even after `cond` already succeeded once, so
-  whatever follows the `if` in the same goal chain can run again via the
-  fallback path — see `test/conformance/if-statement.ufy` (its first query
-  prints the line after the `if` twice for exactly this reason).
+- *(Superseded, ROADMAP Phase 2 "Cut", 2026-08-20)* `if (cond) { body }`
+  used to be a soft-if (`( cond, body ; true )`, section 4) with no cut: the
+  synthesized fallback clause was tried on backtracking even after `cond`
+  already succeeded once, so whatever followed the `if` in the same goal
+  chain could run again via the fallback path. Now that `cut` exists
+  (section 8), the then-clause commits against the fallback once `cond`
+  succeeds — see `test/conformance/if-statement.ufy` (its first query used
+  to print the line after the `if` twice for exactly this reason; it prints
+  once now).
 - Strings, bareword atoms, and digit runs all fold into the same atom
   representation by spelling; a quoted string and a bareword atom (or
   number) with the same spelling are the same term (sections 1, 6). This

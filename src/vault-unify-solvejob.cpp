@@ -557,9 +557,25 @@ int SolveJob::performSlice()
         }
 
 
-        if( !sc->m_itNextChildClause.isValid() ) {            
+        /*
+         * IMPORTANT (ROADMAP Phase 2, Cut): this exhaustion check MUST run
+         * BEFORE the cut-recognition block below, not after. A context
+         * whose m_itNextChildClause was invalidated by a cut (see below)
+         * needs to fall straight into discardTop() the next time it
+         * becomes the stack top (i.e. once its own continuation has been
+         * fully backtracked out of) -- never re-examine sc->m_csCurrent
+         * and re-recognize the very same cut term a second time. Ordering
+         * the exhaustion check first gives cut exactly-once semantics for
+         * free: isValid() is true the first time a cut term is reached
+         * (the iterator was just freshly constructed for this
+         * SolveContext), so the cut block below still runs then; the cut
+         * block invalidates sc's OWN iterator as part of its prune (see
+         * below), so isValid() is false on every subsequent visit, and
+         * this check pops the context instead of re-running the cut.
+         */
+        if( !sc->m_itNextChildClause.isValid() ) {
             VAULT_UNIFY_DI( ITERATE, "No next child clause to test.\n" );
-            
+
             /*
              * When there is no next child clause to test, we finished
              * one depth-first branch. So pop out again.
@@ -567,7 +583,129 @@ int SolveJob::performSlice()
             discardTop( sc );
             continue;
         }
-        
+
+        /*
+         * ROADMAP Phase 2 (Cut): `cut;` desugars (parser, see
+         * AnyTermFactory::operator()(const ConsTermInput&) in
+         * vault-unify-parser.cpp) to the reserved, zero-arity ConsTerm
+         * "__builtin_cut". It is handled here directly -- NOT as a
+         * registered Clause/builtin -- because cut needs access to the
+         * SolveContext stack itself (to prune choice points), which no
+         * Clause::startUnification() implementation ever gets.
+         *
+         * Semantics (standard Prolog cut, scoped to the clause containing
+         * it -- see SPEC.md): cut succeeds exactly once and commits:
+         * (a) no further clause alternatives are tried for the goal G that
+         *     selected the clause C cut appears in, and
+         * (b) goals in C's body to the LEFT of the cut do not backtrack
+         *     into new solutions.
+         * Goals AFTER the cut are unaffected -- none of their SolveContexts
+         * exist yet at this point (they are only pushed once the search
+         * actually reaches them), so there is nothing above the current
+         * stack top to invalidate for them.
+         *
+         * ENTRY CONTEXT: given X = the GoalPart that owns the term
+         * currently at sc->m_csCurrent (the clause body -- or, for a
+         * query-level cut, the query's own root GoalPart -- containing the
+         * cut), walk sc's m_parentSolveContext chain up to the unique
+         * ancestor p with p->m_pMyGoalPart==X: that p is the SolveContext
+         * created (in the "haveNewGoal" branch below) for X's very FIRST
+         * body term -- every other SolveContext along X's own term chain
+         * is pushed via the "!haveNewGoal" terminal-continuation branch,
+         * which always passes pNewGoalPart=NULL, so p is the unique such
+         * ancestor. p->m_parentSolveContext is then the context whose
+         * m_itNextChildClause enumerates G's alternative clauses (it PUSHED
+         * p when it matched clause C) -- that is the entry context. At
+         * query top level p has no parent (it IS the root SolveContext
+         * pushed directly in startJob()): there is no separate "caller" to
+         * cut off, so p itself is the entry context in that case.
+         *
+         * PRUNE: m_stackContext is a genuine LIFO stack -- SolveContexts
+         * are only ever removed from its back (discardTop()), so between
+         * "now" and when the entry context was pushed, every still-live
+         * context created since sits, in order, between the entry context
+         * and the stack's current back. Invalidating each one's
+         * m_itNextChildClause (from the top down to and including the
+         * entry context) therefore prunes exactly: every choice point for
+         * goals to the left of the cut (including any left there by a
+         * fully-resolved sibling subtree, e.g. a preceding goal that itself
+         * called a further user-defined rule -- correct per (b), those are
+         * still "to the left"), the choice point for the first body term
+         * itself, and G's own remaining clause alternatives (a) -- and
+         * nothing belonging to goals after the cut, since those contexts
+         * do not exist yet. Invalidating stops trying further candidates
+         * without popping anything, so already-found continuations above
+         * the cut keep running; a pruned context simply falls into the
+         * ordinary "no next child clause" discardTop() path above once
+         * control naturally backtracks into it.
+         *
+         * This also invalidates sc's OWN clause iterator (sc is the loop's
+         * first entry, at m_stackContext.back()) -- this is what makes cut
+         * exactly-once (see the comment above the exhaustion check just
+         * above): without it, sc's iterator would still enumerate every
+         * remaining clause by name on a later visit, and (a) it would
+         * re-recognize and re-run this very block on the very next visit
+         * (infinite/duplicate re-execution -- a real bug caught by hand-
+         * tracing, not merely a defensive nicety), and (b) even if that
+         * were somehow avoided, a user clause literally named bare `cut`
+         * (parsed to this very same reserved name, see the parser) would
+         * otherwise wrongly unify with this term once backtracking
+         * returned to sc.
+         */
+        {
+            const ConsTerm* pCutCandidate = dynamic_cast<const ConsTerm*>( sc->m_csCurrent.getAbstractTerm() );
+            if( pCutCandidate && 0==pCutCandidate->getArity()
+                    && pCutCandidate->getName().value() == "__builtin_cut" ) {
+
+                GoalPart* pCutGoalPart = sc->m_csCurrent.getGoalPart();
+                SolveContext* p = sc;
+                while( p->m_pMyGoalPart != pCutGoalPart ) {
+                    p = p->m_parentSolveContext;
+                }
+                SolveContext* scEntry = p->m_parentSolveContext ? p->m_parentSolveContext : p;
+
+                std::list<SolveContext*>::reverse_iterator itPrune = m_stackContext.rbegin(),
+                    itPruneEnd = m_stackContext.rend();
+                for( ; itPrune != itPruneEnd; ++itPrune ) {
+                    (*itPrune)->m_itNextChildClause.invalidate();
+                    if( *itPrune == scEntry ) {
+                        break;
+                    }
+                }
+                if( itPrune == itPruneEnd ) {
+                    // Should never happen (scEntry is, by construction, an
+                    // ancestor of sc and therefore still on the stack --
+                    // see the derivation above); log rather than loop
+                    // forever or dereference past the end.
+                    VAULT_UNIFY_DI( ALWAYS, "Internal error in cut: entry context %p not found on stack.\n",
+                        (void*) scEntry );
+                }
+
+                VAULT_UNIFY_DI( ITERATE, "cut: pruned choice points down to and including entry context %p.\n",
+                    (void*) scEntry );
+
+                /*
+                 * Advance exactly like the terminal-clause continuation
+                 * below: cut succeeds once, immediately, carrying forward
+                 * the CURRENT bindings -- it binds nothing new, so no
+                 * fresh UnifyContext is created.
+                 */
+                GoalPartCursor csNext( sc->m_csCurrent );
+                csNext.next();
+
+                SolveContext* scChild = new SolveContext(
+                    m_pStartState,          // ExecutionState
+                    sc,                     // SolveContext (parent)
+                    sc->m_pUnifyContext,    // Parent unify context: unchanged.
+                    NULL,                   // No new GoalPart -- same chain continues.
+                    csNext                  // where to iterate next.
+                    );
+                m_stackContext.push_back( scChild );
+
+                continue;
+            }
+        }
+
         const Clause* cl = sc->m_itNextChildClause.getClause();
 
         VAULT_UNIFY_DI( ITERATE, "Testing child clause '%s' within unify context %lld.\n"

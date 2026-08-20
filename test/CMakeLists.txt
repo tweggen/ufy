@@ -104,6 +104,7 @@ set(UNIFY_CONFORMANCE_TESTS
     "strings-numbers|${UNIFY_CONFORMANCE_DIR}/strings-numbers.ufy"
     "arithmetic|${UNIFY_CONFORMANCE_DIR}/arithmetic.ufy"
     "comparison|${UNIFY_CONFORMANCE_DIR}/comparison.ufy"
+    "cut|${UNIFY_CONFORMANCE_DIR}/cut.ufy"
 )
 
 foreach(UNIFY_CONFORMANCE_TEST ${UNIFY_CONFORMANCE_TESTS})

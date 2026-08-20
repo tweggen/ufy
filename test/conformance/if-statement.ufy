@@ -1,16 +1,18 @@
-// Conformance: `if (cond) { ... }` soft-if semantics (SPEC.md sections 4
-// and 9): like Prolog's `( cond, body ; true )`. If cond succeeds, body
-// runs and execution continues after the if; if cond fails, execution
-// continues after the if directly. Prints before/after each `if` (and
-// inside its body) prove the rest of the query keeps running either way.
+// Conformance: `if (cond) { ... }` real if-then-else semantics (SPEC.md
+// sections 4 and 9; ROADMAP Phase 2 "Cut"): like Prolog's
+// `( cond, !, body ; true )`. If cond succeeds, body runs (once, committed
+// via the cut the desugaring now inserts right after cond) and execution
+// continues after the if; if cond fails, the fallback (always succeeds,
+// empty body) runs and execution continues after the if directly either
+// way. Prints before/after each `if` (and inside its body) prove the rest
+// of the query keeps running either way.
 //
-// QUIRK (no cut yet, ROADMAP Phase 2, SPEC.md section 9): the first query
-// below has a cond that succeeds, but since this engine backtracks to
-// find every solution (not just the first) and there is no cut to commit
-// to the then-branch, the synthesized fallback clause is ALSO tried after
-// the then-branch's solution is found -- so "after-then-query" prints
-// TWICE: once continuing from the then-branch, once continuing from the
-// (still attempted) fallback.
+// Before cut existed (ROADMAP Phase 2), this was a soft-if with no commit:
+// the first query below has a cond that succeeds, but since this engine
+// backtracks to find every solution, the synthesized fallback clause was
+// ALSO tried after the then-branch's solution was found, so
+// "after-then-query" printed TWICE. Cut now prunes that fallback once cond
+// has succeeded, so it prints once.
 
 flag( on );
 

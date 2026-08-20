@@ -271,16 +271,25 @@ public:
         }
 
     public:
-        ClauseIterator() : m_currentState( NULL ) {}
+        ClauseIterator() : m_currentState( NULL ), m_invalidated( false ) {}
 
         ClauseIterator( ExecutionState* es )
                 // : m_currentState( NULL ) is in enterState
+                : m_invalidated( false )
         {
             enterState( es );
         }
         ~ClauseIterator() {}
-        
+
         bool isValid() {
+            if( m_invalidated ) {
+                // ROADMAP Phase 2 (Cut): forced permanently invalid, see
+                // invalidate() below -- checked before the natural
+                // exhaustion/parent-fallback walk so a cut takes effect
+                // regardless of how many candidates (in this or any
+                // parent ExecutionState) remain.
+                return false;
+            }
             while(1) {
                 if( m_itClause != m_itClauseEnd ) {
                     return true;
@@ -291,19 +300,37 @@ public:
                 enterState( m_currentState->m_pParent );
             }
         }
-        
+
         const Clause* getClause() const {
             return *m_itClause;
         }
-        
+
         void next() {
             ++m_itClause;
+        }
+
+        /**
+         * ROADMAP Phase 2 (Cut): force this iterator to report no further
+         * candidates from now on, regardless of how many clauses remain
+         * unvisited (in this ExecutionState or any parent one isValid()
+         * would otherwise fall back into). Used by SolveJob::performSlice()
+         * to prune choice points when a `cut;` goal executes -- see
+         * SPEC.md's cut section and the design notes in
+         * vault-unify-solvejob.cpp. Idempotent; does not touch
+         * getClause()/next(), exactly like natural exhaustion, callers
+         * must stop calling those once isValid() reports false.
+         */
+        void invalidate() {
+            m_invalidated = true;
         }
 
     private:
         ExecutionState* m_currentState;
         std::list<Clause*>::const_iterator m_itClause;
         std::list<Clause*>::const_iterator m_itClauseEnd;
+
+        /// See invalidate()/isValid() above.
+        bool m_invalidated;
     };
     const ClauseIterator clauseIterator() {
         return ClauseIterator( this );

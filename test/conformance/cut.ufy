@@ -1,0 +1,72 @@
+// Conformance: `cut;` (ROADMAP Phase 2 "Cut or a committed-choice
+// construct", SPEC.md). `cut` is a reserved zero-argument goal name (like
+// `query` is reserved for a zero-argument top-level head, section 2) --
+// desugared by the parser to the internal term `__builtin_cut`
+// (AnyTermFactory::operator()(const ConsTermInput&),
+// vault-unify-parser.cpp) and recognized directly in
+// SolveJob::performSlice() (vault-unify-solvejob.cpp), never as a
+// registered Clause/builtin, since it needs access to the SolveContext
+// stack itself. Standard Prolog cut semantics, scoped to the clause (or
+// query) containing it: succeeds once and commits -- no further clause
+// alternatives are tried for the goal that selected this clause, and
+// nothing to the LEFT of the cut in this clause's body backtracks for a
+// further solution. Goals AFTER the cut are unaffected and backtrack
+// normally.
+
+c( 1 );
+c( 2 );
+c( 3 );
+
+// (a) First-solution commit: `first` has three candidate solutions for
+// `c($x)` (1, 2, 3); cut commits to the first one found.
+first( $x ) {
+    c( $x );
+    cut;
+}
+
+query {
+    first( $v );
+    print( $v );
+}
+
+// (b) Cut stops backtracking into goals to the LEFT of the cut, not just
+// the clause selection itself: two facts each for a/1 and b/1, so without
+// cut this would yield four (a,b) pairs; cut commits to the very first.
+a( 1 );
+a( 2 );
+b( 10 );
+b( 20 );
+
+pair( $x, $y ) {
+    a( $x );
+    b( $y );
+    cut;
+}
+
+query {
+    pair( $x, $y );
+    print( $x );
+    print( $y );
+}
+
+// (c) Goals AFTER the cut still backtrack normally: cut here only commits
+// the (single, argument-less) `after()` call itself; `c($z)` runs to all
+// three of its solutions exactly as it would with no cut in front of it.
+after() {
+    cut;
+    c( $z );
+    print( $z );
+}
+
+query {
+    after();
+}
+
+// (d) Cut at query top level: the query's own top-level goal chain is
+// "the clause" cut commits -- no separate enclosing call exists, so cut
+// commits the query's own choice point for `c($x)` directly.
+query {
+    c( $x );
+    cut;
+    print( $x );
+}
