@@ -175,6 +175,12 @@ workers running N independent queries:
       concurrent add/remove.
 - [ ] Engine shutdown and job cancellation: `executionLoop` must be able to
       exit; jobs must be stoppable.
+- [ ] Fix `vault::BoostAsioIoService` (repo-wide `combine/include/vault/`
+      `vault.hpp`): its constructor lets a joinable `boost::thread` local go
+      out of scope — the same `std::terminate()` bug fixed in
+      `Engine::addWorkerThread()`. Only reached from
+      `XDebugTCPClient::connect()` within unify, but every module using the
+      singleton is affected under modern Boost.
 - [ ] Run the full test suite under TSan with 2+ workers.
 
 ### 5.2 Immutable program, versioned world
