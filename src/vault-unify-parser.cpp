@@ -413,6 +413,10 @@ public:
             ppHeadArgsRule[i] = pFreshVar;
         }
         vault::unify::ConsTerm* pHeadRule = new vault::unify::ConsTerm( auxAtom, nVars, ppHeadArgsRule );
+        // ConsTerm's ctor (see AnyTermFactory::operator()(ConsTermInput))
+        // only copies the pointer VALUES out of ppHeadArgsRule into its own
+        // m_vecTerms; it never takes ownership of the buffer itself.
+        delete[] ppHeadArgsRule;
 
         std::map<const vault::unify::VarTerm*, vault::unify::VarTerm*> subMapFact;
         vault::unify::AbstractTerm** ppHeadArgsFact = nVars ? new vault::unify::AbstractTerm*[nVars] : NULL;
@@ -423,6 +427,7 @@ public:
             ppHeadArgsFact[i] = pFreshVar;
         }
         vault::unify::ConsTerm* pHeadFact = new vault::unify::ConsTerm( auxAtom, nVars, ppHeadArgsFact );
+        delete[] ppHeadArgsFact;
 
         // Clone cond's pre-goals + cond + body into the Rule clause's
         // body, via subMapRule -- shares nothing with the scratch trees
@@ -479,6 +484,7 @@ public:
             ppCallArgs[i] = freeVars[i];
         }
         vault::unify::ConsTerm* pCallTerm = new vault::unify::ConsTerm( auxAtom, nVars, ppCallArgs );
+        delete[] ppCallArgs;
 
         // h. Deliberately not registering any TermDebugInfo for the
         // synthesized clauses/call site -- the old code didn't either,
@@ -493,7 +499,12 @@ public:
     {
         vault::unify::AbstractTerm* out_pAbstractTerm = NULL;
         std::string consTermInputName = consTermInput.atom.name;
-        vault::unify::Atom* pAtom = new vault::unify::Atom( consTermInputName );
+        // Atom used, if at all, only to copy-construct ConsTerm::m_name
+        // (which stores it BY VALUE) below -- a stack instance avoids
+        // orphaning a heap Atom on every single call (both the VarTerm
+        // branch, which never even looks at it, and the ConsTerm branch,
+        // whose constructor only ever copies from it).
+        vault::unify::Atom atom( consTermInputName );
 
         // Is it a consterm or a varterm?
         char ch = consTermInputName[0];
@@ -506,7 +517,7 @@ public:
                 // Does not exist, create.
                 pVarTerm = new vault::unify::VarTerm();
                 pVarTerm->setOriginalVarName( consTermInputName );
-                m_clauseContext.m_mapSymbols[consTermInputName] = pVarTerm; 
+                m_clauseContext.m_mapSymbols[consTermInputName] = pVarTerm;
             } else {
                 pVarTerm = itSym->second;
             }
@@ -527,7 +538,13 @@ public:
                 }
             }
             vault::unify::ConsTerm* pConsTerm = new vault::unify::ConsTerm(
-                *pAtom, nTerms, ppTerms );
+                atom, nTerms, ppTerms );
+            // ConsTerm's ctor copies the pointer VALUES from ppTerms into
+            // its own m_vecTerms (constructed from the [ppTerms,ppTerms+n)
+            // range) -- it does not take ownership of the ppTerms buffer
+            // itself, only of the children it points to. Free the
+            // now-redundant transient buffer (safe/no-op when NULL).
+            delete[] ppTerms;
             out_pAbstractTerm = pConsTerm;
         }
 
@@ -574,12 +591,18 @@ public:
 
         vault::unify::MapTerm* pMapTerm = new vault::unify::MapTerm(
             ppAtoms, ppTerms, nTerms );
+        // MapTerm's ctor copies the *pointer values* out of ppAtoms/ppTerms
+        // into its own m_mapContents; it never takes ownership of the two
+        // transient buffers themselves (only of the Atoms/terms they
+        // point to). Free the now-redundant buffers (safe/no-op when NULL).
+        delete[] ppAtoms;
+        delete[] ppTerms;
         out_pAbstractTerm = pMapTerm;
 
         return out_pAbstractTerm;
     }
 
-    vault::unify::AbstractTerm* operator()( const MapTermInput& mapTermInput ) const 
+    vault::unify::AbstractTerm* operator()( const MapTermInput& mapTermInput ) const
     {
         vault::unify::AbstractTerm* out_pAbstractTerm = NULL;
         int nTerms;
@@ -604,6 +627,10 @@ public:
 
         vault::unify::MapTerm* pMapTerm = new vault::unify::MapTerm(
             ppAtoms, ppTerms, nTerms );
+        // See ArrayTermInput overload above: MapTerm only takes ownership
+        // of the Atoms/terms these buffers point to, not of the buffers.
+        delete[] ppAtoms;
+        delete[] ppTerms;
         out_pAbstractTerm = pMapTerm;
 
         return out_pAbstractTerm;
