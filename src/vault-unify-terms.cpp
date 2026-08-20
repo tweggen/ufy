@@ -185,6 +185,9 @@ AbstractTerm* cloneTermTree(
         }
         ConsTerm* pCloneCons = new ConsTerm(
             Atom( pSrcCons->getName().value() ), nTerms, ppTerms );
+        // The ConsTerm constructor copies the pointer values; the transient
+        // array itself stays ours to free (delete[] NULL is a no-op).
+        delete[] ppTerms;
         pCloneCons->setNegated( pSrcCons->isNegated() );
         return pCloneCons;
     }
@@ -203,6 +206,10 @@ AbstractTerm* cloneTermTree(
             ppTerms[i] = cloneTermTree( entries[i].second, varSubstitution );
         }
         MapTerm* pCloneMap = new MapTerm( ppAtoms, ppTerms, nTuples );
+        // Same transient-array pattern as the ConsTerm branch above: the
+        // constructor copies the pointer values, the arrays stay ours.
+        delete[] ppAtoms;
+        delete[] ppTerms;
         return pCloneMap;
     }
 
