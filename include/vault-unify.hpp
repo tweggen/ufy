@@ -1421,6 +1421,11 @@ private:
 
     typedef std::map<const AbstractTerm*, TermDebugInfo*> TermDebugMap;
     TermDebugMap m_mapDebugInfos;
+
+    /// Values replaced in m_mapDebugInfos. They may still be shared with
+    /// other map entries, so they cannot be deleted at replace time;
+    /// ~World()'s de-duplicating sweep reclaims them exactly once.
+    std::list<TermDebugInfo*> m_lsRetiredDebugInfos;
 };
 
 

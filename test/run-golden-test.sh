@@ -80,6 +80,16 @@ if [ -n "${UNIFY_EXPECT_EXIT:-}" ] && [ "$ACTUAL_EXIT" -ne "$UNIFY_EXPECT_EXIT" 
     exit 1
 fi
 
+# An exit code >= 128 means the binary died from a signal (segfault, abort,
+# sanitizer error, ...). That must always fail the test, even though plain
+# nonzero exits are tolerated: a crash AFTER stdout is complete (e.g. a
+# use-after-free during teardown, aborted by ASan) would otherwise pass the
+# stdout diff and go unnoticed.
+if [ "$ACTUAL_EXIT" -ge 128 ]; then
+    echo "run-golden-test.sh: '$PROGRAM_UFY' died from a signal (exit $ACTUAL_EXIT)." >&2
+    exit 1
+fi
+
 # Normalize trivially volatile content: strip trailing whitespace on each
 # line and any trailing blank lines, so incidental formatting differences
 # don't cause false-positive diffs.

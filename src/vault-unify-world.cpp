@@ -65,11 +65,28 @@ namespace unify {
  */
 World::~World()
 {
+    /*
+     * De-duplicate the TermDebugInfo values as well as the FileDebugInfos:
+     * the '->' desugaring in vault-unify-parser.cpp registers one
+     * TermDebugInfo under SEVERAL term keys (pre-goal and replacement
+     * terms share the same info object), so deleting per map entry would
+     * double-free (found as a heap-use-after-free by the ASan leak run).
+     */
+    std::set<const TermDebugInfo*> visitedTermDebugInfos;
     std::set<const FileDebugInfo*> visitedFileDebugInfos;
+    std::list<TermDebugInfo*> lsAllDebugInfos( m_lsRetiredDebugInfos );
     TermDebugMap::const_iterator itTDI, itTDIEnd = m_mapDebugInfos.end();
     for( itTDI = m_mapDebugInfos.begin(); itTDI != itTDIEnd; ++itTDI ) {
-        TermDebugInfo* pTermDebugInfo = itTDI->second;
+        lsAllDebugInfos.push_back( itTDI->second );
+    }
+    std::list<TermDebugInfo*>::const_iterator itAll, itAllEnd = lsAllDebugInfos.end();
+    for( itAll = lsAllDebugInfos.begin(); itAll != itAllEnd; ++itAll ) {
+        TermDebugInfo* pTermDebugInfo = *itAll;
         if( !pTermDebugInfo ) {
+            continue;
+        }
+        if( !visitedTermDebugInfos.insert( pTermDebugInfo ).second ) {
+            // Already freed via another key or the retired list.
             continue;
         }
         const FileDebugInfo* pFileDebugInfo = pTermDebugInfo->getFileDebugInfo();
@@ -79,6 +96,7 @@ World::~World()
         delete pTermDebugInfo;
     }
     m_mapDebugInfos.clear();
+    m_lsRetiredDebugInfos.clear();
 
     std::set<const AbstractTerm*> visitedTerms;
     m_rootState.collectAllTermTrees( visitedTerms );
@@ -95,12 +113,17 @@ World::~World()
 
 void World::setTermDebugInfo( const AbstractTerm* pTerm, TermDebugInfo* pTermDebugInfo )
 {
-    // Remove former info.
     // TXWTODO: Lock begin
+    /*
+     * Do NOT delete a replaced value here: TermDebugInfo objects can be
+     * registered under several term keys (see the '->' desugaring in
+     * vault-unify-parser.cpp), so the old value may still be referenced by
+     * another entry. Park it on the retired list instead; the
+     * de-duplicating sweep in ~World() reclaims it exactly once.
+     */
     TermDebugMap::iterator it = m_mapDebugInfos.find( pTerm );
-    if( it != m_mapDebugInfos.end() ) {
-        TermDebugInfo* pOldTermDebugInfo = it->second;
-        delete pOldTermDebugInfo;
+    if( it != m_mapDebugInfos.end() && it->second && it->second != pTermDebugInfo ) {
+        m_lsRetiredDebugInfos.push_back( it->second );
     }
     m_mapDebugInfos[pTerm] = pTermDebugInfo;
     // TXWTODO: Lock end.
