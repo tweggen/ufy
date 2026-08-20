@@ -50,16 +50,19 @@ query {
 }
 
 // (c) Goals AFTER the cut still backtrack normally: cut here only commits
-// the (single, argument-less) `after()` call itself; `c($z)` runs to all
+// the (single, argument-less) `after` call itself; `c($z)` runs to all
 // three of its solutions exactly as it would with no cut in front of it.
-after() {
+// NB: zero-argument heads/calls are written WITHOUT parentheses -- `after()`
+// would not parse (argument lists require at least one element, SPEC.md
+// section 2); the parens are optional in the grammar, not empty-able.
+after {
     cut;
     c( $z );
     print( $z );
 }
 
 query {
-    after();
+    after;
 }
 
 // (d) Cut at query top level: the query's own top-level goal chain is
