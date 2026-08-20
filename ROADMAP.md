@@ -60,10 +60,8 @@ refactoring. Nothing else starts before the test harness exists.
       `tools/unify-run.cpp` CLI runner. Boost comes from the system package
       in CI for now; compile validation happens on the Linux CI job below —
       the Windows dev machine has no Boost toolchain.)*
-- [ ] Build clean on a modern compiler with `-Wall -Wextra`; fix or triage
-      every warning. *(Builds green on Ubuntu/GCC in CI with 54 warnings to
-      triage: 33× `-Wdeprecated-copy`, 20× `-Wunused-parameter`,
-      1× `-Wunused-result`.)*
+- [x] Build clean on a modern compiler with `-Wall -Wextra`; fix or triage
+      every warning. *(Zero warnings on Ubuntu/GCC as of 2026-08-20.)*
 - [x] Remove committed backup files (`*.cpp~`, `*.ufy~`) and add them to
       `.gitignore`.
 - [x] Golden-output test harness: run a `.ufy` program, diff emitted solutions
@@ -106,8 +104,11 @@ Goal: defined semantics, defined ownership, real error reporting.
       detection disabled, gating CI on memory errors (use-after-free,
       overflow, UB) immediately; an informational, non-gating leak report
       (`unify-leak-report` artifact) runs the sample programs with leak
-      detection on, to track progress towards the zero-leaks exit criterion
-      here, which still requires the Ownership model item above.)*
+      detection on, to track progress towards the zero-leaks exit criterion.
+      First green sanitize run found **zero memory errors**; leak baseline:
+      test-engine 1,312 B/49 allocs, mapsyntax 3,072 B/120,
+      test2 14,129 B/524, pathfinder 19,497 B/745. Reaching zero leaks
+      still requires the Ownership model item above.)*
 - [ ] Re-enable Spirit `on_error` handlers; parse errors report file, line,
       column and the offending line.
 - [ ] Propagate `UnifyError` as an error (with message) instead of mapping it

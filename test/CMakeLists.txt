@@ -56,3 +56,23 @@ foreach(UNIFY_GOLDEN_TEST ${UNIFY_GOLDEN_TESTS})
         TIMEOUT 120
     )
 endforeach()
+
+# Negative test: a deliberately malformed .ufy program (ROADMAP.md Phase 1,
+# "parse errors report file, line, column and the offending line"). unify-run
+# is expected to exit 1 (see tools/unify-run.cpp) and to still produce empty
+# stdout -- the diagnostic itself goes to stderr, not stdout, so the golden
+# file test/golden/parse-error.expected is intentionally empty. The expected
+# exit code is passed to run-golden-test.sh via the UNIFY_EXPECT_EXIT
+# environment variable (see that script for details).
+add_test(
+    NAME "unify-golden-parse-error"
+    COMMAND "${BASH_PROGRAM}" "${UNIFY_GOLDEN_RUNNER}"
+            "$<TARGET_FILE:unify-run>"
+            "${CMAKE_CURRENT_SOURCE_DIR}/parse-error.ufy"
+            "${UNIFY_GOLDEN_DIR}/parse-error.expected"
+)
+set_tests_properties("unify-golden-parse-error" PROPERTIES
+    SKIP_RETURN_CODE 77
+    TIMEOUT 120
+    ENVIRONMENT "UNIFY_EXPECT_EXIT=1"
+)

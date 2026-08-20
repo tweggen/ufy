@@ -22,6 +22,15 @@
 # script exits 0. This is how golden files are (re)generated -- typically
 # via `UNIFY_UPDATE_GOLDEN=1 ctest --output-on-failure`, run once on a
 # machine that can build/run unify-run (see test/golden/README.md).
+#
+# Optional environment variable UNIFY_EXPECT_EXIT=<code> additionally
+# requires <unify-run-binary> to exit with exactly <code> (in addition to
+# the usual stdout diff against <expected-file>); a mismatch is reported and
+# the script exits 1. This is used for negative tests (e.g. deliberately
+# malformed .ufy programs expected to fail parsing with exit code 1) -- see
+# test/CMakeLists.txt's unify-golden-parse-error test. When unset (the
+# default, used by all other golden tests), the binary's exit code is
+# ignored, as before.
 
 set -u
 
@@ -61,7 +70,15 @@ DIFF_OUT="$WORKDIR/diff.out"
 # builtins that may not exist in the core lib) are only expected to parse,
 # not necessarily to solve cleanly. We still capture and diff whatever
 # stdout was produced, so a golden file can pin down that behaviour too.
+# (Unless UNIFY_EXPECT_EXIT is set -- see above -- the exit code itself is
+# not checked here.)
 "$UNIFY_RUN_BIN" "$PROGRAM_UFY" > "$ACTUAL_RAW"
+ACTUAL_EXIT="$?"
+
+if [ -n "${UNIFY_EXPECT_EXIT:-}" ] && [ "$ACTUAL_EXIT" -ne "$UNIFY_EXPECT_EXIT" ]; then
+    echo "run-golden-test.sh: '$PROGRAM_UFY' exited $ACTUAL_EXIT, expected $UNIFY_EXPECT_EXIT." >&2
+    exit 1
+fi
 
 # Normalize trivially volatile content: strip trailing whitespace on each
 # line and any trailing blank lines, so incidental formatting differences

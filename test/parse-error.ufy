@@ -1,0 +1,23 @@
+/*
+ * Deliberately malformed program for the negative golden test
+ * (ROADMAP.md Phase 1: parse errors must report file, line, column, and
+ * the offending source line).
+ *
+ * The first two clauses below are valid Unify syntax (mirroring
+ * test-engine.ufy's `color( red );` and `has_property( $word, type ) { ... }`
+ * constructs), so parseExecuteSegment() exercises real partial-parse-then-
+ * fail behaviour instead of failing on the very first token. Neither of
+ * them is a top-level query ("goal ?"), so this program produces no stdout
+ * when run -- see test/golden/parse-error.expected, which is empty.
+ */
+
+fact( a );
+
+rule( $x ) {
+	fact( $x );
+}
+
+// Deliberate syntax error below: the clause body is missing its closing
+// '}', so the parser can never find where the clause ends.
+broken( $x ) {
+	fact( $x );

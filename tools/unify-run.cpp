@@ -41,92 +41,8 @@
  */
 #include <vault-unify-solvejob.hpp>
 
-#if !defined( _WIN32 )
-#include <unistd.h>
-#endif
-
 
 namespace {
-
-
-#if !defined( _WIN32 )
-/**
- * RuntimeContext::parseExecuteSegment() has no structured error channel yet:
- * ROADMAP.md Phase 1 calls for re-enabling Spirit's `on_error` handlers and
- * propagating `UnifyError` properly. Today a parse failure is reported only
- * as a literal "Parse error." line written to stderr (see
- * vault-unify-runtime-context.cpp), and the function always returns 0
- * regardless. Until that lands, sniff stderr for that one message so this
- * tool's exit code can at least reflect a hard parse failure.
- *
- * POSIX only (dup/dup2/tmpfile); on other platforms parse failures simply
- * cannot be detected here yet and unify-run always reports success.
- */
-class StderrParseErrorSniffer
-{
-public:
-    StderrParseErrorSniffer()
-        : m_sawParseError( false )
-        , m_savedStderrFd( -1 )
-        , m_tmp( NULL )
-        , m_stopped( false )
-    {
-        fflush( stderr );
-        m_savedStderrFd = dup( fileno( stderr ) );
-        m_tmp = tmpfile();
-        if( m_tmp && m_savedStderrFd >= 0 ) {
-            dup2( fileno( m_tmp ), fileno( stderr ) );
-        }
-    }
-
-    ~StderrParseErrorSniffer()
-    {
-        stop();
-    }
-
-    /**
-     * Restore stderr, echo whatever was captured (so the user still sees
-     * it), and scan it for the one failure message we currently recognize.
-     * Idempotent; call this explicitly once you are ready to look at
-     * sawParseError() rather than relying on destruction order.
-     */
-    void stop()
-    {
-        if( m_stopped ) return;
-        m_stopped = true;
-
-        fflush( stderr );
-        if( m_savedStderrFd >= 0 ) {
-            dup2( m_savedStderrFd, fileno( stderr ) );
-            close( m_savedStderrFd );
-            m_savedStderrFd = -1;
-        }
-        if( m_tmp ) {
-            rewind( m_tmp );
-            std::string captured;
-            char buf[512];
-            size_t n;
-            while( ( n = fread( buf, 1, sizeof( buf ), m_tmp ) ) > 0 ) {
-                captured.append( buf, n );
-            }
-            fclose( m_tmp );
-            m_tmp = NULL;
-            if( !captured.empty() ) {
-                fwrite( captured.data(), 1, captured.size(), stderr );
-                m_sawParseError = captured.find( "Parse error." ) != std::string::npos;
-            }
-        }
-    }
-
-    bool sawParseError() const { return m_sawParseError; }
-
-private:
-    bool m_sawParseError;
-    int m_savedStderrFd;
-    FILE* m_tmp;
-    bool m_stopped;
-};
-#endif // !_WIN32
 
 
 /**
@@ -161,18 +77,6 @@ int main( int argc, char** argv )
     vault::unify::RuntimeContext rt;
     rt.setupDone();
 
-#if !defined( _WIN32 )
-    /*
-     * UNIFY_RUN_NO_SNIFF=1 disables the stderr capture below. Needed when
-     * diagnosing hangs: with the sniffer active, everything the engine
-     * writes to stderr sits in an unflushed tmpfile and is lost if the
-     * process is killed before sniffer.stop() runs.
-     */
-    const bool noSniff =
-        getenv( "UNIFY_RUN_NO_SNIFF" ) && getenv( "UNIFY_RUN_NO_SNIFF" )[0] == '1';
-    StderrParseErrorSniffer* pSniffer = noSniff ? NULL : new StderrParseErrorSniffer();
-#endif
-
     /*
      * Parses the whole file; for every clause definition it finds, it
      * appends the clause to the root execution state, and for every
@@ -180,8 +84,13 @@ int main( int argc, char** argv )
      * vault-unify-runtime-context.cpp). Job *creation* happens synchronously
      * on this thread; the actual solving happens asynchronously on the
      * single worker thread setupDone() started above.
+     *
+     * The return value is the number of parse errors encountered (each one
+     * already reported to stderr as a gcc-style "<file>:<line>:<column>:
+     * parse error" diagnostic by parseExecuteSegment() itself); it drives
+     * this tool's exit code below.
      */
-    (void) rt.parseExecuteSegment(
+    const int parseErrorCount = rt.parseExecuteSegment(
         content.begin(), content.end(),
         onQueryFinished, NULL );
 
@@ -228,16 +137,11 @@ int main( int argc, char** argv )
     }
 
     int result = 0;
-#if !defined( _WIN32 )
-    if( pSniffer ) {
-        pSniffer->stop();
-        if( pSniffer->sawParseError() ) {
-            fprintf( stderr, "unify-run: parse error(s) while reading '%s'.\n", argv[1] );
-            result = 1;
-        }
-        delete pSniffer;
+    if( parseErrorCount > 0 ) {
+        fprintf( stderr, "unify-run: %d parse error(s) while reading '%s'.\n",
+            parseErrorCount, argv[1] );
+        result = 1;
     }
-#endif
 
     return result;
 }

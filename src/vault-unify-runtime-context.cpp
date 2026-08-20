@@ -41,6 +41,65 @@ namespace vault {
 namespace unify {
 
 
+namespace {
+
+typedef boost::spirit::line_pos_iterator<std::string::const_iterator> ParseErrorIterator;
+
+/**
+ * Prints a gcc-style parse-error diagnostic to stderr:
+ *
+ *   <file>:<line>:<column>: parse error
+ *   <offending source line>
+ *   <spaces>^
+ *
+ * `itBegin` must be a copy of the iterator taken at the very start of the
+ * segment being parsed, never advanced afterwards -- boost::spirit::
+ * get_column() needs it as a lower bound to compute the column of
+ * `itError` within its line (see boost/spirit/include/
+ * support_line_pos_iterator.hpp). The offending source line itself is
+ * recovered directly from the underlying std::string::const_iterator
+ * (line_pos_iterator::base()) by scanning outward for the enclosing
+ * newlines, bounded by [itBegin, itEnd).
+ */
+void reportParseError(
+        ParseErrorIterator itBegin,
+        ParseErrorIterator itError,
+        ParseErrorIterator itEnd,
+        const vault::unify::FileDebugInfo* pFileDebugInfo )
+{
+    long line = (long) boost::spirit::get_line( itError );
+    long column = (long) boost::spirit::get_column( itBegin, itError );
+
+    std::string::const_iterator itBufBegin = itBegin.base();
+    std::string::const_iterator itBufEnd = itEnd.base();
+    std::string::const_iterator itErrBase = itError.base();
+
+    std::string::const_iterator itLineStart = itErrBase;
+    while( itLineStart != itBufBegin && *(itLineStart - 1) != '\n' ) {
+        --itLineStart;
+    }
+    std::string::const_iterator itLineStop = itErrBase;
+    while( itLineStop != itBufEnd && *itLineStop != '\n' ) {
+        ++itLineStop;
+    }
+    std::string strLine( itLineStart, itLineStop );
+    if( !strLine.empty() && strLine[ strLine.size() - 1 ] == '\r' ) {
+        strLine.resize( strLine.size() - 1 );
+    }
+
+    std::string strFile = pFileDebugInfo
+        ? pFileDebugInfo->getFileUri()
+        : std::string( "<input>" );
+
+    fprintf( stderr, "%s:%ld:%ld: parse error\n", strFile.c_str(), line, column );
+    fprintf( stderr, "%s\n", strLine.c_str() );
+    std::string strCaret( column > 1 ? (std::size_t)( column - 1 ) : (std::size_t) 0, ' ' );
+    fprintf( stderr, "%s^\n", strCaret.c_str() );
+}
+
+} // anonymous namespace
+
+
 int RuntimeContext::parseExecuteSegment(
         std::string::const_iterator itLine, 
         std::string::const_iterator itLineEnd,
@@ -52,6 +111,9 @@ int RuntimeContext::parseExecuteSegment(
 
     ParseIterator itPosLine( itLine );
     ParseIterator itPosLineEnd( itLineEnd );
+    // Never advanced; used as the lower bound for get_column()/error-line
+    // extraction (see reportParseError() above).
+    ParseIterator itPosBegin( itLine );
 
     vault::unify::PrologParser::EventInput inputEvent;
     vault::unify::PrologParser::Context prologContext( getWorld() );
@@ -65,12 +127,14 @@ int RuntimeContext::parseExecuteSegment(
     }
 
     int lastStartLine = 1;
+    int errorCount = 0;
 
     while( itPosLine != itPosLineEnd ) {
         ParseIterator  itPosLineOld = itPosLine;
         bool r = boost::spirit::qi::phrase_parse( itPosLine, itPosLineEnd,
             parserEvent, ufySkipper, inputEvent );
-        if( r  ) {
+        bool advanced = ( itPosLine != itPosLineOld );
+        if( r && advanced ) {
             // What did we parse?
             if( inputEvent.query.queryGoal.consTerms.empty() ) {
                 vault::unify::Clause* pClause = NULL;
@@ -107,14 +171,15 @@ int RuntimeContext::parseExecuteSegment(
                 clauseContext.reset();
             }
         } else {
-            fprintf( stderr, "Parse error.\n" );
+            ++errorCount;
+            reportParseError( itPosBegin, itPosLine, itPosLineEnd, pFileDebugInfo );
             // Break, if we did not advance in the source. Otherwise, we would loop.
-            if( itPosLineOld == itPosLine ) break;
+            if( !advanced ) break;
         }
         lastStartLine = (int) itPosLine.position();
     }
 
-    return 0;
+    return errorCount;
 }
 
 int RuntimeContext::setupDone()
