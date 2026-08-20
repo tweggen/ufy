@@ -73,14 +73,16 @@ vault::unify::Clause::UnificationState UnifyBuiltinClause::startUnification(
         pUCOriginal, // changed 20150127 pUCCand,
         pTermRight );
     
-    if( unifyResult>=0 ) {
-        pUCStackTop->unificationDone( unifyResult, NULL );
-    } else {
-        // Terminated with error.
-        pUCStackTop->unificationDone( UnifyNot, NULL );
-    }
+    // Store the result as-is (Phase 1: propagate UnifyError instead of
+    // silently mapping it to "did not unify").
+    pUCStackTop->unificationDone( unifyResult, NULL );
 
-    return UnificationOK;
+    if( (int)unifyResult < 0 ) {
+        // Error unifying.
+        return UnificationError;
+    } else {
+        return UnificationOK;
+    }
 }
 
 

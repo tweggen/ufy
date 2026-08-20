@@ -45,13 +45,27 @@
 namespace {
 
 
-/**
- * Called once per top-level query ("goal ?") job when it finishes. Nothing
- * to do here: print/emit builtins already wrote their output to stdout
- * while the job ran.
+/*
+ * Written only on the engine's single worker thread (from onQueryFinished);
+ * read by main() after the barrier wait, which synchronizes with that
+ * thread via the barrier callback's mutex -- no extra locking needed.
  */
-void onQueryFinished( boost::shared_ptr<vault::unify::Job> )
+int s_runtimeErrorCount = 0;
+
+
+/**
+ * Called once per top-level query ("goal ?") job when it finishes.
+ * print/emit builtins already wrote their output to stdout while the job
+ * ran; here we only collect internal unification errors the job recorded
+ * (SolveJob::getErrorCount()) so they can drive the exit code.
+ */
+void onQueryFinished( boost::shared_ptr<vault::unify::Job> spJob )
 {
+    vault::unify::SolveJob* pSolveJob =
+        dynamic_cast<vault::unify::SolveJob*>( spJob.get() );
+    if( pSolveJob ) {
+        s_runtimeErrorCount += pSolveJob->getErrorCount();
+    }
 }
 
 
@@ -140,6 +154,11 @@ int main( int argc, char** argv )
     if( parseErrorCount > 0 ) {
         fprintf( stderr, "unify-run: %d parse error(s) while reading '%s'.\n",
             parseErrorCount, argv[1] );
+        result = 1;
+    }
+    if( s_runtimeErrorCount > 0 ) {
+        fprintf( stderr, "unify-run: %d internal unification error(s) while running '%s'.\n",
+            s_runtimeErrorCount, argv[1] );
         result = 1;
     }
 

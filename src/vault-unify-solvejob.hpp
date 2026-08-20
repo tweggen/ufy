@@ -2,6 +2,7 @@
 #define _VAULT_UNIFY_SOLVEJOB_HPP
 
 #include <map>
+#include <string>
 
 namespace vault {
 namespace unify {
@@ -137,6 +138,20 @@ public:
     virtual int getDebugStack( std::list<StackFrame>& );
     virtual int getDebugProperties( std::list<DebugProperty>&, uint64_t );
 
+    /**
+     * Number of unification errors (UnifyError) recorded while solving this
+     * job so far. Phase 1 (ROADMAP): unification errors are reported and
+     * recorded here instead of being silently treated as "did not unify".
+     * Zero means no error has occurred.
+     */
+    int getErrorCount() const { return m_errorCount; }
+
+    /**
+     * A human-readable description of the most recently recorded
+     * unification error, or an empty string if none occurred yet.
+     */
+    const std::string& getLastError() const { return m_lastError; }
+
 
 private:
     /**
@@ -146,14 +161,20 @@ private:
         UnifyContext* uc,
         ClauseContinuationContext*& pCCC );
 
-    /** 
+    /**
      * Emit a unify context that contains a solution.
      */
     int emitSolution( UnifyContext* uc );
-    
+
     // int enterGoal( SolveContext* sc );
-    
+
     void discardTop( SolveContext*& sc );
+
+    /**
+     * Record a unification error: increments getErrorCount() and stores
+     * the given message so it can be retrieved via getLastError().
+     */
+    void recordError( const std::string& strError );
 
     /** 
      * The goal to solve.
@@ -187,6 +208,12 @@ private:
     int m_sliceCount;
 
     DebugLocation m_debugLocation;
+
+    /// Number of unification errors (UnifyError) recorded so far. See getErrorCount().
+    int m_errorCount;
+
+    /// Description of the most recent unification error. See getLastError().
+    std::string m_lastError;
 
 };
 

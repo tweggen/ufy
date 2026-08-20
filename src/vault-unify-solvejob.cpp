@@ -611,8 +611,31 @@ int SolveJob::performSlice()
         UnifyResult unifyResult = pUCCand->getUnificationResult();
 
         // Did we have an internal error during the unification process?
-        if( unificationState<0 ) {
-            // What to do? Act, as if it is not unified.
+        if( unificationState<0 || UnifyError==unifyResult ) {
+            /*
+             * Phase 1 (ROADMAP): make unification errors visible instead of
+             * silently mapping them to "did not unify". Report the error
+             * (job id, the clause we were trying, and the goal term we
+             * were trying to unify it with) and record it on the job so
+             * callers can query it afterwards.
+             *
+             * We deliberately do NOT abort the whole search here: aborting
+             * on one bad candidate would change search semantics. Instead,
+             * after recording+reporting, we treat this one candidate as
+             * not-unified and continue trying the remaining candidates,
+             * same as before.
+             */
+            std::string strError = "Unification error trying clause '";
+            strError += cl->toString();
+            strError += "' against goal '";
+            strError += sc->m_csCurrent.getAbstractTerm()->toString();
+            strError += "'.";
+
+            VAULT_UNIFY_DI( ALWAYS, "Job %lld: %s\n",
+                (long long) getId(), strError.c_str() );
+
+            recordError( strError );
+
             unifyResult = UnifyNot;
         }
 
@@ -784,7 +807,20 @@ SolveJob::SolveJob()
         : m_pGoal( NULL )
         , m_pStartState( NULL )
         , m_sliceCount( 0 )
+        , m_errorCount( 0 )
 {
+}
+
+
+/**
+ * Record a unification error (Phase 1: make UnifyError visible instead of
+ * silently treating it as "did not unify"). Increments the error count and
+ * remembers the message so it can be retrieved via getLastError().
+ */
+void SolveJob::recordError( const std::string& strError )
+{
+    ++m_errorCount;
+    m_lastError = strError;
 }
 
 

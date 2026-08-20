@@ -84,6 +84,13 @@ UnifyResult ConsTerm::unifyConsTerm(
         // If does not unify and dynamic, continue unification as far as possible.
         // If unifies and static, continue unification.
         // If does not unify and static, abort unification.
+        // Note: res==UnifyError(-1) is truthy, so it must be checked
+        // explicitly here first -- otherwise a sub-term unification error
+        // would be silently treated as if the sub-term had unified.
+        if( UnifyError==(UnifyResult)res ) {
+            VAULT_UNIFY_DI( UNIFY, "ConsTerm: Subterm errored during unification.\n" );
+            return UnifyError;
+        }
         if( !res ) {
             VAULT_UNIFY_DI( UNIFY, "ConsTerm: Subterm doesnt unify.\n" );
             return UnifyNot;
