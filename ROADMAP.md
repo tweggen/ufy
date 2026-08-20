@@ -133,10 +133,15 @@ Goal: defined semantics, defined ownership, real error reporting.
       error became silent *success* in `ConsTerm`/`MapTerm` — errors are
       logged, recorded per job via `SolveJob::getErrorCount()`, and drive
       `unify-run`'s exit code. The search itself is unchanged.)*
-- [ ] Write a short language spec (`SPEC.md`): clause selection order,
+- [x] Write a short language spec (`SPEC.md`): clause selection order,
       negation-as-failure semantics (incl. the `UnifyLast`/`UnifyNotLast`/
       `m_foundClause` rules), `if` statement, `->` deref, map/array
       unification, `=` and prefix `!`. Add a conformance test per rule.
+      *(2026-08-20: SPEC.md derived from source with per-claim citations;
+      8 conformance programs in `test/conformance/` with committed goldens.
+      Every golden matches the behaviour predicted from code reading —
+      including the documented QUIRKs (if-bodies unreachable, non-textbook
+      negation on undefined predicates, arrays desugared to maps).)*
 - [ ] Return solutions as structured terms (term tree / JSON), not
       `toString()` output; REST layer consumes the structured form.
 - [ ] Unit tests for the binding machinery (`findVarBinding` /
