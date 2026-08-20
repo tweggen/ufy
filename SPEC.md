@@ -95,18 +95,35 @@ use the same `%` operator for their contents, so `{}` and `[]` also do not
 parse, even though `MapTerm` itself supports zero entries when built
 programmatically (`MapTerm::MapTerm`, `include/vault-unify.hpp`).
 
-**Top-level queries**: `m_ruleQuery %= (m_ruleGoal >> '?');` and
-`m_ruleGoal %= qi::eps >> +(m_ruleAnyStatement);` where
-`m_ruleAnyStatement %= m_ruleIfStatement | m_ruleSingleGoal >> ';';`. A
-query is one or more statements (each an `if` or a `;`-terminated single
-goal) followed by `?` — even a one-statement query needs its own `;`
-before the `?`, e.g. the one real example in the existing samples
-(commented out in `test/mapsyntax.ufy`):
-`point( $objPoint ); print( $objPoint); ?`. All of a query's statements
+**Top-level queries**: `m_ruleQuery %= (m_ruleQueryGoal >> '?');` where
+`m_ruleQueryGoal %= qi::eps >> (m_ruleQueryStatement % ',');` and
+`m_ruleQueryStatement %= m_ruleIfStatement | m_ruleSingleGoal;`. A query is
+one or more statements (each an `if` or a bare single goal, **no**
+`;` terminator) separated by `,` and followed by `?`, e.g. the one real
+example in the existing samples (commented out in `test/mapsyntax.ufy`,
+still written in the pre-fix `;`-separated form there since it's inert):
+`point( $objPoint ), print( $objPoint) ?`. All of a query's statements
 flatten into one `Goal` (`Context::createGoal`,
 `src/vault-unify-parser.cpp`) — one flat conjunctive term list, solved as a
-single goal chain (section 5); a rule body uses the identical `m_ruleGoal`
-grammar without the trailing `?`.
+single goal chain (section 5); a rule body uses the separate `m_ruleGoal`
+grammar (`m_ruleGoal %= qi::eps >> +(m_ruleAnyStatement);` with
+`m_ruleAnyStatement %= m_ruleIfStatement | m_ruleSingleGoal >> ';';`), whose
+statements stay `;`-terminated and has no trailing `?`.
+
+Queries and clause/rule bodies deliberately use two different separators
+now. Until 2026-08-20 both a top-level query and a `;`-terminated fact were
+parsed by the same `m_ruleGoal`/`m_ruleAnyStatement` rules, and
+`m_ruleEvent %= (m_ruleQuery) | (m_ruleClause);` tries the query
+alternative first: since a fact `f(a);` is itself a valid `;`-terminated
+statement, any run of facts immediately preceding a `?` anywhere later in
+the file was swallowed whole into one giant query goal, leaving zero
+clauses parsed from those facts — a grammar ambiguity, not a semantic
+choice. The fix gives queries their own `m_ruleQueryGoal`/
+`m_ruleQueryStatement` rules built on `,` instead of `;`, so a trailing `;`
+after a top-level term is now unambiguously a clause/fact, while `,` or `?`
+after one is unambiguously part of a query; the old `goal; goal; ?` form no
+longer parses (a parse error: it now reads as one or more facts followed by
+a dangling `?`).
 
 **`if` statement**: `m_ruleIfStatement %= qi::lit("if") >> qi::lit("(") >>
 m_ruleSingleGoal >> qi::lit(")") >> qi::lit("{") >> m_ruleGoal >>

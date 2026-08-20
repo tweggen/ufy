@@ -8,6 +8,6 @@
 number( one );
 pair( a, b );
 
-number( $x ); print( $x ); ?
-pair( $y, $z ); print( $y ); ?
-pair( a, b, c ); print( "should-not-print-arity-mismatch" ); ?
+number( $x ), print( $x ) ?
+pair( $y, $z ), print( $y ) ?
+pair( a, b, c ), print( "should-not-print-arity-mismatch" ) ?

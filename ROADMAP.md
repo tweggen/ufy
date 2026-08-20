@@ -116,6 +116,14 @@ Goal: defined semantics, defined ownership, real error reporting.
       diagnostics on stderr; `parseExecuteSegment` returns the error count;
       `unify-run` exits 1 on parse errors; negative golden test
       `test/parse-error.ufy` pins the behaviour.)*
+- [x] *(Found by the first conformance runs, 2026-08-20)* Fix a grammar
+      ambiguity that made facts + queries in one file impossible: the query
+      rule (`goal; goal; ?`) greedily swallowed every preceding
+      `;`-terminated fact into the query goal, so programs defining facts
+      and then querying them defined no clauses at all (confirmed via a
+      full solver trace in CI). Queries now use comma-separated goals
+      (`g1, g2 ?`), making `;` unambiguously "clause" — no pre-existing
+      program used queries, so nothing breaks.
 - [ ] Propagate `UnifyError` as an error (with message) instead of mapping it
       to "did not unify".
 - [ ] Write a short language spec (`SPEC.md`): clause selection order,

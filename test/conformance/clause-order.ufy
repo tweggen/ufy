@@ -7,4 +7,4 @@ color( red );
 color( green );
 color( blue );
 
-color( $x ); print( $x ); ?
+color( $x ), print( $x ) ?

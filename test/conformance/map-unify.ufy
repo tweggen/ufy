@@ -4,6 +4,6 @@
 // every value at a shared key must itself unify. Any key/size mismatch
 // fails the whole unification (no partial/subset match).
 
-{ x: 1, y: 2 } = { x: 1, y: 2 }; print( "maps-equal" ); ?
-{ x: 1, y: 2 } = { x: 1, y: 3 }; print( "should-not-print-value-mismatch" ); ?
-{ x: 1, y: 2 } = { x: 1 }; print( "should-not-print-size-mismatch" ); ?
+{ x: 1, y: 2 } = { x: 1, y: 2 }, print( "maps-equal" ) ?
+{ x: 1, y: 2 } = { x: 1, y: 3 }, print( "should-not-print-value-mismatch" ) ?
+{ x: 1, y: 2 } = { x: 1 }, print( "should-not-print-size-mismatch" ) ?

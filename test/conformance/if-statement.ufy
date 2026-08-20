@@ -10,10 +10,10 @@
 // everything queued after the if in the same query never run, regardless
 // of the condition written.
 
-print( "before-true-attempt" );
-if( anything ) { print( "true-branch" ); }
-print( "after-true-attempt" ); ?
+print( "before-true-attempt" ),
+if( anything ) { print( "true-branch" ); },
+print( "after-true-attempt" ) ?
 
-print( "before-false-attempt" );
-if( nothing ) { print( "false-branch" ); }
-print( "after-false-attempt" ); ?
+print( "before-false-attempt" ),
+if( nothing ) { print( "false-branch" ); },
+print( "after-false-attempt" ) ?

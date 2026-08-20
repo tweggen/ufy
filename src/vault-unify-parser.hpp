@@ -554,8 +554,17 @@ public:
             |   ( m_ruleConsTerm >> ';' )
             ;
 
+        m_ruleQueryStatement %=
+                m_ruleIfStatement
+            |   m_ruleSingleGoal
+            ;
+
+        m_ruleQueryGoal %=
+                qi::eps >> ( m_ruleQueryStatement % ',' )
+            ;
+
         m_ruleQuery %=
-                (m_ruleGoal >> '?')
+                (m_ruleQueryGoal >> '?')
             ;
         
         m_ruleEvent %=
@@ -578,6 +587,8 @@ public:
         m_ruleSingleGoal.name( "SingleGoal" );
         m_ruleGoal.name( "Goal" );
         m_ruleClause.name( "Clause" );
+        m_ruleQueryStatement.name( "QueryStatement" );
+        m_ruleQueryGoal.name( "QueryGoal" );
         m_ruleQuery.name( "Query" );
         m_ruleEvent.name( "Event" );
 
@@ -659,6 +670,8 @@ public:
     qi::rule<Iterator, AnyStatementInput(), Skipper> m_ruleAnyStatement;
     qi::rule<Iterator, GoalInput(), Skipper> m_ruleGoal;
     qi::rule<Iterator, ClauseInput(), Skipper> m_ruleClause;
+    qi::rule<Iterator, AnyStatementInput(), Skipper> m_ruleQueryStatement;
+    qi::rule<Iterator, GoalInput(), Skipper> m_ruleQueryGoal;
     qi::rule<Iterator, QueryInput(), Skipper> m_ruleQuery;
     qi::rule<Iterator, EventInput(), Skipper> m_ruleEvent;
 private:

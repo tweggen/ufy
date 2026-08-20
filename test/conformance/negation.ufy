@@ -8,6 +8,6 @@
 
 fruit( apple );
 
-!fruit( apple ); print( "should-not-print-fact-holds" ); ?
-!fruit( banana ); print( "negation-succeeds-arg-mismatch" ); ?
-!nosuchpredicate( x ); print( "should-not-print-undefined-predicate" ); ?
+!fruit( apple ), print( "should-not-print-fact-holds" ) ?
+!fruit( banana ), print( "negation-succeeds-arg-mismatch" ) ?
+!nosuchpredicate( x ), print( "should-not-print-undefined-predicate" ) ?
