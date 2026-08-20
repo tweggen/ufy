@@ -94,7 +94,7 @@ refactoring. Nothing else starts before the test harness exists.
 
 Goal: defined semantics, defined ownership, real error reporting.
 
-- [ ] **Ownership model**: per-`SolveJob` arena/region that owns all
+- [x] **Ownership model**: per-`SolveJob` arena/region that owns all
       `UnifyContext`s, `GoalPart`s and terms instantiated during solving;
       freed when the job's results are consumed. (This legitimizes the current
       allocate-freely style instead of fighting it.)
@@ -110,8 +110,11 @@ Goal: defined semantics, defined ownership, real error reporting.
       aliasing (conformance programs dropped to 360–975 B). Reaching zero
       now only needs the parser-orphan cleanup: intermediate terms built
       during AST→term conversion and then replaced (e.g. by the `->`
-      desugaring) that no owner ever adopts.)*
-- [ ] Run the test suite under ASan/LeakSanitizer; zero leaks per query.
+      desugaring) that no owner ever adopts. DONE 2026-08-20: the orphans
+      were an unfreed heap Atom and transient `new T*[n]` argument arrays;
+      all seven sample/conformance programs now run with ZERO LeakSanitizer
+      findings, and the CI leak check gates on staying at zero.)*
+- [x] Run the test suite under ASan/LeakSanitizer; zero leaks per query.
       *(2026-08-20: `UNIFY_SANITIZE` CMake option + a `sanitize` CI job now
       build and run the golden-output suite under ASan+UBSan with leak
       detection disabled, gating CI on memory errors (use-after-free,
