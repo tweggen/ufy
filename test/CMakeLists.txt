@@ -108,6 +108,7 @@ set(UNIFY_CONFORMANCE_TESTS
     "findall-arrays|${UNIFY_CONFORMANCE_DIR}/findall-arrays.ufy"
     "loops|${UNIFY_CONFORMANCE_DIR}/loops.ufy"
     "assert-retract|${UNIFY_CONFORMANCE_DIR}/assert-retract.ufy"
+    "strings|${UNIFY_CONFORMANCE_DIR}/strings.ufy"
 )
 
 foreach(UNIFY_CONFORMANCE_TEST ${UNIFY_CONFORMANCE_TESTS})

@@ -1,0 +1,76 @@
+// Conformance: string operations (ROADMAP Phase 2 "String operations
+// (concat, compare, match)", SPEC.md section 14). Compare already existed
+// via the comparison operators (`<`/`<=`/`>`/`>=`/`==`/`!=`, SPEC.md
+// section 4.1/8, test/conformance/comparison.ufy) -- this program covers
+// the rest: `concat`/`strlen` (reserved shapes on a side of `=`, mirroring
+// `findall`) and the `contains`/`startswith`/`endswith` plain goal
+// builtins (a softer, clause-order-only reservation -- SPEC.md section
+// 14.2).
+//
+// Every failing test below is wrapped in `if( cond ) { print(...); }`
+// (SPEC.md sections 4/9) so only the matching branch ever prints -- the
+// same "guarded print" idiom test/conformance/if-statement.ufy already
+// exercises, used here instead of comparison.ufy's/arithmetic.ufy's bare
+// "should-not-print-..." goal chains, since `if` also doubles as proof that
+// `contains`/`startswith`/`endswith` work as ordinary sub-goals (e.g.
+// inside an `if` condition), not just as top-level goals.
+//
+// Expected output:
+//   print: foobarbaz
+//   print: item-5
+//   print: 5
+//   print: contains-yes
+//   print: startswith-yes
+//   print: endswith-yes
+//   print: concat-matches-literal
+
+// (a) concat of three literal parts.
+query {
+    $s = concat( "foo", "bar", "baz" );
+    print( $s );
+}
+
+// (b) concat mixing a bound variable and an arithmetic expression --
+// resolveStringArg() (vault-unify-clause-builtin-string.cpp) evaluates the
+// `__builtin_arith` argument numerically first (reusing evaluateArith(),
+// SPEC.md section 14.1), then formats it back to decimal text before
+// concatenating.
+query {
+    $prefix = "item-";
+    $s = concat( $prefix, 2 + 3 );
+    print( $s );
+}
+
+// (c) strlen -- byte length, not codepoints (SPEC.md section 14.1); "hello"
+// is plain ASCII, so bytes and codepoints agree here.
+query {
+    $n = strlen( "hello" );
+    print( $n );
+}
+
+// (d) contains: one success, one failure.
+query {
+    if( contains( "hello world", "wor" ) ) { print( "contains-yes" ); }
+    if( contains( "hello world", "xyz" ) ) { print( "should-not-print-contains" ); }
+}
+
+// (e) startswith: one success, one failure.
+query {
+    if( startswith( "hello world", "hello" ) ) { print( "startswith-yes" ); }
+    if( startswith( "hello world", "world" ) ) { print( "should-not-print-startswith" ); }
+}
+
+// (f) endswith: one success, one failure.
+query {
+    if( endswith( "hello world", "world" ) ) { print( "endswith-yes" ); }
+    if( endswith( "hello world", "hello" ) ) { print( "should-not-print-endswith" ); }
+}
+
+// (g) a concat result unified directly against its expected literal atom
+// -- an equality proof, mirroring findall-arrays.ufy's own
+// findall-result-vs-literal proof (SPEC.md section 11.2).
+query {
+    $r = concat( "foo", "bar" );
+    $r = foobar;
+    print( "concat-matches-literal" );
+}

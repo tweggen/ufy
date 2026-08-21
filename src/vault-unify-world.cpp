@@ -179,6 +179,16 @@ void World::init()
     // variable-bounds range desugar to, respectively.
     m_rootState.appendClause( spWorld, new ArrayAtBuiltinClause() );
     m_rootState.appendClause( spWorld, new RangeBuiltinClause() );
+    // ROADMAP Phase 2: String operations (concat, compare, match), SPEC.md.
+    // Compare already exists via the comparison operators (CompareBuiltinClause
+    // above); this adds concat/strlen (parser-recognized, like findall) and
+    // the contains/startswith/endswith plain goal builtins (soft-reserved by
+    // clause order -- see vault-unify-clause-builtin.hpp's class comments).
+    m_rootState.appendClause( spWorld, new ConcatBuiltinClause() );
+    m_rootState.appendClause( spWorld, new StrlenBuiltinClause() );
+    m_rootState.appendClause( spWorld, new ContainsBuiltinClause() );
+    m_rootState.appendClause( spWorld, new StartswithBuiltinClause() );
+    m_rootState.appendClause( spWorld, new EndswithBuiltinClause() );
 }
 
 

@@ -502,7 +502,105 @@ public:
                      */
                     delete pFindallCons;
                 } else {
-                    atomName = "unify";
+                    /*
+                     * concat/strlen desugar (ROADMAP Phase 2, "String
+                     * operations", SPEC.md section 14): same reserved-shape
+                     * idea as findall directly above -- an EXACT ConsTerm
+                     * name+arity shape on a side of '=' -- checked only once
+                     * findall's own shape has already been ruled out (the
+                     * names never collide, so the order between the two
+                     * doesn't otherwise matter). `concat(a, b, ...)` with 2
+                     * OR MORE arguments desugars to
+                     * `__builtin_concat([a, b, ...], otherSide)` --
+                     * `ConcatBuiltinClause`
+                     * (vault-unify-clause-builtin-string.cpp) declares a
+                     * FIXED arity-2 head like every other builtin here, so
+                     * the variadic source argument list is wrapped into ONE
+                     * `ArrayTerm` first, reusing the argument terms directly
+                     * (same reuse-then-discard-the-wrapper idiom as
+                     * findall's tmpl/subgoal above). `strlen(x)` with
+                     * EXACTLY 1 argument desugars to
+                     * `__builtin_strlen(x, otherSide)` -- no array wrapping
+                     * needed for a single argument. Either name used at any
+                     * OTHER arity, or anywhere other than a side of '=', is
+                     * left as a completely ordinary ConsTerm/predicate call
+                     * -- exactly like findall's own "wrong shape stays
+                     * ordinary" rule. `concat(...)`/`strlen(...)` nested
+                     * INSIDE an arithmetic expression (e.g.
+                     * `$x = concat(a,b) + 1;`) never reaches this branch at
+                     * all -- the arith check above already took the
+                     * `__builtin_eval` path in that case, and
+                     * `evaluateArith()` will fail that concat/strlen
+                     * sub-term as "not a number" (a `UnifyError`, not a
+                     * parse-time failure) -- v1 does not special-case that;
+                     * SPEC.md documents it.
+                     */
+                    vault::unify::ConsTerm* pConcatCons = NULL;
+                    vault::unify::AbstractTerm* pConcatOtherSide = NULL;
+                    if( pLhsCons && pLhsCons->getArity() >= 2
+                            && pLhsCons->getName().value() == "concat" ) {
+                        pConcatCons = pLhsCons;
+                        pConcatOtherSide = rhs;
+                    } else if( pRhsCons && pRhsCons->getArity() >= 2
+                            && pRhsCons->getName().value() == "concat" ) {
+                        pConcatCons = pRhsCons;
+                        pConcatOtherSide = lhs;
+                    }
+
+                    vault::unify::ConsTerm* pStrlenCons = NULL;
+                    vault::unify::AbstractTerm* pStrlenOtherSide = NULL;
+                    if( !pConcatCons ) {
+                        if( pLhsCons && 1==pLhsCons->getArity()
+                                && pLhsCons->getName().value() == "strlen" ) {
+                            pStrlenCons = pLhsCons;
+                            pStrlenOtherSide = rhs;
+                        } else if( pRhsCons && 1==pRhsCons->getArity()
+                                && pRhsCons->getName().value() == "strlen" ) {
+                            pStrlenCons = pRhsCons;
+                            pStrlenOtherSide = lhs;
+                        }
+                    }
+
+                    if( pConcatCons ) {
+                        atomName = "__builtin_concat";
+                        int nArgs = pConcatCons->getArity();
+                        vault::unify::AbstractTerm** ppArgs =
+                            new vault::unify::AbstractTerm*[nArgs];
+                        for( int i = 0; i < nArgs; ++i ) {
+                            ppArgs[i] = const_cast<vault::unify::AbstractTerm*>(
+                                pConcatCons->getTermAt( i ) );
+                        }
+                        vault::unify::ArrayTerm* pArgsArray =
+                            new vault::unify::ArrayTerm( ppArgs, nArgs );
+                        // ArrayTerm's ctor copies the pointer VALUES out of
+                        // ppArgs (see AnyTermFactory::operator()(const
+                        // ArrayTermInput&) above for the identical pattern);
+                        // free the now-redundant transient buffer.
+                        delete[] ppArgs;
+                        out_pAbstractTerm = new vault::unify::ConsTerm(
+                            atomName.c_str(), pArgsArray, pConcatOtherSide );
+                        if( pTermDebugInfo ) {
+                            spWorld->setTermDebugInfo( out_pAbstractTerm, pTermDebugInfo );
+                        }
+                        // Discard the now-unreachable "concat(a, b, ...)"
+                        // wrapper node -- its children were just reused
+                        // directly above (inside the new ArrayTerm). Same
+                        // trivial-destructor, no-double-free reasoning as
+                        // findall's own `delete pFindallCons` above.
+                        delete pConcatCons;
+                    } else if( pStrlenCons ) {
+                        atomName = "__builtin_strlen";
+                        vault::unify::AbstractTerm* pArg =
+                            const_cast<vault::unify::AbstractTerm*>( pStrlenCons->getTermAt( 0 ) );
+                        out_pAbstractTerm = new vault::unify::ConsTerm(
+                            atomName.c_str(), pArg, pStrlenOtherSide );
+                        if( pTermDebugInfo ) {
+                            spWorld->setTermDebugInfo( out_pAbstractTerm, pTermDebugInfo );
+                        }
+                        delete pStrlenCons;
+                    } else {
+                        atomName = "unify";
+                    }
                 }
             }
             break;

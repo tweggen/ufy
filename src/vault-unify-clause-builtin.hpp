@@ -5,6 +5,26 @@ namespace vault {
 namespace unify {
 
 /**
+ * Recursively evaluate an arithmetic expression term (a `__builtin_arith`
+ * tree, a VarTerm bound to one/a number, or a plain 0-arity numeric atom)
+ * to an int64. Implemented in vault-unify-clause-builtin-arith.cpp (see
+ * that file's own comment on evaluateArith() for the full contract);
+ * declared here -- rather than kept file-local in an anonymous namespace,
+ * this module's usual per-file style (e.g. that same file's parseInt64())
+ * -- specifically so vault-unify-clause-builtin-string.cpp's concat/strlen
+ * argument resolution can reuse this SAME evaluator for a `__builtin_arith`
+ * argument (e.g. `$s = concat($a, 1 + 2);`) instead of duplicating the
+ * recursive tree walk.
+ */
+bool evaluateArith(
+    UnifyContext* pUCStackTop,
+    UnifyContext* pUCOriginal,
+    const AbstractTerm* pTerm,
+    int64_t& out_value,
+    std::string& out_error );
+
+
+/**
  * The equals/assign builtin clause.
  */
 class UnifyBuiltinClause
@@ -218,6 +238,150 @@ class RangeBuiltinClause
 public:
     RangeBuiltinClause();
     virtual ~RangeBuiltinClause();
+
+    virtual vault::unify::Clause::UnificationState startUnification(
+        Engine* pEngine,
+        UnifyContext* pUCStackTop,
+        UnifyContext* pUCOriginal,
+        UnifyContext* pUCCand,
+        const Goal*& out_pGoal,
+        ClauseContinuationContext*& inout_pCCC ) const;
+};
+
+
+/**
+ * ROADMAP Phase 2 ("String operations (concat, compare, match)", SPEC.md):
+ * what `$s = concat( $a, $b, ... );` (2+ args on either side of `=`)
+ * desugars to (`AnyTermFactory::operator()(const InfixTermsInput&)`, case
+ * `'='`, vault-unify-parser.cpp) -- mirroring how `findall(...)` is
+ * recognized by exact name there. Because a builtin clause head declares a
+ * FIXED arity (see e.g. `ArithEvalBuiltinClause`/`RangeBuiltinClause`
+ * above), the parser wraps the variadic source argument list into ONE
+ * `ArrayTerm` first, so this builtin's own head is a plain, fixed arity 2:
+ * `__builtin_concat([a, b, ...], out)`. Each array element is resolved like
+ * an `__builtin_eval`/`__builtin_compare` operand -- following a `VarTerm`
+ * binding, evaluating a `__builtin_arith` sub-tree via `evaluateArith()`
+ * (declared above; the same evaluator `__builtin_eval` uses) if present,
+ * otherwise requiring a 0-arity `ConsTerm` atom -- and the resolved
+ * strings are concatenated in order. Implemented in
+ * vault-unify-clause-builtin-string.cpp, alongside `StrlenBuiltinClause`
+ * and the `contains`/`startswith`/`endswith` goal builtins below.
+ */
+class ConcatBuiltinClause
+        : public SimpleBuiltinClause
+{
+public:
+    ConcatBuiltinClause();
+    virtual ~ConcatBuiltinClause();
+
+    virtual vault::unify::Clause::UnificationState startUnification(
+        Engine* pEngine,
+        UnifyContext* pUCStackTop,
+        UnifyContext* pUCOriginal,
+        UnifyContext* pUCCand,
+        const Goal*& out_pGoal,
+        ClauseContinuationContext*& inout_pCCC ) const;
+};
+
+
+/**
+ * ROADMAP Phase 2 (String operations, SPEC.md): what `$n = strlen( $s );`
+ * (exactly 1 arg on a side of `=`) desugars to (case `'='`,
+ * vault-unify-parser.cpp) -- same reservation idea as `ConcatBuiltinClause`
+ * above, but with a single argument, so no `ArrayTerm` wrapping is needed:
+ * `__builtin_strlen(arg, out)`, head declared arity 2. Resolves argument 0
+ * exactly like one `ConcatBuiltinClause` array element (see above) and
+ * unifies the resolved string's BYTE length (`std::string::size()` -- v1
+ * counts UTF-8 bytes, not Unicode codepoints; SPEC.md documents this) as a
+ * fresh decimal atom against argument 1.
+ */
+class StrlenBuiltinClause
+        : public SimpleBuiltinClause
+{
+public:
+    StrlenBuiltinClause();
+    virtual ~StrlenBuiltinClause();
+
+    virtual vault::unify::Clause::UnificationState startUnification(
+        Engine* pEngine,
+        UnifyContext* pUCStackTop,
+        UnifyContext* pUCOriginal,
+        UnifyContext* pUCCand,
+        const Goal*& out_pGoal,
+        ClauseContinuationContext*& inout_pCCC ) const;
+};
+
+
+/**
+ * ROADMAP Phase 2 (String operations, SPEC.md): `contains( $s, $sub );` --
+ * an ordinary PLAIN GOAL builtin (no `=`/parser rewrite involved at all,
+ * unlike concat/strlen above -- the same shape as `unify`/`__builtin_member_deref`,
+ * section 9), registered under its own literal, user-facing name `contains`
+ * (`World::init`, vault-unify-world.cpp) rather than a `__builtin_`-prefixed
+ * internal name. Because builtins are appended to the root `ExecutionState`
+ * before any user clause (section 5), a user-defined `contains/2` clause is
+ * only a SOFT reservation: `ExecutionState::ClauseIterator` still tries
+ * candidate clauses of the same name+arity in definition order, so this
+ * builtin's own result (success or failure) is always produced first, and
+ * the user's own clause could still be reached on backtracking -- it is not
+ * removed the way `cut`/`findall`/`assert`/`retract`'s exact-shape parser
+ * reservations are. Resolves both arguments exactly like one
+ * `ConcatBuiltinClause` array element (see above); an unbound argument is a
+ * `UnifyError`. Succeeds (`UnifyLast`) iff argument 0's resolved string
+ * contains argument 1's as a substring (`std::string::find`).
+ */
+class ContainsBuiltinClause
+        : public SimpleBuiltinClause
+{
+public:
+    ContainsBuiltinClause();
+    virtual ~ContainsBuiltinClause();
+
+    virtual vault::unify::Clause::UnificationState startUnification(
+        Engine* pEngine,
+        UnifyContext* pUCStackTop,
+        UnifyContext* pUCOriginal,
+        UnifyContext* pUCCand,
+        const Goal*& out_pGoal,
+        ClauseContinuationContext*& inout_pCCC ) const;
+};
+
+
+/**
+ * ROADMAP Phase 2 (String operations, SPEC.md): `startswith( $s, $prefix );`
+ * -- same shape, registration, soft-reservation, and argument resolution as
+ * `ContainsBuiltinClause` above; succeeds iff argument 0's resolved string
+ * starts with argument 1's.
+ */
+class StartswithBuiltinClause
+        : public SimpleBuiltinClause
+{
+public:
+    StartswithBuiltinClause();
+    virtual ~StartswithBuiltinClause();
+
+    virtual vault::unify::Clause::UnificationState startUnification(
+        Engine* pEngine,
+        UnifyContext* pUCStackTop,
+        UnifyContext* pUCOriginal,
+        UnifyContext* pUCCand,
+        const Goal*& out_pGoal,
+        ClauseContinuationContext*& inout_pCCC ) const;
+};
+
+
+/**
+ * ROADMAP Phase 2 (String operations, SPEC.md): `endswith( $s, $suffix );`
+ * -- same shape, registration, soft-reservation, and argument resolution as
+ * `ContainsBuiltinClause` above; succeeds iff argument 0's resolved string
+ * ends with argument 1's.
+ */
+class EndswithBuiltinClause
+        : public SimpleBuiltinClause
+{
+public:
+    EndswithBuiltinClause();
+    virtual ~EndswithBuiltinClause();
 
     virtual vault::unify::Clause::UnificationState startUnification(
         Engine* pEngine,

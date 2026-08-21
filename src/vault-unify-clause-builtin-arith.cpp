@@ -64,6 +64,8 @@ bool parseInt64( const std::string& s, int64_t& out_value )
     return true;
 }
 
+} // anonymous namespace
+
 
 /**
  * Recursively evaluate an arithmetic expression term to an int64.
@@ -79,12 +81,23 @@ bool parseInt64( const std::string& s, int64_t& out_value )
  *    vault-unify-parser.cpp): lhs/rhs are evaluated recursively (bottom-up)
  *    and combined per opAtom's text.
  *  - a plain 0-arity ConsTerm atom, whose name must parse as an int64
- *    (parseInt64() above).
+ *    (parseInt64() above, in this file's own anonymous namespace -- still
+ *    reachable from here by ordinary unqualified lookup within the same
+ *    translation unit).
  *
  * Any other shape (a MapTerm, an unbound var, a non-numeric atom, division
  * by zero, an unrecognized operator) is an error: returns false and fills
  * out_error with a human-readable message; the caller is expected to
  * VAULT_UNIFY_DI(ALWAYS, ...) it and turn it into a UnifyError.
+ *
+ * ROADMAP Phase 2 (string operations, SPEC.md): declared (non-static) in
+ * vault-unify-clause-builtin.hpp -- rather than kept anonymous-namespace
+ * file-local like parseInt64() above -- specifically so
+ * vault-unify-clause-builtin-string.cpp's concat/strlen argument resolution
+ * can reuse this SAME evaluator for a `__builtin_arith` argument (e.g.
+ * `$s = concat($a, 1 + 2);`), instead of duplicating the recursive tree
+ * walk. RangeBuiltinClause below still calls it directly (same file, no
+ * qualification needed either way).
  */
 bool evaluateArith(
         UnifyContext* pUCStackTop,
@@ -159,6 +172,8 @@ bool evaluateArith(
     return true;
 }
 
+
+namespace {
 
 /**
  * One side of a comparison, resolved: either numeric (an int64 value,

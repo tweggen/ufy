@@ -777,8 +777,8 @@ solutions); (d) cut at query top level (`query { c($x); cut; print($x);
 
 ## 9. Builtins
 
-All eight appended to the root state, in this order, before any user clause
-(`World::init`, `src/vault-unify-world.cpp`).
+All thirteen appended to the root state, in this order, before any user
+clause (`World::init`, `src/vault-unify-world.cpp`).
 
 **`unify($a, $b)`** — `UnifyBuiltinClause`
 (`src/vault-unify-clause-builtin-unify.cpp`). Head declared arity 2.
@@ -880,6 +880,31 @@ desugaring the way a builtin can return `UnifyError`), adopted via
 `UnifyContext::adoptTerm()` exactly like `__builtin_eval`'s/`findall`'s own
 fresh solve-time results, and unified against argument 2.
 
+**`__builtin_concat($args, $out)`** — `ConcatBuiltinClause`
+(`src/vault-unify-clause-builtin-string.cpp`, ROADMAP Phase 2, section 14).
+What `$s = concat( $a, $b, ... );` (2+ arguments) desugars to (section
+14.1) — never written directly. Head declared arity 2; argument 0 is
+always, in practice, an `ArrayTerm` literal the parser just built. Resolves
+every array element like an `__builtin_eval`/`__builtin_compare` operand
+(`resolveStringArg()`, reusing `evaluateArith()` for a `__builtin_arith`
+element) and unifies their concatenation — a fresh, `adoptTerm()`-owned atom
+— against argument 1.
+
+**`__builtin_strlen($s, $out)`** — `StrlenBuiltinClause` (same file,
+section 14.1). What `$n = strlen( $s );` desugars to. Head declared arity
+2. Resolves argument 0 like one `concat` element above and unifies its
+**byte** length (`std::string::size()` — not codepoints, section 14.1) as a
+fresh decimal atom against argument 1.
+
+**`contains($s, $sub)` / `startswith($s, $prefix)` / `endswith($s, $suffix)`**
+— `ContainsBuiltinClause`/`StartswithBuiltinClause`/`EndswithBuiltinClause`
+(same file, section 14.2). Plain goal builtins under their own literal
+names (no parser rewrite) — a **soft** reservation only, by clause order,
+unlike every `__builtin_`-prefixed name above (section 14.2). Each resolves
+both arguments via the same `resolveStringArg()`; an unbound argument is a
+`UnifyError`, otherwise the goal simply succeeds or fails on the
+substring/prefix/suffix test.
+
 ---
 
 ## 10. Known deviations and quirks
@@ -925,11 +950,16 @@ All verified by direct code reading, collected here for quick reference.
   joined (section 8).
 - Builtin predicate names (`unify`, `print`, `emit`,
   `__builtin_member_deref`, `__builtin_eval`, `__builtin_compare`,
-  `__builtin_arith`) are appended before any user clause (the last one is
-  never a clause name — it only ever appears as a sub-term, section 4.1); a
-  user rule reusing one of those names would not shadow the builtin — both
-  would each contribute a solution branch, since every same-named candidate
-  is tried (section 5). `__builtin_findall` (section 11) is not appended at
+  `__builtin_arith`, `__builtin_concat`, `__builtin_strlen`, `contains`,
+  `startswith`, `endswith`) are appended before any user clause (`__builtin_arith`
+  is never a clause name — it only ever appears as a sub-term, section 4.1;
+  `__builtin_concat`/`__builtin_strlen` are likewise only ever parser-
+  generated, section 14.1); a user rule reusing one of those names would not
+  shadow the builtin — both would each contribute a solution branch, since
+  every same-named candidate is tried (section 5). This is exactly the
+  "soft reservation" section 14.2 documents in detail for
+  `contains`/`startswith`/`endswith` specifically. `__builtin_findall`
+  (section 11) is not appended at
   all — like `__builtin_cut`, it is never a registered `Clause`, only a goal
   term `SolveJob::performSlice()` recognizes structurally — so a user rule
   named `__builtin_findall` (unlikely, but not grammatically prevented)
@@ -1761,3 +1791,138 @@ all fails silently, no output. Deliberately NOT exercised there (documented
 above instead, to keep every query in that program at UnifyNot-or-success):
 asserting a non-ground fact, and asserting/retracting a rule — both a
 `UnifyError`.
+
+---
+
+## 14. String operations (ROADMAP Phase 2)
+
+ROADMAP Phase 2 ("String operations (concat, compare, match)"). Compare
+already existed via the comparison operators (`<`/`<=`/`>`/`>=`/`==`/`!=`,
+section 4.1/8) — lexicographic when either side is non-numeric, which
+covers ordinary string comparison already. This section adds concatenation,
+length, and three substring-match goals.
+
+### 14.1 `concat` and `strlen`: reserved shapes on a side of `=`
+
+Same reservation discipline as `findall` (section 11.2): `AnyTermFactory::
+operator()(const InfixTermsInput&)`'s `case '=':` (`src/vault-unify-parser.cpp`)
+recognizes a side of `=` that is a `ConsTerm` literally named `"concat"`
+with **2 or more** arguments, or literally named `"strlen"` with **exactly
+1** argument — checked after the `findall` shape has already been ruled out
+(the three names never collide, so the check order between them has no
+observable effect). Either name at any OTHER arity, or written anywhere
+other than directly on a side of `=`, is left as a completely ordinary
+`ConsTerm`/predicate call — exactly like `findall` staying ordinary outside
+its own reserved shape.
+
+**`$s = concat( $a, $b, ... );`** desugars to `__builtin_concat([a, b, ...],
+otherSide)`. Every builtin clause head in this module declares a FIXED
+arity (`ArithEvalBuiltinClause`, `RangeBuiltinClause`, etc., section 9), so
+rather than give `ConcatBuiltinClause` a variadic head, the parser wraps the
+N source arguments into ONE `ArrayTerm` first (built the same way
+`AnyTermFactory::operator()(const ArrayTermInput&)` builds an array
+literal, section 11.1) and hands that single array plus the other side of
+`=` to a plain, fixed arity-2 head. The wrapping `concat(...)` `ConsTerm`
+node itself is then discarded (its argument children were just reused
+directly inside the new `ArrayTerm`) — the identical "reuse the children,
+free just the now-unreachable wrapper" idiom `findall`'s own desugar uses
+(section 11.2): `ConsTerm::~ConsTerm()` is trivial and never touches
+children, so this cannot double-free them.
+
+**`$n = strlen( $s );`** desugars to `__builtin_strlen(s, otherSide)` — a
+single argument needs no array wrapping.
+
+**Argument resolution** (`resolveStringArg()`,
+`src/vault-unify-clause-builtin-string.cpp`, shared by every builtin in this
+section): mirrors `resolveCompareSide()`
+(`src/vault-unify-clause-builtin-arith.cpp`, section 4.1) exactly — follow
+a `VarTerm` binding via `AbstractTerm::getBoundTerm()` (unbound is an
+error); if the bound term is a `__builtin_arith(...)` tree, evaluate it
+numerically via `evaluateArith()` and format the (possibly `-`-prefixed)
+decimal result back to text (so `concat("n=", 2 + 3)` reads as `"n=5"`);
+otherwise require a 0-arity `ConsTerm` atom and use its name value as-is —
+quoted strings, barewords, and digit runs are all the same `Atom` kind by
+spelling (section 1), so this one path handles all of them uniformly. Any
+other shape (unbound, a `MapTerm`/`ArrayTerm` operand, a non-`__builtin_arith`
+`ConsTerm` with children, or a failed arithmetic sub-evaluation, e.g.
+division by zero) is a `UnifyError`. `evaluateArith()` itself is declared
+(non-static, no longer anonymous-namespace-local) in
+`vault-unify-clause-builtin.hpp` specifically so this file can reuse the
+SAME evaluator rather than duplicate the recursive tree walk.
+
+**`concat`'s result**: every resolved argument's string, concatenated in
+order, as one fresh, `UnifyContext::adoptTerm()`-owned 0-arity `ConsTerm`
+atom — the same ownership idiom `ArithEvalBuiltinClause`'s evaluated result
+uses (section 4.1) — unified against the other side of `=`.
+
+**`strlen`'s result**: the resolved string's **byte** length
+(`std::string::size()`), as a fresh decimal atom, adopted and unified the
+same way. **v1 counts UTF-8 bytes, not Unicode codepoints** — an honest,
+documented limitation: a multi-byte codepoint (most non-ASCII text) counts
+as more than one. No codepoint-aware length is implemented.
+
+**v1 limitation: `concat`/`strlen` nested inside an arithmetic expression is
+NOT supported.** `case '=':` checks whether either already-built side is a
+`__builtin_arith` tree BEFORE it ever gets a chance to check for the
+`concat`/`strlen`/`findall` reserved shapes (section 4.1) — so
+`$x = concat($a, $b) + 1;` never reaches this section's recognition at all:
+`concat($a, $b)` is built as an ordinary, un-rewritten `ConsTerm` (arity 2,
+name `"concat"`) by the generic `ConsTermInput` factory, becomes one operand
+of the enclosing `__builtin_arith("+", ...)` tree, and the whole expression
+takes the arithmetic-in-`=` path (`__builtin_eval`) instead.
+`evaluateArith()` then rejects that `concat(...)` sub-term as "expected a
+number, got 'concat( a, b )'" — a `UnifyError` at solve time, not a parse
+error — because it is not a 0-arity atom and not itself a
+`__builtin_arith` node. This is a deliberate v1 scope limitation, not a
+crash: it fails the goal predictably, the same way any other type error
+inside an arithmetic expression does.
+
+### 14.2 `contains`/`startswith`/`endswith`: plain goal builtins
+
+Unlike `concat`/`strlen` above, these three need no parser rewrite at all —
+they are ordinary goal builtins, registered under their own literal,
+user-facing names (`contains`, `startswith`, `endswith`, `World::init`,
+`src/vault-unify-world.cpp`), the same shape as `unify`/`print`/`emit`
+(section 9), each with a plain, fixed arity-2 head.
+
+**`contains( $s, $sub );`** succeeds (`UnifyLast`) iff `$sub`'s resolved
+string occurs anywhere inside `$s`'s (`std::string::find`).
+**`startswith( $s, $prefix );`** succeeds iff `$s`'s resolved string starts
+with `$prefix`'s. **`endswith( $s, $suffix );`** succeeds iff `$s`'s
+resolved string ends with `$suffix`'s. All three resolve both arguments via
+the exact same `resolveStringArg()` described in 14.1 above (so, like
+`concat`/`strlen`, a `__builtin_arith` argument is evaluated numerically
+first); an unbound argument is a `UnifyError` (`VAULT_UNIFY_DI(ALWAYS,
+...)`-logged, mirroring `__builtin_eval`/`__builtin_compare`'s own unbound-
+operand handling). A resolved-but-failing test (e.g. `$sub` genuinely not
+found) is an ordinary `UnifyNot` — ordinary goal failure, not an error.
+
+**Soft reservation (clause order, not exact-shape)**: because `World::init`
+appends every builtin — including these three — to the root
+`ExecutionState` **before** any user clause is ever parsed (section 5), and
+`ExecutionState::ClauseIterator` tries every same-named candidate clause in
+definition order without stopping at the first success (section 5, section
+9's existing note on `unify`/`print`/`emit` reuse), a user program is free
+to also define its own `contains/2`/`startswith/2`/`endswith/2` clause —
+but the builtin's own result (success or failure) is always produced FIRST,
+and the user's clause, if any, is only reached on backtracking past that
+result. This is a strictly weaker reservation than `cut`/`findall`/
+`assert`/`retract`/`concat`/`strlen`'s exact-name-and-arity parser-level
+reservations (sections 8, 11.2, 13, 14.1) — those remove the name from
+ordinary use entirely at the reserved shape; this one merely orders the
+builtin ahead of whatever a user program defines under the same name.
+
+### 14.3 Conformance
+
+`test/conformance/strings.ufy`: (a) `concat` of three literal parts; (b)
+`concat` mixing a bound variable and a number (exercising the
+`__builtin_arith` argument path via `resolveStringArg()`); (c) `strlen`
+printed; (d) `contains` — one success (guarded by `if`, so only the
+matching branch prints) and one failure (the `if`'s guarded print is simply
+never reached — no explicit "should-not-print" text needed, unlike
+section 4.1/8's negative comparison/arithmetic cases, since the `if` itself
+already proves the goal is being exercised either way); (e) `startswith` —
+one success, one failure, same `if`-guarded style; (f) `endswith` — one
+success, one failure, same style; (g) a `concat` result unified directly
+against its expected literal atom (an equality proof, mirroring
+`findall-arrays.ufy`'s own findall-vs-literal proof, section 11.2).
