@@ -1,0 +1,71 @@
+// Conformance: first-class arrays and findall (ROADMAP Phase 2, SPEC.md
+// section 11).
+//
+// Arrays ([a, b]) are now a distinct ArrayTerm term kind -- ordered,
+// positional unification (equal length required, then element-by-element,
+// AbstractTerm::unifyArrayTerm()/ArrayTerm::unifyArrayTerm(),
+// include/vault-unify.hpp, src/vault-unify-term-array.cpp) -- no longer a
+// MapTerm keyed by stringified numeric indices (the removed SPEC.md quirk).
+//
+// findall($tmpl, $goal) (written as `$out = findall($tmpl, $goal);`,
+// SPEC.md section 11) collects one GROUND, cloned copy of $tmpl per
+// solution of $goal into a fresh ArrayTerm, in solution order; it never
+// fails (zero solutions -> an empty array) and is deterministic (exactly
+// one solution, no choice point).
+//
+// Expected output (see SPEC.md section 11 for the citation trail, and this
+// task's report for the full prediction):
+//   print: arrays-equal
+//   print: [a, b, c]
+//   print: [apple, banana, cherry]
+//   print: []
+//   print: findall-matches-literal
+
+// (a) Array/array unification: equal length, equal elements -> unifies.
+query {
+    [ 1, 2, 3 ] = [ 1, 2, 3 ];
+    print( "arrays-equal" );
+}
+
+// (b) Array/array unification: unequal length -> fails silently, same as
+// any other structural mismatch (SPEC.md section 6) -- prints nothing.
+query {
+    [ 1, 2 ] = [ 1, 2, 3 ];
+    print( "should-not-print-length-mismatch" );
+}
+
+data( [ a, b, c ] );
+
+// (c) An array stored in a fact, retrieved via a variable and printed --
+// pins ArrayTerm::toString()/toContextString()'s "[a, b, c]" rendering.
+query {
+    data( $arr );
+    print( $arr );
+}
+
+fruit( apple );
+fruit( banana );
+fruit( cherry );
+
+// (d) findall collects one ground copy of the template per solution, in
+// solution (== clause definition) order.
+query {
+    $all = findall( $x, fruit( $x ) );
+    print( $all );
+}
+
+// (e) Zero solutions -> an empty array, never a failure.
+query {
+    $none = findall( $x, nosuchpredicate( $x ) );
+    print( $none );
+}
+
+// (f) The findall result unifies against an equivalent array literal,
+// element by element (the atoms compare equal by name, ConsTerm::
+// unifyConsTerm, regardless of the fact that findall's copies are fresh
+// clones rather than the original atoms).
+query {
+    $r = findall( $x, fruit( $x ) );
+    $r = [ apple, banana, cherry ];
+    print( "findall-matches-literal" );
+}

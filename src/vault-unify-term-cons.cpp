@@ -135,6 +135,20 @@ UnifyResult ConsTerm::unifyMapTerm(
     return UnifyNot;
 }
 
+UnifyResult ConsTerm::unifyArrayTerm(
+        Engine* /*pEngine*/,
+        UnifyContext* /*pUCStackTop*/,
+        UnifyContext* /*pUCOther*/,
+        UnifyContext* /*pUCMine*/,
+        const ArrayTerm* /*pOther*/ ) const
+{
+    /*
+     * These are terms of different types (ROADMAP Phase 2: ArrayTerm is a
+     * distinct kind now, unrelated to ConsTerm). Cannot unify at all.
+     */
+    return UnifyNot;
+}
+
 UnifyResult ConsTerm::unifyTerm(
         Engine* pEngine,
         UnifyContext* pUCStackTop,

@@ -158,6 +158,25 @@ UnifyResult VarTerm::unifyMapTerm(
 }
 
 
+UnifyResult VarTerm::unifyArrayTerm(
+        Engine* pEngine,
+        UnifyContext* pUCStackTop,
+        UnifyContext* pUCOther,
+        UnifyContext* pUCMine,
+        const ArrayTerm* pOther ) const
+{
+    // Sort parameters and forward to generic version.
+    return pUCStackTop->genericUnifyVarWithKnown(
+        pEngine,
+        pUCStackTop,
+        pUCMine,
+        this,
+        pUCOther,       // Unify to scope the variable
+        pOther          // non-var term, array here.
+        );
+}
+
+
 // this is from the goal, other is from the clause.
 UnifyResult VarTerm::unifyTerm(
         Engine* pEngine,

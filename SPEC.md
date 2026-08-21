@@ -21,7 +21,8 @@ programs — see `test/golden/README.md`); `run-golden-test.sh` reports
 
 Contents: 1. Lexical elements · 2. Program structure · 3. Terms ·
 4. Desugarings · 5. Execution model · 6. Unification ·
-7. Negation-as-failure · 8. Cut · 9. Builtins · 10. Deviations and quirks.
+7. Negation-as-failure · 8. Cut · 9. Builtins · 10. Deviations and quirks ·
+11. Arrays and findall.
 
 ---
 
@@ -172,8 +173,9 @@ applies to whatever the rest of the statement evaluates to (sections 4, 7).
 
 ## 3. Terms
 
-Three term kinds under `AbstractTerm` (`include/vault-unify.hpp`):
-`ConsTerm`, `MapTerm`, `VarTerm`. No separate number/string kind.
+Four term kinds under `AbstractTerm` (`include/vault-unify.hpp`):
+`ConsTerm`, `MapTerm`, `ArrayTerm`, `VarTerm`. No separate number/string
+kind.
 
 **Cons terms** (`ConsTerm`, `include/vault-unify.hpp`): an `Atom` name plus
 a fixed-size argument vector. `m_ruleConsTerm %= (m_ruleAtom >> -('(' >>
@@ -189,15 +191,20 @@ m_ruleMapTerm %= ('{' >> (m_ruleMapPair % ',') >> '}');`, e.g.
 unification (section 6) and for arrays below.
 
 **Array terms**: `m_ruleArrayTerm %= ('[' >> (m_ruleAnyTerm % ',') >>
-']');`, e.g. `[a, b, c]`.
-`AnyTermFactory::operator()(const ArrayTermInput&)`
-(`src/vault-unify-parser.cpp`) desugars this straight into a `MapTerm`
-keyed by stringified 0-based indices ("0","1","2",...). **Arrays are maps
-with numeric-looking string keys, not a distinct term kind** (section 9) —
-those keys sort lexicographically once an array has 10+ elements
-("10" < "2"), invisible when comparing two same-length arrays (both sides
-build identical keys in identical order) but a trap for anything
-inspecting the `MapTerm` directly.
+']');`, e.g. `[a, b, c]`. `AnyTermFactory::operator()(const ArrayTermInput&)`
+(`src/vault-unify-parser.cpp`) builds a distinct `ArrayTerm`
+(`include/vault-unify.hpp`, `src/vault-unify-term-array.cpp`) — an ordered
+`std::vector<AbstractTerm*>`, unrelated to `MapTerm`, with ordinary
+positional (index-by-index) unification. See section 11 for the full
+unification rule and for `findall`, which produces `ArrayTerm` results.
+*(Superseded, ROADMAP Phase 2 "Arrays and findall", 2026-08-21)*: arrays
+used to desugar straight into a `MapTerm` keyed by stringified 0-based
+indices ("0","1","2",...) — **arrays were maps with numeric-looking string
+keys, not a distinct term kind**, and those keys sorted lexicographically
+once an array had 10+ elements ("10" < "2"), a trap for anything inspecting
+the `MapTerm` directly (invisible to ordinary array/array unification,
+since both sides built identical keys in identical order). Section 11 below
+is the replacement; this quirk no longer applies.
 
 **Variables** (`VarTerm`, `include/vault-unify.hpp`): a process-wide unique
 `VarTermId` (`VarTerm::VarTerm`, `src/vault-unify-term-var.cpp`, a plain
@@ -886,7 +893,22 @@ All verified by direct code reading, collected here for quick reference.
   never a clause name — it only ever appears as a sub-term, section 4.1); a
   user rule reusing one of those names would not shadow the builtin — both
   would each contribute a solution branch, since every same-named candidate
-  is tried (section 5).
+  is tried (section 5). `__builtin_findall` (section 11) is not appended at
+  all — like `__builtin_cut`, it is never a registered `Clause`, only a goal
+  term `SolveJob::performSlice()` recognizes structurally — so a user rule
+  named `__builtin_findall` (unlikely, but not grammatically prevented)
+  would simply never be reached; `SolveJob::performSlice()` intercepts the
+  term before any clause lookup happens at all.
+- `->`/member-deref (`__builtin_member_deref`, `MemberBuiltinClause`,
+  section 9) requires its left-hand side to resolve to a `MapTerm`
+  specifically (`dynamic_cast<const MapTerm*>`) — this already excluded
+  arrays in spirit even when they still desugared into a `MapTerm`
+  (section 3's now-superseded quirk was the only reason `->`-on-an-array
+  ever appeared to typecheck at all). Now that `ArrayTerm` is a distinct
+  kind (section 11), `->` against an array simply fails outright, the same
+  as `->` against any other non-map left-hand side; there is still no
+  dedicated array-indexing syntax (`lhs[rhs]` remains the pre-existing
+  unimplemented quirk immediately above).
 - `ExecutionState::fork()` and the resulting parent-state clause fallback
   are fully implemented but never invoked anywhere in this module today
   (section 5) — not a bug, just currently-unused machinery.
@@ -894,3 +916,213 @@ All verified by direct code reading, collected here for quick reference.
   `UnifyLast` wherever it's read, but no `unify*Term` implementation ever
   returns it (section 6) — reserved for functionality that doesn't exist
   yet.
+
+---
+
+## 11. Arrays and findall (ROADMAP Phase 2)
+
+ROADMAP Phase 2 ("consistent list/array semantics + findall"). Two related
+changes: array literals (`[a, b]`) become a genuine, distinct term kind
+instead of desugaring into a `MapTerm`; and `findall` becomes a solver
+special form that collects every solution of a sub-goal into an array.
+
+### 11.1 Arrays
+
+**Term kind**: `ArrayTerm` (`include/vault-unify.hpp`,
+`src/vault-unify-term-array.cpp`) — an ordered `std::vector<AbstractTerm*>`,
+built directly from the literal syntax (`m_ruleArrayTerm`, section 1/3;
+`AnyTermFactory::operator()(const ArrayTermInput&)`,
+`src/vault-unify-parser.cpp`, now builds an `ArrayTerm` instead of a
+`MapTerm`). Two constructors: `ArrayTerm(AbstractTerm** ppTerms, int
+nTerms)` (mirrors `ConsTerm`'s — the transient array's pointer *values* are
+copied out, the array itself stays the caller's to free) for the literal
+syntax, and an empty `ArrayTerm()` plus `append()` for building a result
+incrementally (`findall`, section 11.2, below). `~ArrayTerm()` is trivial
+(no keys of its own to free, unlike `~MapTerm()` — see section 3).
+
+**Double dispatch**: `AbstractTerm` gained a fifth pure-virtual method,
+`unifyArrayTerm(...)`, alongside `unifyTerm`/`unifyConsTerm`/
+`unifyVarTerm`/`unifyMapTerm` (`include/vault-unify.hpp`) — every existing
+concrete kind (`ConsTerm`, `VarTerm`, `MapTerm`) and the new `ArrayTerm`
+implement it:
+- `ConsTerm::unifyArrayTerm` / `MapTerm::unifyArrayTerm` → `UnifyNot`
+  (`ArrayTerm` is unrelated to both — section 6's "different term kinds
+  never unify" rule, unchanged).
+- `VarTerm::unifyArrayTerm` → forwards to
+  `UnifyContext::genericUnifyVarWithKnown` (same generic-bind path every
+  other kind uses against a variable).
+- `ArrayTerm::unifyConsTerm` / `ArrayTerm::unifyMapTerm` → `UnifyNot`
+  (symmetric with the two bullets above).
+- `ArrayTerm::unifyVarTerm` → forwards to `genericUnifyVarWithKnown`
+  (symmetric with `VarTerm::unifyArrayTerm`).
+- `ArrayTerm::unifyArrayTerm` (`src/vault-unify-term-array.cpp`) — the real
+  rule: identical length required first (any mismatch is an immediate
+  `UnifyNot`, no partial/prefix match), then element-by-element positional
+  unification via `UnifyContext::unifyTerms` for each index, with the same
+  `UnifyError`-propagates-immediately / `!res` → `UnifyNot` check
+  `ConsTerm::unifyConsTerm` uses for its sub-terms (section 6) — there is
+  simply no name to compare first (an array has none, unlike `ConsTerm`).
+  `ArrayTerm::unifyTerm`/`ArrayTerm::unifyMapTerm`/etc. dispatch exactly
+  like `ConsTerm`'s/`MapTerm`'s own `unifyTerm` (self-identity fast path,
+  then the second-order call on `pOther`).
+
+**Rendering**: `toString()`/`toContextString()`/`toJSON()` all render as
+`[elem1, elem2, ...]` (`", "`-joined, no trailing separator, `"[]"` for an
+empty array) — `ArrayTerm::toString()` etc., `src/vault-unify-term-array.cpp`,
+mirroring `MapTerm`'s per-element delegation style. Because `print`/`emit`
+(section 9) already resolve every argument generically via
+`toContextString`/`toJSON` (virtual dispatch, no per-kind switch in
+`PrintBuiltinClause`/`EmitBuiltinClause`), both render arrays correctly with
+no changes needed there.
+
+**Tree-walking utilities**: `collectTermTree`/`deleteTermTree` (generic,
+via `abstractTermIterator()`) needed no changes at all. `cloneTermTree`
+(`src/vault-unify-terms.cpp`, used by the `if`-statement desugaring,
+section 4) gained an `ArrayTerm` branch (enumerate via `getElements()`,
+clone each element, rebuild via the transient-array constructor — same
+ownership pattern as its `ConsTerm`/`MapTerm` branches).
+
+**Conformance**: `test/conformance/findall-arrays.ufy` (a) array/array
+unification, equal length and elements, and (b) unequal length (fails
+silently, same as any other structural mismatch); (c) an array stored in a
+fact, retrieved through a variable and printed, pinning the
+`"[a, b, c]"` rendering.
+
+### 11.2 findall
+
+**Syntax and reservation**: `$out = findall( $tmpl, $goal );` —
+`AnyTermFactory::operator()(const InfixTermsInput&)`'s `case '=':`
+(`src/vault-unify-parser.cpp`) recognizes a side of `=` that is a `ConsTerm`
+literally named `"findall"` with **exactly 2** arguments (mirroring how
+`"cut"` is reserved by exact name+arity, section 8) and desugars it to
+`__builtin_findall(tmpl, goal, otherSide)`, discarding the now-unreachable
+`findall(...)` wrapper `ConsTerm` node (its two children are reused
+directly; freed the same way `deleteScratchTermTree()` frees other orphaned
+structural scratch nodes elsewhere in this file). This is a **choice, not
+an oversight**: `findall` used at any OTHER arity, or anywhere other than a
+side of `=`, is left as a completely ordinary `ConsTerm`/predicate call —
+exactly like `"query"`/`"cut"` staying ordinary once they take the "wrong"
+shape for their respective reservations (section 2, section 8). If *both*
+sides of `=` happen to be this exact `findall(...)` shape, the left side
+wins (undefined-but-harmless — not exercised by any test, mirroring the
+identical tie-break already documented for the arithmetic-in-`=` desugar,
+section 4.1).
+
+**Solver special form**: `__builtin_findall(tmpl, subgoal, out)` is
+recognized directly in `SolveJob::performSlice()`
+(`src/vault-unify-solvejob.cpp`), structurally, before clause iteration —
+exactly like `__builtin_cut` (section 8) and for the same reason: it needs
+machinery (running a whole nested search) no `Clause::startUnification()`
+implementation ever gets access to (that signature only ever sees two
+`UnifyContext`s and an `Engine`).
+
+**Mechanism**:
+1. A fresh `SolveJob` is constructed **on the stack, driven synchronously,
+   never enqueued on the `Engine`** (`nestedJob.setWorld(...)`;
+   `setGoal(&nestedGoal)` with `nestedGoal` wrapping `subgoal` alone;
+   `startJob(...)`; one direct `performSlice()` call). This is safe and
+   sufficient because `Job`'s default debug target state is `REGULAR`
+   (`Job::Job()`, `src/vault-unify-job.cpp`), and `performSlice()` under
+   `REGULAR` runs to full exhaustion in a single call — the same property
+   `unify-run.cpp`'s "barrier job" trick already relies on (see its
+   comment). The nested job solves `subgoal` **as if it were a brand-new
+   top-level query**: its own root `UnifyContext` has no parent, exactly
+   like `SolveJob::startJob()`'s own root context.
+2. Every solution the nested job found (`m_listUnifySolutions`) contributes
+   one **ground copy** of `tmpl`, via the new helper `resolveTermGrounded()`
+   (`src/vault-unify-terms.cpp`, declared next to `cloneTermTree()` in
+   `include/vault-unify.hpp`): it walks `tmpl` exactly like `cloneTermTree`
+   structurally, but instead of substituting via a caller-supplied map, it
+   resolves each `VarTerm` against the solution's `UnifyContext`
+   (`findVarBinding`/`findVarInstance`, the same pair
+   `SolveJob::getSolutionList()` and `VarTerm::toContextString()` use) and
+   recursively resolves the bound instance term too (in *its own* binding's
+   `UnifyContext` — a variable can be bound to a term that itself still
+   contains unresolved variables scoped elsewhere); an unbound variable is
+   cloned as a fresh, unbound `VarTerm`. Every node returned is a fresh
+   allocation, because the nested job's entire arena is destroyed the
+   moment this block finishes — nothing may keep pointing into it.
+3. The ground copies are collected into a fresh `ArrayTerm` (`append()`,
+   section 11.1), adopted into a fresh `UnifyContext` (parented on the
+   current solve chain) via `UnifyContext::adoptTerm()`, and unified against
+   `out` exactly the way `__builtin_eval`'s evaluated result is
+   (`ArithEvalBuiltinClause`, `src/vault-unify-clause-builtin-arith.cpp`):
+   same `UnifyContext` mechanics, same ownership idiom.
+4. Findall then advances **exactly once**, like a terminal (fact/no-
+   continuation) clause match, or like `cut` — never both: it invalidates
+   its own `SolveContext`'s `m_itNextChildClause` first (so a later revisit
+   falls into the ordinary "no next child clause" `discardTop()` path
+   instead of re-recognizing and re-running this same term — the identical
+   reasoning `cut` documents for its own iterator invalidation, section 8),
+   then pushes a continuation `SolveContext` **only if** the array-vs-`out`
+   unification actually succeeded.
+
+**Determinism and failure modes**: `findall` itself never fails — zero
+solutions of `subgoal` simply produce an empty `ArrayTerm` (`"[]"`,
+section 11.1) — and it is deterministic: exactly one solution, no choice
+point (nothing is ever tried a second way). The one way the overall goal
+can still fail or error is the same as any ordinary unification: binding
+the (possibly empty) result array against `out` can itself fail
+(`out` already bound to an incompatible value) or error, handled exactly
+like any other `UnifyError` elsewhere in `performSlice()` (recorded via
+`recordError()`, then treated as `UnifyNot`).
+
+**Ownership**: the nested job's own arena (`UnifyContext`s, `GoalPart`s,
+`SolveContext`s) is freed by its own `~SolveJob()` when the nested
+`SolveJob`/`Goal` go out of scope — safe to call directly on a stack
+object that was never enqueued, since nothing in `~SolveJob()` depends on
+having gone through the `Engine`'s scheduler (`triggerRelease()` is a
+no-op; the arena vectors are freed unconditionally). The result `ArrayTerm`
+and every grounded element in it are independent allocations built by
+`resolveTermGrounded()` — they do not point into the nested job's arena at
+all, so their lifetime is entirely decoupled from it; they are freed
+instead (as one tree, via `collectTermTree()`) when the *outer* job's
+adopting `UnifyContext` is destroyed. This is why `UnifyContext::~UnifyContext()`
+(`src/vault-unify-unifycontext.cpp`) was generalized from a single, flat
+`delete` (correct only for `__builtin_eval`'s original single-leaf-atom use
+case) to a `collectTermTree()`-based, de-duplicated sweep over every
+adopted term's *entire* tree — the same pattern `World::~World()`/
+`~SolveJob()` already use for their own term trees.
+
+**Variable-scope analysis (why this is correct)**: `SolveJob::getSolutionList()`
+already resolves every top-level query variable via
+`AssignmentId(0, varTerm->getBinding())` — unify-context id `0` meaning "no
+parent scope", exactly what a variable occurring directly in a fresh
+top-level query's own goal gets (`GoalPart`'s origin `UnifyContext*` is
+`NULL` for such a root goal part — see `SolveJob::startJob()` — and
+`genericUnifyVarWithKnown` maps a `NULL` scope pointer to unify-context id
+`0`). Because the nested job solves `subgoal` the exact same way (its own
+fresh root, unrelated to whatever scope enclosed the `findall(...)` call),
+and because `tmpl`/`subgoal` share the identical `VarTerm*` objects for any
+variable appearing in both (one `ClauseContext` symbol table per
+clause/query, section 2/4), `resolveTermGrounded(tmpl, solutionUC, NULL)`
+resolves those shared variables correctly: it looks them up as
+`AssignmentId(0, ...)` against `solutionUC`, and the binding is reachable
+by walking `solutionUC`'s `UnifyContext` parent chain (which mirrors the
+nested job's own `SolveContext` call tree exactly) up to wherever it was
+recorded — regardless of how deep inside `subgoal`'s own predicate calls
+that binding actually happened, since only a real clause match creates a
+new `UnifyContext`/scope level, never mere argument nesting within one
+`ConsTerm`.
+
+**v1 scope limitation (documented, not fixed here)**: the nested job solves
+`subgoal` as a **fresh** top-level goal — outer bindings already in scope
+at the `findall(...)` call site are **not** consulted. E.g.
+`$y = 1; $all = findall($x, related($x, $y));` would solve `related($x,
+$y)` with `$y` **unbound** in the nested search, not `1` — `subgoal` is
+handed to the nested job by raw term reference; nothing propagates the
+enclosing `UnifyContext`'s bindings into it. Supporting that would require
+either re-resolving `subgoal` (like `resolveTermGrounded` does for `tmpl`)
+before handing it to the nested job, or threading the outer `UnifyContext`
+in as the nested root's parent — both nontrivial (the latter risks
+`UnifyContext` id/scope collisions between the outer chain and the "fresh
+top-level query" invariant `getSolutionList()`-style resolution above
+depends on) and deliberately left for a later pass; this is the "v1 may
+document a fresh-scope subgoal" option the design explicitly allowed for.
+
+**Conformance**: `test/conformance/findall-arrays.ufy` (d) findall
+collecting three fact solutions, template `$x` shared with the sub-goal,
+printed as an array in solution (== clause definition) order; (e) findall
+over an undefined predicate — zero solutions, an empty array, not a
+failure; (f) a findall result unified against an equivalent array literal,
+element by element.

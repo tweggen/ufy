@@ -389,7 +389,76 @@ public:
                     spWorld->setTermDebugInfo( out_pAbstractTerm, pTermDebugInfo );
                 }
             } else {
-                atomName = "unify";
+                /*
+                 * findall desugar (ROADMAP Phase 2, SPEC.md section 11):
+                 * `$out = findall( $tmpl, $goal );` -- if either side of
+                 * '=' is a ConsTerm literally named "findall" with EXACTLY
+                 * 2 arguments, it is the reserved findall(...) call shape
+                 * (mirroring how "cut" is reserved by exact name+arity,
+                 * section 8) -- NOT an ordinary 2-arity user predicate
+                 * named "findall" used as a bare goal (any OTHER arity, or
+                 * not written on a side of '=' at all, stays a completely
+                 * ordinary ConsTerm/call; a design choice documented in
+                 * SPEC.md rather than over-engineered here). Desugars to
+                 * `__builtin_findall(tmpl, goal, otherSide)`, the solver
+                 * special form SolveJob::performSlice() (vault-unify-
+                 * solvejob.cpp) recognizes directly, mirroring cut.
+                 */
+                vault::unify::ConsTerm* pFindallCons = NULL;
+                vault::unify::AbstractTerm* pOtherSide = NULL;
+                if( pLhsCons && 2==pLhsCons->getArity()
+                        && pLhsCons->getName().value() == "findall" ) {
+                    pFindallCons = pLhsCons;
+                    pOtherSide = rhs;
+                } else if( pRhsCons && 2==pRhsCons->getArity()
+                        && pRhsCons->getName().value() == "findall" ) {
+                    pFindallCons = pRhsCons;
+                    pOtherSide = lhs;
+                }
+
+                if( pFindallCons ) {
+                    atomName = "__builtin_findall";
+                    // Reuse the template/subgoal terms directly (they are
+                    // already fully built AbstractTerm trees); the type
+                    // system only ever hands them back to us as const via
+                    // getTermAt(), so strip that (matching the const_cast
+                    // pattern already used elsewhere in this file, e.g.
+                    // collectVarTermsOrdered() above) -- we are simply
+                    // reusing pointers this SAME factory just allocated,
+                    // not touching anyone else's data.
+                    vault::unify::AbstractTerm* pTmpl =
+                        const_cast<vault::unify::AbstractTerm*>( pFindallCons->getTermAt( 0 ) );
+                    vault::unify::AbstractTerm* pSubgoal =
+                        const_cast<vault::unify::AbstractTerm*>( pFindallCons->getTermAt( 1 ) );
+                    out_pAbstractTerm = new vault::unify::ConsTerm(
+                        atomName.c_str(), pTmpl, pSubgoal, pOtherSide );
+                    if( pTermDebugInfo ) {
+                        spWorld->setTermDebugInfo( out_pAbstractTerm, pTermDebugInfo );
+                    }
+                    /*
+                     * The wrapping "findall(tmpl, goal)" ConsTerm node
+                     * itself (built by the generic ConsTermInput factory
+                     * above, BEFORE this shape could even be recognized)
+                     * is now unreachable from the assembled tree -- its
+                     * two children were just reused directly above. Free
+                     * just that one wrapper node; ConsTerm::~ConsTerm() is
+                     * trivial and does not touch children (include/
+                     * vault-unify.hpp), so this cannot double-free
+                     * pTmpl/pSubgoal. Mirrors deleteScratchTermTree()'s
+                     * established pattern (this file, the `if` desugaring
+                     * above) of discarding an orphaned structural scratch
+                     * node: its TermDebugInfo map entry, if any, is left as
+                     * a harmless dangling key -- World::~World()'s cleanup
+                     * sweep only ever dereferences the map's VALUES, never
+                     * compares through a stale key beyond ordinary pointer
+                     * ordering (ConsTermInput's factory above registers a
+                     * TermDebugInfo for every ConsTerm it builds, including
+                     * this now-discarded wrapper).
+                     */
+                    delete pFindallCons;
+                } else {
+                    atomName = "unify";
+                }
             }
             break;
         }
@@ -703,41 +772,38 @@ public:
     }
 
 
+    /**
+     * ROADMAP Phase 2 ("consistent list/array semantics", SPEC.md section
+     * 11): builds a first-class ArrayTerm, ordered and positional --
+     * replacing the previous desugaring straight into a MapTerm keyed by
+     * stringified numeric indices (a documented SPEC.md quirk, now
+     * removed).
+     */
     vault::unify::AbstractTerm* operator()( const ArrayTermInput& arrayTermInput ) const
     {
         vault::unify::AbstractTerm* out_pAbstractTerm = NULL;
         int nTerms;
-        const vault::unify::Atom** ppAtoms;
         vault::unify::AbstractTerm** ppTerms;
-       
 
         if( arrayTermInput.members.empty() ) {
             nTerms = 0;
-            ppAtoms = NULL;
             ppTerms = NULL;
         } else {
             nTerms = arrayTermInput.members.size();
-            ppAtoms = new const vault::unify::Atom*[nTerms];
             ppTerms = new vault::unify::AbstractTerm*[nTerms];
             for( int i=0; i<nTerms; ++i ) {
-                char s[20];
-                snprintf( s, 20, "%d", i );
-                ppAtoms[i] = new vault::unify::Atom( s );
-                vault::unify::AbstractTerm* pAbstractTerm = NULL;
-                pAbstractTerm = (*this)( arrayTermInput.members[i] );
-                ppTerms[i] = pAbstractTerm;
+                ppTerms[i] = (*this)( arrayTermInput.members[i] );
             }
         }
 
-        vault::unify::MapTerm* pMapTerm = new vault::unify::MapTerm(
-            ppAtoms, ppTerms, nTerms );
-        // MapTerm's ctor copies the *pointer values* out of ppAtoms/ppTerms
-        // into its own m_mapContents; it never takes ownership of the two
-        // transient buffers themselves (only of the Atoms/terms they
-        // point to). Free the now-redundant buffers (safe/no-op when NULL).
-        delete[] ppAtoms;
+        vault::unify::ArrayTerm* pArrayTerm = new vault::unify::ArrayTerm(
+            ppTerms, nTerms );
+        // ArrayTerm's ctor copies the *pointer values* out of ppTerms into
+        // its own std::vector; it never takes ownership of the transient
+        // buffer itself. Free the now-redundant buffer (safe/no-op when
+        // NULL).
         delete[] ppTerms;
-        out_pAbstractTerm = pMapTerm;
+        out_pAbstractTerm = pArrayTerm;
 
         return out_pAbstractTerm;
     }

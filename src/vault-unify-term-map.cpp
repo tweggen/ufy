@@ -153,6 +153,22 @@ UnifyResult MapTerm::unifyMapTerm(
 }
 
 
+UnifyResult MapTerm::unifyArrayTerm(
+        Engine* /*pEngine*/,
+        UnifyContext* /*pUCStackTop*/,
+        UnifyContext* /*pUCOther*/,
+        UnifyContext* /*pUCMine*/,
+        const ArrayTerm* /*pOther*/ ) const
+{
+    /*
+     * These are terms of different types (ROADMAP Phase 2: ArrayTerm is a
+     * distinct kind now, unrelated to MapTerm -- SPEC.md section 11).
+     * Cannot unify at all.
+     */
+    return UnifyNot;
+}
+
+
 const AbstractTerm* MapTerm::getValue( const std::string& key ) const
 {
     MapTermMap::const_iterator it = m_mapContents.find( key );

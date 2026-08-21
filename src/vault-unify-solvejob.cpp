@@ -706,6 +706,149 @@ int SolveJob::performSlice()
             }
         }
 
+        /*
+         * ROADMAP Phase 2 ("findall"): `$out = findall( $tmpl, $goal );`
+         * desugars (AnyTermFactory::operator()(const InfixTermsInput&),
+         * vault-unify-parser.cpp) to the reserved goal term
+         * `__builtin_findall(tmpl, subgoal, out)`, recognized here
+         * structurally -- exactly like cut above -- rather than as a
+         * registered Clause: findall needs to run a whole nested search to
+         * exhaustion on the spot, which no Clause::startUnification() ever
+         * gets the means to do (it only ever sees two UnifyContexts and an
+         * Engine, never the solver's own job machinery).
+         *
+         * Mechanism (see SPEC.md's findall section for the full analysis):
+         * a fresh, synchronous, same-thread SolveJob solves `subgoal` as if
+         * it were a brand-new top-level query (its own root UnifyContext
+         * has no parent) against the SAME World -- so it is never enqueued
+         * on m_pEngine, and OUTER bindings are not consulted (a documented
+         * v1 scope limitation: only bindings the subgoal itself creates,
+         * during its own nested solve, are visible when resolving the
+         * template). This is exactly the fresh-top-level-query shape
+         * SolveJob::getSolutionList() already assumes when it resolves
+         * every query variable via AssignmentId(0, ...) -- see
+         * resolveTermGrounded() (vault-unify-terms.cpp), which mirrors that
+         * resolution for the (grounded, cloned) template instead of a
+         * string.
+         *
+         * Each solution's template instance is grounded (every bound
+         * VarTerm resolved to a fresh CLONE, since the nested job's entire
+         * arena is destroyed the moment this block returns -- nothing may
+         * keep pointing into it) into a fresh ArrayTerm, adopted into a
+         * fresh UnifyContext and unified against `out` exactly like
+         * __builtin_eval's result (ArithEvalBuiltinClause, vault-unify-
+         * clause-builtin-arith.cpp). findall itself never fails (zero
+         * solutions -> an empty array) and is deterministic (exactly one
+         * solution, no choice point) -- but the final unify against `out`
+         * can still fail/error like any ordinary unification, e.g. if
+         * `out` is already bound to something incompatible.
+         */
+        {
+            const ConsTerm* pFindallCandidate = dynamic_cast<const ConsTerm*>( sc->m_csCurrent.getAbstractTerm() );
+            if( pFindallCandidate && 3==pFindallCandidate->getArity()
+                    && pFindallCandidate->getName().value() == "__builtin_findall" ) {
+
+                const AbstractTerm* pTmplTerm = pFindallCandidate->getTermAt( 0 );
+                const AbstractTerm* pSubgoalTerm = pFindallCandidate->getTermAt( 1 );
+                const AbstractTerm* pOutTerm = pFindallCandidate->getTermAt( 2 );
+
+                UnifyContext* pUCOriginScope = sc->m_csCurrent.getOriginUnifyContext();
+
+                // a. Nested, synchronous, same-thread solve of `subgoal`,
+                // never enqueued -- driven directly, on this very stack
+                // frame. nestedGoal merely wraps pSubgoalTerm (owned by the
+                // enclosing clause/query's own term tree); it is never
+                // adopted, so its destructor here frees only the thin Goal
+                // wrapper, never pSubgoalTerm itself.
+                Goal nestedGoal( pSubgoalTerm );
+                SolveJob nestedJob;
+                nestedJob.setWorld( m_spWorld );
+                nestedJob.setGoal( &nestedGoal );
+                nestedJob.startJob( m_pEngine );
+                // REGULAR is the default debug target state (Job::Job(),
+                // vault-unify-job.cpp) for a job never handed to a
+                // debugger -- performSlice() runs to full exhaustion in a
+                // single call in that state (it only returns early for
+                // debug-halt/stop/detach target states, none of which a
+                // freshly constructed job is ever in).
+                nestedJob.performSlice();
+
+                // b. One grounded, cloned template instance per solution,
+                // in solution order.
+                ArrayTerm* pResultArray = new ArrayTerm();
+                std::list<UnifyContext*>::const_iterator
+                    itSol = nestedJob.m_listUnifySolutions.begin(),
+                    itSolEnd = nestedJob.m_listUnifySolutions.end();
+                for( ; itSol != itSolEnd; ++itSol ) {
+                    AbstractTerm* pGrounded = resolveTermGrounded( pTmplTerm, *itSol, NULL );
+                    pResultArray->append( pGrounded );
+                }
+
+                // c. nestedJob (and nestedGoal) go out of scope at the end
+                // of this block; ~SolveJob() frees the nested job's entire
+                // arena (UnifyContexts, GoalParts, SolveContexts). Nothing
+                // above depends on it any more: pResultArray and every
+                // element in it were built by resolveTermGrounded() as
+                // entirely independent clones.
+
+                // Unify the result array against `out`, exactly like
+                // __builtin_eval's evaluated result: a fresh UnifyContext
+                // (parented on the current chain) both receives new
+                // bindings and scopes the array's own fresh (unbound-
+                // template-var) VarTerms; `out`'s own scope is wherever
+                // __builtin_findall(...) itself was written, i.e.
+                // pUCOriginScope.
+                UnifyContext* pUCCand = adoptUnifyContext( new UnifyContext(
+                    sc->m_pUnifyContext,
+                    sc->m_csCurrent,
+                    ExecutionState::ClauseIterator() ) );
+                AbstractTerm* pAdoptedArray = pUCCand->adoptTerm( pResultArray );
+
+                UnifyResult unifyResult = pAdoptedArray->unifyTerm(
+                    m_pEngine,
+                    pUCCand,
+                    pUCOriginScope,
+                    pUCCand,
+                    pOutTerm );
+
+                if( UnifyError==unifyResult ) {
+                    std::string strError = "Unification error binding findall() result against its output argument.";
+                    VAULT_UNIFY_DI( ALWAYS, "Job %lld: %s\n", (long long) getId(), strError.c_str() );
+                    recordError( strError );
+                    unifyResult = UnifyNot;
+                }
+
+                // d. Exactly one solution, no choice point: never
+                // re-examine this same term again, whichever way the
+                // unify against `out` went -- mirrors cut's own iterator
+                // invalidation above (same reasoning: without this, a
+                // later revisit of sc would re-recognize and re-run this
+                // very block).
+                sc->m_itNextChildClause.invalidate();
+
+                if( Unifies( unifyResult ) ) {
+                    GoalPartCursor csNext( sc->m_csCurrent );
+                    csNext.next();
+
+                    SolveContext* scChild = new SolveContext(
+                        m_pStartState,
+                        sc,
+                        pUCCand,
+                        NULL,
+                        csNext
+                        );
+                    m_stackContext.push_back( scChild );
+                }
+                // else: findall's own search always "succeeds" (possibly
+                // with an empty array), but binding that array against
+                // `out` failed here -- an ordinary goal failure. Nothing is
+                // pushed; sc falls into the "no next child clause"
+                // discardTop() path above the next time it is visited.
+
+                continue;
+            }
+        }
+
         const Clause* cl = sc->m_itNextChildClause.getClause();
 
         VAULT_UNIFY_DI( ITERATE, "Testing child clause '%s' within unify context %lld.\n"

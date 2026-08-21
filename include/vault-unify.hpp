@@ -429,6 +429,7 @@ typedef uint64_t ClauseId;
 class VarTerm;
 class ConsTerm;
 class MapTerm;
+class ArrayTerm;
 
 
 /**
@@ -559,9 +560,35 @@ public:
         const MapTerm* pOther ) const = 0;
 
     /**
+     * Unify this term with an array term. This is the second part of a
+     * double dispatch function call (ROADMAP Phase 2, "consistent
+     * list/array semantics" -- SPEC.md section 11).
+     *
+     * @param pUCOriginal
+     *     The unify context this ConsTerm was "instantiated" in.
+     * @param pUCCand
+     *     The unify context we should emit declarations to.
+     * @param pOther
+     *     The term that we should try to unify with. This term origins in
+     *     some clause.
+     *
+     * Second order call: This points to the clause term, other points to the
+     * goal term.
+     *
+     * @return
+     *     1 if unifies, 0 if not.
+     */
+    virtual UnifyResult unifyArrayTerm(
+        Engine* pEngine,
+        UnifyContext* pUCStackTop,
+        UnifyContext* pUCOriginal,
+        UnifyContext* pUCCand,
+        const ArrayTerm* pOther ) const = 0;
+
+    /**
      * Expensive function for testing purposes.
      */
-    virtual const std::string toString() const = 0; 
+    virtual const std::string toString() const = 0;
     
     virtual const std::string toContextString(
         const UnifyContext* pUCStackTop,
@@ -651,6 +678,32 @@ void deleteTermTree( const AbstractTerm* pTerm );
  */
 AbstractTerm* cloneTermTree( const AbstractTerm* pTerm, const std::map<const VarTerm*, VarTerm*>& varSubstitution );
 
+/**
+ * ROADMAP Phase 2 ("findall"): resolve pTerm (typically a findall
+ * template, or a sub-term of one) against a SOLVED UnifyContext
+ * pUCStackTop, producing a fully independent, GROUND clone: every VarTerm
+ * encountered is resolved via findVarBinding()/findVarInstance() (mirroring
+ * SolveJob::getSolutionList()'s own resolution) and, if bound, the bound
+ * instance term is itself resolved recursively (in ITS OWN binding's
+ * UnifyContext) rather than referenced -- every node returned is a fresh
+ * allocation, safe to outlive pUCStackTop's own arena. A still-unbound
+ * VarTerm is cloned as a fresh, unbound VarTerm (findall never fails on
+ * this).
+ *
+ * pUCTerm is the scope UnifyContext for variables occurring directly in
+ * pTerm -- NULL for the initial call from findall's solver special form
+ * (SolveJob::performSlice(), vault-unify-solvejob.cpp), since the template
+ * sits directly in the nested job's own top-level goal, exactly like the
+ * top-level query variables SolveJob::getSolutionList() resolves via
+ * AssignmentId(0, ...); see that function and SPEC.md's findall section
+ * for the analysis of why this is correct given findall's (documented,
+ * v1) fresh-scope subgoal semantics.
+ */
+AbstractTerm* resolveTermGrounded(
+        const AbstractTerm* pTerm,
+        UnifyContext* pUCStackTop,
+        UnifyContext* pUCTerm );
+
 class ConsTerm;
 
 class MapTerm : public AbstractTerm
@@ -686,7 +739,13 @@ public:
         UnifyContext* pUCOriginal,
         UnifyContext* pUCCand,
         const MapTerm* pOther ) const;
-    
+    virtual UnifyResult unifyArrayTerm(
+        Engine* pEngine,
+        UnifyContext* pUCStackTop,
+        UnifyContext* pUCOriginal,
+        UnifyContext* pUCCand,
+        const ArrayTerm* pOther ) const;
+
     virtual const std::string toString() const;
 
     virtual const std::string toJSON( bool useContent, const UnifyContext* pUCStackTop, const UnifyContext* pUCTerm ) const;
@@ -799,7 +858,13 @@ public:
         UnifyContext* pUCOriginal,
         UnifyContext* pUCCand,
         const MapTerm* pOther ) const;
-    
+    virtual UnifyResult unifyArrayTerm(
+        Engine* pEngine,
+        UnifyContext* pUCStackTop,
+        UnifyContext* pUCOriginal,
+        UnifyContext* pUCCand,
+        const ArrayTerm* pOther ) const;
+
     // void setBinding( VarTermId uidTerm ) { m_uidTerm = uidTerm; }
     VarTermId getBinding() const { return m_uidTerm; }
 
@@ -929,6 +994,12 @@ public:
         UnifyContext* pUCOriginal,
         UnifyContext* pUCCand,
         const MapTerm* pOther ) const;
+    virtual UnifyResult unifyArrayTerm(
+        Engine* pEngine,
+        UnifyContext* pUCStackTop,
+        UnifyContext* pUCOriginal,
+        UnifyContext* pUCCand,
+        const ArrayTerm* pOther ) const;
 
     virtual const std::string toJSON( bool useContent, const UnifyContext* pUCStackTop, const UnifyContext* pUCTerm ) const {
         int l = m_vecTerms.size();
@@ -1022,6 +1093,141 @@ private:
     Atom m_name;
     std::vector<AbstractTerm*> m_vecTerms;
     bool m_isNegated;
+
+public:
+    AbstractTermIterator* abstractTermIterator() const {
+        return new TermIterator( this );
+    }
+
+};
+
+
+/**
+ * ROADMAP Phase 2 ("consistent list/array semantics", SPEC.md section 11):
+ * a first-class, ordered term kind for array literals (`[a, b]`). Prior to
+ * this, `AnyTermFactory::operator()(const ArrayTermInput&)`
+ * (vault-unify-parser.cpp) desugared an array literal straight into a
+ * `MapTerm` keyed by stringified numeric indices -- a documented SPEC.md
+ * quirk, now removed. `ArrayTerm` mirrors `ConsTerm`'s style (a plain
+ * `std::vector<AbstractTerm*>`, ordinary "same length + pairwise unify"
+ * unification, see unifyArrayTerm() implementations) rather than
+ * `MapTerm`'s (no keys, so no per-entry `Atom*` to own/free -- see
+ * `~ArrayTerm()`).
+ */
+class ArrayTerm : public AbstractTerm
+{
+public:
+    /**
+     * Construct from a transient array of nTerms elements. Mirrors
+     * ConsTerm's constructor: the elements' pointer VALUES are copied out
+     * into this ArrayTerm's own std::vector; ppTerms itself is never
+     * retained (the caller must free it -- see e.g.
+     * AnyTermFactory::operator()(const ArrayTermInput&),
+     * vault-unify-parser.cpp).
+     */
+    ArrayTerm( AbstractTerm** ppTerms, int nTerms )
+            : m_vecElements( ppTerms, ppTerms + nTerms ) {}
+
+    /**
+     * Empty array, elements appended one at a time via append() -- used by
+     * findall's solver special form (SolveJob::performSlice(),
+     * vault-unify-solvejob.cpp) to build its result array solution by
+     * solution.
+     */
+    ArrayTerm() {}
+
+    virtual ~ArrayTerm() {}
+
+    ArrayTerm& append( AbstractTerm* pTerm ) {
+        m_vecElements.push_back( pTerm );
+        return *this;
+    }
+
+    virtual UnifyResult unifyTerm(
+        Engine* pEngine,
+        UnifyContext* pUCStackTop,
+        UnifyContext* pUCOriginal,
+        UnifyContext* pUCCand,
+        const AbstractTerm* pOther ) const;
+    virtual UnifyResult unifyConsTerm(
+        Engine* pEngine,
+        UnifyContext* pUCStackTop,
+        UnifyContext* pUCOriginal,
+        UnifyContext* pUCCand,
+        const ConsTerm* pOther ) const;
+    virtual UnifyResult unifyVarTerm(
+        Engine* pEngine,
+        UnifyContext* pUCStackTop,
+        UnifyContext* pUCOriginal,
+        UnifyContext* pUCCand,
+        const VarTerm* pOther ) const;
+    virtual UnifyResult unifyMapTerm(
+        Engine* pEngine,
+        UnifyContext* pUCStackTop,
+        UnifyContext* pUCOriginal,
+        UnifyContext* pUCCand,
+        const MapTerm* pOther ) const;
+    virtual UnifyResult unifyArrayTerm(
+        Engine* pEngine,
+        UnifyContext* pUCStackTop,
+        UnifyContext* pUCOriginal,
+        UnifyContext* pUCCand,
+        const ArrayTerm* pOther ) const;
+
+    virtual const std::string toString() const;
+
+    virtual const std::string toJSON( bool useContent, const UnifyContext* pUCStackTop, const UnifyContext* pUCTerm ) const;
+
+    virtual const std::string toContextString(
+        const UnifyContext* pUCStackTop,
+        const UnifyContext* pUCTerm ) const;
+
+    int size() const { return (int) m_vecElements.size(); }
+    const AbstractTerm* getElementAt( int i ) const { return m_vecElements[i]; }
+
+    /**
+     * Enumerate this array's elements, for cloneTermTree()/
+     * resolveTermGrounded() (vault-unify-terms.cpp), which cannot
+     * otherwise reach m_vecElements.
+     */
+    void getElements( std::vector<AbstractTerm*>& out_elements ) const {
+        out_elements = m_vecElements;
+    }
+
+private:
+    class TermIterator
+            : public AbstractTermIterator
+    {
+    public:
+        TermIterator() : m_arrayTerm( NULL ) {}
+        TermIterator( const ArrayTerm* arrayTerm ) : m_arrayTerm( arrayTerm ) {
+            m_it = m_arrayTerm->m_vecElements.begin();
+            m_itEnd = m_arrayTerm->m_vecElements.end();
+        }
+        TermIterator( const TermIterator& other )
+                : m_arrayTerm( other.m_arrayTerm )
+                , m_it( other.m_it )
+                , m_itEnd( other.m_itEnd )
+                {}
+
+        virtual bool isValid() const {
+            return m_arrayTerm && m_it != m_itEnd;
+        }
+
+        virtual const TermTraversable* getTermTraversable() const {
+            return dynamic_cast<TermTraversable*>( *m_it );
+        }
+
+        virtual void next() {
+            ++m_it;
+        }
+
+    private:
+        const ArrayTerm* m_arrayTerm;
+        std::vector<AbstractTerm*>::const_iterator m_it, m_itEnd;
+    };
+
+    std::vector<AbstractTerm*> m_vecElements;
 
 public:
     AbstractTermIterator* abstractTermIterator() const {
@@ -1283,47 +1489,51 @@ public:
             const ExecutionState::ClauseIterator& itClause );
 
     /**
-     * ROADMAP Phase 2 (Arithmetic and comparison builtins): frees terms
-     * adopted via adoptTerm() below. See adoptTerm()'s comment for why
-     * this is a NEW ownership need distinct from every other term this
-     * module allocates: everywhere else, a term built at parse time is
-     * reachable from a Goal/clause head that an existing sweep already
-     * frees (World::~World() / ~SolveJob(), both via collectTermTree()),
-     * and a term built at solve time by e.g. UnifyBuiltinClause/
-     * MemberBuiltinClause is never a NEW allocation -- it is always one of
-     * the existing goal/clause terms it was handed. ArithEvalBuiltinClause
-     * (vault-unify-clause-builtin-arith.cpp) is the first builtin to
-     * allocate a genuinely new term (the evaluated numeric result) at
-     * solve time: nothing else points at it structurally (it is reachable
-     * only via whatever VarTerm binding it gets unified into, and
-     * VarTerm::abstractTermIterator() returns NULL -- collectTermTree()
-     * never follows a variable's runtime binding, by design, only the
-     * static term tree), so it would otherwise leak.
-     *
-     * This destructor only ever needs to `delete` a leaf (0-arity) atom
-     * ConsTerm -- see adoptTerm()'s comment -- so a plain, non-recursive
-     * delete is correct and sufficient; no collectTermTree()-style
-     * traversal is needed here.
+     * ROADMAP Phase 2 (Arithmetic and comparison builtins; extended for
+     * "findall"): frees terms adopted via adoptTerm() below. See
+     * adoptTerm()'s comment for why this is a NEW ownership need distinct
+     * from every other term this module allocates: everywhere else, a term
+     * built at parse time is reachable from a Goal/clause head that an
+     * existing sweep already frees (World::~World() / ~SolveJob(), both
+     * via collectTermTree()), and a term built at solve time by e.g.
+     * UnifyBuiltinClause/MemberBuiltinClause is never a NEW allocation --
+     * it is always one of the existing goal/clause terms it was handed.
+     * ArithEvalBuiltinClause (vault-unify-clause-builtin-arith.cpp) was the
+     * first builtin to allocate a genuinely new term (the evaluated
+     * numeric result) at solve time: nothing else points at it
+     * structurally (it is reachable only via whatever VarTerm binding it
+     * gets unified into, and VarTerm::abstractTermIterator() returns NULL
+     * -- collectTermTree() never follows a variable's runtime binding, by
+     * design, only the static term tree), so it would otherwise leak.
+     * SolveJob::performSlice()'s __builtin_findall handling
+     * (vault-unify-solvejob.cpp) now adopts a whole freshly-cloned
+     * ArrayTerm subtree the same way, so this destructor collects every
+     * adopted term's entire tree (via collectTermTree(), into one
+     * de-duplicated set -- exactly World::~World()'s/~SolveJob()'s own
+     * pattern) rather than assuming a single leaf node; see
+     * vault-unify-unifycontext.cpp.
      */
     ~UnifyContext();
 
     /**
-     * Adopt pTerm (built fresh at solve time, e.g. an evaluated arithmetic
-     * result) into THIS UnifyContext: it is deleted in ~UnifyContext().
-     * This UnifyContext is itself always one of the per-job arena entries
-     * in SolveJob::m_arenaUnifyContexts (every UnifyContext instantiated
+     * Adopt pTerm (built fresh at solve time -- e.g. an evaluated
+     * arithmetic result, or a findall result ArrayTerm and its whole
+     * resolveTermGrounded()-cloned element subtree) into THIS
+     * UnifyContext: its entire tree is deleted in ~UnifyContext() (via
+     * collectTermTree(), see that destructor's comment). This UnifyContext
+     * is itself always one of the per-job arena entries in
+     * SolveJob::m_arenaUnifyContexts (every UnifyContext instantiated
      * while solving a job is adopted there via
      * SolveJob::adoptUnifyContext() -- see that class), so pTerm's
      * lifetime becomes tied to the job's own arena cleanup in
      * ~SolveJob(), exactly like everything else that job owns.
      *
-     * Only ever used for a single, freshly allocated 0-arity ConsTerm
-     * (see ArithEvalBuiltinClause::startUnification(),
-     * vault-unify-clause-builtin-arith.cpp) -- never for a term shared
-     * with, or reachable from, any clause/query term tree, so there is no
-     * risk of this colliding with collectTermTree()'s de-duplicated
-     * sweeps (World::~World(), ~SolveJob()'s Goal-arena cleanup): those
-     * never reach an adopted term in the first place (see this class's
+     * Only ever used for a term (or term tree) that is freshly allocated
+     * for this adoption alone -- never for a term shared with, or
+     * reachable from, any clause/query term tree, so there is no risk of
+     * this colliding with collectTermTree()'s de-duplicated sweeps
+     * (World::~World(), ~SolveJob()'s Goal-arena cleanup): those never
+     * reach an adopted term in the first place (see this class's
      * destructor comment), and this method is never called twice for the
      * same pTerm.
      *

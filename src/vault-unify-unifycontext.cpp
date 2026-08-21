@@ -413,16 +413,33 @@ UnifyContext::UnifyContext(
 
 
 /**
- * See adoptTerm()'s comment (include/vault-unify.hpp) for why this exists
- * and why a plain, non-recursive `delete` per adopted term is correct and
- * sufficient (every adopted term today is a single leaf 0-arity ConsTerm,
- * never a subtree).
+ * See adoptTerm()'s comment (include/vault-unify.hpp).
+ *
+ * ROADMAP Phase 2 ("findall"): adopted terms are no longer always a single
+ * leaf 0-arity ConsTerm (ArithEvalBuiltinClause's original use case,
+ * vault-unify-clause-builtin-arith.cpp) -- SolveJob::performSlice()'s
+ * __builtin_findall handling (vault-unify-solvejob.cpp) adopts a whole
+ * ArrayTerm subtree of freshly resolveTermGrounded()-cloned elements. Every
+ * adopted term is collected via collectTermTree() into ONE de-duplicated
+ * set (exactly the pattern World::~World()/~SolveJob() use for their own
+ * term trees -- see the ownership note above collectTermTree()'s
+ * declaration, include/vault-unify.hpp) before anything is deleted, so this
+ * remains correct and leak-free whether an adopted term is a single leaf
+ * (the set then holds just that one pointer, identical to the old plain
+ * `delete`) or a whole freshly-cloned tree (nothing adopted here is ever
+ * shared with any pre-existing clause/query term tree, so there is no risk
+ * of colliding with those trees' own de-duplicated sweeps).
  */
 UnifyContext::~UnifyContext()
 {
+    std::set<const AbstractTerm*> visited;
     std::vector<AbstractTerm*>::const_iterator it, itEnd = m_lsAdoptedTerms.end();
     for( it = m_lsAdoptedTerms.begin(); it != itEnd; ++it ) {
-        delete *it;
+        collectTermTree( *it, visited );
+    }
+    std::set<const AbstractTerm*>::const_iterator itV, itVEnd = visited.end();
+    for( itV = visited.begin(); itV != itVEnd; ++itV ) {
+        delete *itV;
     }
 }
 

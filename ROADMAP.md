@@ -187,6 +187,25 @@ the reference workload).
       its condition and is now a true committed if-then-else. Conformance
       goldens pin all four cut behaviours.)*
 - [ ] `findall` / aggregation over solutions.
+      *(Agreed syntax: `$all = findall( $x, goal( $x ) );` producing a
+      first-class array term. Requires the ArrayTerm foundation from the
+      list/array item below — implemented together.)*
+- [ ] Classic `for` loop and `foreach` (language owner request, 2026-08-21):
+      `for ($i = 0; $i < 10; $i = $i + 1) { ... }` and
+      `foreach ($x : $arr) { ... }`, desugared to synthesized recursive
+      clauses the same way `if` desugars — no new solver machinery.
+- [ ] **Exploratory — constraint domains (language owner's long-term wish):**
+      typed declarations (`int $a;`, `float $a;`) giving unbound variables a
+      DOMAIN instead of a single binding; comparisons over unbound typed
+      vars then *narrow* the domain (`$a < 10` ⇒ $a is "all ints < 10" as an
+      enumerable set, or a float interval). This is constraint logic
+      programming (CLP(FD)/interval-CLP): needs a domain representation in
+      the binding machinery (today a binding is exactly one term), domain
+      types (range, finite set), propagation on each new constraint, and
+      enumeration (`foreach` over a domain / labeling). Research-grade;
+      staged path: (1) range/set VALUES as data + foreach over them,
+      (2) typed declarations, (3) domain-narrowing comparisons for int,
+      (4) float intervals. Not started.
 - [ ] String operations (concat, compare, match).
 - [ ] Runtime `assert` / `retract` — required for device/sensor state changes.
       Implement against the versioned World (see Phase 5, item 2; the

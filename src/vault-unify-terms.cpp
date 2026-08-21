@@ -143,13 +143,11 @@ void deleteTermTree( const AbstractTerm* pTerm )
  * Dispatches on pTerm's dynamic type (VarTerm/ConsTerm/MapTerm are the only
  * concrete AbstractTerm kinds this module ever builds via the parser) and
  * recurses into children. The transient `AbstractTerm**`/`const Atom**`
- * arrays handed to the ConsTerm/MapTerm constructors are not retained by
- * either constructor (they copy the pointer VALUES out into their own
- * std::vector/std::map), so -- exactly like every other call site in this
- * module that builds a ConsTerm/MapTerm this way (AnyTermFactory in
- * vault-unify-parser.cpp) -- the arrays themselves are not freed here
- * either; only what they point at is (via the returned clone's own
- * ownership).
+ * arrays handed to the ConsTerm/MapTerm/ArrayTerm constructors are not
+ * retained by the constructors (they copy the pointer VALUES out into
+ * their own containers), so each branch delete[]s its scratch arrays
+ * right after construction -- same rule as every other construction site
+ * in this module (the gating CI leak check enforces it).
  */
 AbstractTerm* cloneTermTree(
         const AbstractTerm* pTerm,
@@ -213,11 +211,123 @@ AbstractTerm* cloneTermTree(
         return pCloneMap;
     }
 
+    if( const ArrayTerm* pSrcArr = dynamic_cast<const ArrayTerm*>( pTerm ) ) {
+        std::vector<AbstractTerm*> elements;
+        pSrcArr->getElements( elements );
+        int nElems = (int) elements.size();
+        AbstractTerm** ppTerms = nElems ? new AbstractTerm*[nElems] : NULL;
+        for( int i = 0; i < nElems; ++i ) {
+            ppTerms[i] = cloneTermTree( elements[i], varSubstitution );
+        }
+        ArrayTerm* pCloneArr = new ArrayTerm( ppTerms, nElems );
+        // Same transient-array pattern as the ConsTerm/MapTerm branches
+        // above: the constructor copies the pointer values, the array
+        // stays ours to free.
+        delete[] ppTerms;
+        return pCloneArr;
+    }
+
     // Internal error: no other concrete AbstractTerm kind exists in this
     // module. Log and give up rather than silently dropping the term.
     VAULT_UNIFY_DI( ALWAYS,
-        "cloneTermTree: term '%s' is neither VarTerm, ConsTerm nor MapTerm; "
-        "cannot clone.\n", pTerm->toString().c_str() );
+        "cloneTermTree: term '%s' is neither VarTerm, ConsTerm, MapTerm nor "
+        "ArrayTerm; cannot clone.\n", pTerm->toString().c_str() );
+    return NULL;
+}
+
+
+/**
+ * See the declaration (include/vault-unify.hpp) for the full contract.
+ *
+ * Structurally this is cloneTermTree()'s sibling: same dispatch-and-recurse
+ * shape, same "transient array is ours to free, the constructor only
+ * copies pointer values" ownership pattern -- but instead of substituting
+ * VarTerms via a caller-supplied map, it resolves each one against a SOLVED
+ * UnifyContext (mirroring PrintBuiltinClause::convertTerm() /
+ * VarTerm::toContextString(), vault-unify-clause-builtin-print.cpp /
+ * vault-unify-term-var.cpp -- the string-producing sibling of this
+ * term-producing helper) and clones everything else fresh.
+ */
+AbstractTerm* resolveTermGrounded(
+        const AbstractTerm* pTerm,
+        UnifyContext* pUCStackTop,
+        UnifyContext* pUCTerm )
+{
+    if( !pTerm ) {
+        return NULL;
+    }
+
+    if( const VarTerm* pSrcVar = dynamic_cast<const VarTerm*>( pTerm ) ) {
+        UnifyContextId uidOrg = pUCTerm ? pUCTerm->getUnifyContextId() : 0;
+        AssignmentId aid( uidOrg, pSrcVar->getBinding() );
+
+        InstanceId iid = 0;
+        (void) pUCStackTop->findVarBinding( aid, iid );
+        boost::shared_ptr<SingleVarInstance> spInstance;
+        if( iid ) {
+            (void) pUCStackTop->findVarInstance( iid, spInstance );
+        }
+        if( spInstance && spInstance->getTerm() ) {
+            // Bound: resolve the bound instance term recursively, in ITS
+            // OWN UnifyContext (a variable can be bound to a term that
+            // itself still contains unresolved variables scoped elsewhere).
+            return resolveTermGrounded(
+                spInstance->getTerm(), pUCStackTop, spInstance->getUnifyContext() );
+        }
+        // Unbound: clone as a fresh, unbound VarTerm (findall never fails
+        // on this -- SPEC.md).
+        VarTerm* pFreshVar = new VarTerm();
+        pFreshVar->setOriginalVarName( pSrcVar->getOriginalVarName() );
+        return pFreshVar;
+    }
+
+    if( const ConsTerm* pSrcCons = dynamic_cast<const ConsTerm*>( pTerm ) ) {
+        int nTerms = pSrcCons->getArity();
+        AbstractTerm** ppTerms = nTerms ? new AbstractTerm*[nTerms] : NULL;
+        for( int i = 0; i < nTerms; ++i ) {
+            ppTerms[i] = resolveTermGrounded( pSrcCons->getTermAt( i ), pUCStackTop, pUCTerm );
+        }
+        ConsTerm* pCloneCons = new ConsTerm(
+            Atom( pSrcCons->getName().value() ), nTerms, ppTerms );
+        delete[] ppTerms;
+        pCloneCons->setNegated( pSrcCons->isNegated() );
+        return pCloneCons;
+    }
+
+    if( const MapTerm* pSrcMap = dynamic_cast<const MapTerm*>( pTerm ) ) {
+        std::vector<std::pair<const Atom*, AbstractTerm*> > entries;
+        pSrcMap->getEntries( entries );
+        int nTuples = (int) entries.size();
+        const Atom** ppAtoms = nTuples ? new const Atom*[nTuples] : NULL;
+        AbstractTerm** ppTerms = nTuples ? new AbstractTerm*[nTuples] : NULL;
+        for( int i = 0; i < nTuples; ++i ) {
+            ppAtoms[i] = new Atom( entries[i].first->value() );
+            ppTerms[i] = resolveTermGrounded( entries[i].second, pUCStackTop, pUCTerm );
+        }
+        MapTerm* pCloneMap = new MapTerm( ppAtoms, ppTerms, nTuples );
+        delete[] ppAtoms;
+        delete[] ppTerms;
+        return pCloneMap;
+    }
+
+    if( const ArrayTerm* pSrcArr = dynamic_cast<const ArrayTerm*>( pTerm ) ) {
+        std::vector<AbstractTerm*> elements;
+        pSrcArr->getElements( elements );
+        int nElems = (int) elements.size();
+        AbstractTerm** ppTerms = nElems ? new AbstractTerm*[nElems] : NULL;
+        for( int i = 0; i < nElems; ++i ) {
+            ppTerms[i] = resolveTermGrounded( elements[i], pUCStackTop, pUCTerm );
+        }
+        ArrayTerm* pCloneArr = new ArrayTerm( ppTerms, nElems );
+        delete[] ppTerms;
+        return pCloneArr;
+    }
+
+    // Internal error: no other concrete AbstractTerm kind exists in this
+    // module. Log and give up rather than silently dropping the term.
+    VAULT_UNIFY_DI( ALWAYS,
+        "resolveTermGrounded: term '%s' is neither VarTerm, ConsTerm, MapTerm "
+        "nor ArrayTerm; cannot resolve.\n", pTerm->toString().c_str() );
     return NULL;
 }
 
