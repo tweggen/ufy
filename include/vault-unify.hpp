@@ -281,25 +281,34 @@ public:
         }
         ~ClauseIterator() {}
 
-        bool isValid() {
-            if( m_invalidated ) {
-                // ROADMAP Phase 2 (Cut): forced permanently invalid, see
-                // invalidate() below -- checked before the natural
-                // exhaustion/parent-fallback walk so a cut takes effect
-                // regardless of how many candidates (in this or any
-                // parent ExecutionState) remain.
-                return false;
-            }
-            while(1) {
-                if( m_itClause != m_itClauseEnd ) {
-                    return true;
-                }
-                if( NULL==m_currentState->m_pParent ) {
-                    return false;
-                }
-                enterState( m_currentState->m_pParent );
-            }
-        }
+        /**
+         * ROADMAP Phase 2 (Cut): returns false immediately if invalidate()
+         * (below) was ever called, checked before the natural exhaustion/
+         * parent-fallback walk so a cut takes effect regardless of how many
+         * candidates (in this or any parent ExecutionState) remain.
+         *
+         * ROADMAP Phase 2 (runtime assert/retract, SPEC.md): otherwise,
+         * skips forward over any clause retract() has tombstoned
+         * (Clause::isRetired(), defined further down in this same header --
+         * this is exactly why this method's BODY lives out-of-line in
+         * vault-unify-execution-state.cpp rather than inline here like the
+         * rest of this class: Clause is still only forward-declared at this
+         * point in the header, and isRetired() needs it complete). Checked
+         * freshly on every call, not cached, so a clause retired by a
+         * NESTED goal after this iterator was constructed (but before it
+         * reaches that clause's position) is excluded too. This is the
+         * "logical update view" conformance point documented in SPEC.md: an
+         * in-progress iteration is never disturbed by memory unsafety (the
+         * node stays a valid list element -- see Clause::retire()'s
+         * comment), but it DOES stop offering a just-retracted clause the
+         * moment it is tombstoned, even for a scan already under way. A
+         * clause APPENDED mid-scan, by contrast, is naturally still visible
+         * if this iterator has not yet advanced past it
+         * (std::list::push_back() does not invalidate a previously captured
+         * end() iterator, and the new node becomes reachable before it) --
+         * also documented in SPEC.md rather than suppressed.
+         */
+        bool isValid();
 
         const Clause* getClause() const {
             return *m_itClause;
@@ -1313,7 +1322,37 @@ public:
 
     virtual bool isTerminal() const = 0;
 
-private:    
+    /**
+     * ROADMAP Phase 2 (runtime assert/retract, SPEC.md): `retract(...)`
+     * (SolveJob::performSlice()'s `__builtin_retract` special form,
+     * vault-unify-solvejob.cpp) never erases a clause out of its
+     * ExecutionState's m_listClauses -- doing so could invalidate another
+     * ClauseIterator (or a UnifyContext::m_itClause / SolveContext::
+     * m_itNextChildClause copy of one) currently positioned on exactly that
+     * std::list NODE elsewhere in the same search (or a concurrently
+     * running nested job), since std::list::erase() only guarantees OTHER
+     * iterators stay valid, not ones pointing at the erased element itself.
+     * Instead the clause is tombstoned in place -- retire() flips this flag,
+     * and ClauseIterator::isValid() below skips any clause for which
+     * isRetired() is true while walking m_listClauses -- so the node (and
+     * every list iterator referencing it) remains perfectly valid, just
+     * permanently excluded from future candidate consideration.
+     *
+     * Because the tombstoned Clause stays a normal member of its
+     * ExecutionState's m_listClauses, it needs no separate "retired list"
+     * for its OWN memory: ExecutionState::collectAllTermTrees() and
+     * ~ExecutionState() already walk every clause in m_listClauses
+     * (retired or not) exactly once, so its head/body term trees and the
+     * Clause object itself are freed by the ordinary ~World() sweep,
+     * automatically, with no extra bookkeeping (contrast
+     * World::m_lsRetiredDebugInfos, vault-unify-world.cpp, which needs its
+     * own retired list precisely because a REPLACED TermDebugInfo* is
+     * removed from the map that would otherwise reach it again).
+     */
+    bool isRetired() const { return m_isRetired; }
+    void retire() { m_isRetired = true; }
+
+private:
     ConsTerm* m_pLeftHandTerm;
 
     static ClauseId m_nextUid;
@@ -1322,6 +1361,9 @@ private:
     ClauseId m_uid;
 
     DebugLocation m_debugLocation;
+
+    /// See isRetired()/retire() above.
+    bool m_isRetired;
 };
 
 

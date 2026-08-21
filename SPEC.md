@@ -1525,3 +1525,152 @@ either way" behavior.
 — iterating an array literal, iterating a literal range (`1..4`, expanded
 eagerly to `[1, 2, 3, 4]` per section 12.1), and a body failure on one
 element that does not stop the remaining iterations.
+
+---
+
+## 13. Runtime `assert`/`retract` (ROADMAP Phase 2)
+
+ROADMAP Phase 2 ("runtime assert/retract — required for device/sensor state
+in the home-automation workload"). `assert(Fact);` and `retract(Fact);` are
+goal statements — like `cut`/`findall` (sections 8, 11.2), each is a
+reserved, exact-name-**and**-arity (exactly one argument) goal name,
+recognized structurally in `SolveJob::performSlice()`
+(`src/vault-unify-solvejob.cpp`) rather than as a registered `Clause`/
+builtin: `assert` needs the `World` itself (to append a new clause to the
+root `ExecutionState`'s clause list) and `retract` needs to scan **and**
+mutate that same list directly — neither capability a `Clause::
+startUnification()` implementation ever gets (its signature only ever hands
+it two `UnifyContext`s and an `Engine`, `include/vault-unify.hpp`).
+
+**Reservation**: `AnyTermFactory::operator()(const ConsTermInput&)`
+(`src/vault-unify-parser.cpp`) renames a bareword `assert`/`retract`
+`ConsTerm` with EXACTLY one argument to the internal atom
+`__builtin_assert`/`__builtin_retract` before the `ConsTerm` is built — the
+same single choke point, and the same exact-name+arity discipline, `cut`
+uses (section 8), so a goal statement, a clause head, or a plain data
+argument are all covered by the one change. `assert(...)`/`retract(...)`
+with any OTHER arity (zero, or two-plus) are unaffected and remain ordinary
+clause heads/calls; a user clause literally named `assert(x)`/`retract(x)`
+(exactly one argument) is shadowed — it can no longer be defined or called
+as such, exactly like a bareword `cut` clause.
+
+**`assert(Arg)`**: `Arg` is resolved against the CURRENT bindings via
+`resolveTermGrounded()` (`src/vault-unify-terms.cpp` — the very helper
+`findall`'s per-solution template clone uses, section 11.2) into a fresh,
+fully independent clone: every bound `VarTerm` is resolved recursively (in
+its own binding's scope), every still-unbound one is cloned as a fresh,
+unbound `VarTerm` (`resolveTermGrounded()` itself never fails on this — that
+check happens next, explicitly). **v1 requires the clone to be fully
+ground**: if the clone's tree contains an unbound `VarTerm` anywhere (a
+generic tree walk, `termTreeHasUnboundVar()`,
+`src/vault-unify-solvejob.cpp`), the goal fails with a `UnifyError` (raises
+the job's error count, `SolveJob::recordError()`) and the (entirely
+orphaned — nothing else points at a fresh clone) clone is freed via
+`deleteTermTree()`. A ground clone that is not a `ConsTerm` (e.g. an
+`ArrayTerm`/`MapTerm` — `Clause`'s head is always a `ConsTerm`,
+`include/vault-unify.hpp`) is likewise a `UnifyError`. **v1 is FACTS only**:
+asserting a rule (a clause with a body) is out of scope — there is no syntax
+to even write one as `assert`'s single argument, since `Arg` is an ordinary
+term, never a `{ ... }` body.
+
+On success, the ground `ConsTerm` becomes a brand-new `StandardClause`'s
+head with **no** body (`new StandardClause(head, NULL)` — exactly how
+`PrologParser::Context::createClause()` builds an ordinary parsed fact),
+appended via `ExecutionState::appendClause()` to the **END** of the World's
+root `ExecutionState`'s clause list — **assertz semantics**: this engine
+already defines "clause order within one predicate name is exactly
+[appended] order" (section 5), so appending is the predictable, consistent
+choice, not a special case. The new clause is visible to every query from
+that point on (including a later match of the very same predicate name),
+per section 5's file-order/FIFO-single-worker-thread guarantee — the same
+guarantee `print`/`emit`'s own cross-query stdout ordering already relies
+on. Ownership: `appendClause()` does not distinguish a solve-time clause
+from a parse-time one, so the new clause's term tree is freed exactly once,
+with zero extra bookkeeping, by the existing whole-database sweep
+(`ExecutionState::collectAllTermTrees()`/`~ExecutionState()`, driven by
+`World::~World()`).
+
+**`retract(Arg)`**: scans the root `ExecutionState`'s `m_listClauses` — the
+exact list `ExecutionState::ClauseIterator` walks — in definition order,
+skipping every builtin (`SimpleBuiltinClause`) and every rule with a
+non-empty body (only a `StandardClause` whose `isTerminal()` is true, i.e. a
+plain fact, is retractable in v1); for each remaining candidate, tries a
+**throwaway trial unification** of `Arg` against the candidate's head,
+directly, via `AbstractTerm::unifyTerm()` — mirroring
+`UnifyBuiltinClause`'s own minimal direct-call pattern
+(`src/vault-unify-clause-builtin-unify.cpp`) rather than going through the
+normal candidate-unification machinery
+(`SolveJob::startUnification()`/`SolveJob::adoptUnifyContext()`), which
+would adopt the trial's `UnifyContext` into the job's own long-lived arena.
+The FIRST candidate whose head unifies wins: that clause is tombstoned (see
+below) and `retract` succeeds, exactly once (no choice point — the
+remaining candidates are never tried). No candidate at all matching is an
+ordinary, silent `UnifyNot` — precisely like a goal with no matching
+clauses; no error, no output.
+
+**The trial does not let `Arg`'s unification bind anything new outside
+itself** ("check-and-remove, not a binding goal" — a deliberate v1 choice):
+the trial's own `UnifyContext` (`ucScratch` in the code) is parented on the
+CURRENT live chain (`sc->m_pUnifyContext`) purely so *reads*
+(`findVarBinding()`'s parent walk) still see every binding already made so
+far — an already-bound variable used inside `Arg` (e.g. `retract(fact(a,
+$y))` after `$y` was bound by an earlier goal in the very same clause body)
+resolves correctly — but every *write* the trial performs
+(`bindVarBinding()`/`bindVarInstance()`, `src/vault-unify-unifycontext.cpp`,
+always mutate the `UnifyContext` they are called ON, never a parent's own
+maps) lands only in `ucScratch` itself, which is destroyed the moment the
+trial ends. So a variable in `Arg` that is still unbound going in stays
+unbound after `retract` runs, win or lose — nothing escapes.
+
+**Tombstone, not erase**: a matched clause is never removed from
+`m_listClauses` (`Clause::retire()`/`isRetired()`,
+`include/vault-unify.hpp`) — `ExecutionState::ClauseIterator` (and every
+copy of one — `UnifyContext::m_itClause`, `SolveContext::
+m_itNextChildClause`) holds a plain `std::list<Clause*>::const_iterator`;
+`std::list::erase()` only guarantees iterators OTHER than the one pointing
+at the erased element stay valid, and this engine's own architecture
+routinely has several such iterator copies live at once across a
+multi-branch search (or a nested `findall`/`retract`-inside-a-rule
+invocation) — any one of which could, in principle, be positioned on
+exactly the node a concurrent `retract` wants to remove. Erasing that node
+out from under a still-live copy would be a dangling-iterator bug; tombstoning
+the `Clause` in place — the node stays a completely ordinary, valid
+`m_listClauses` member — sidesteps the question entirely: nothing is ever
+invalidated, because nothing is ever removed. `ClauseIterator::isValid()`
+skips a retired clause when walking forward (checked freshly on every call,
+not cached), so it is simply never offered as a candidate again from the
+moment it is tombstoned. This also means a tombstoned clause needs **no**
+separate "retired list" for its own memory the way
+`World::m_lsRetiredDebugInfos` (`src/vault-unify-world.cpp`) needs one for a
+*replaced* `TermDebugInfo*` (which is actually removed from the map that
+would otherwise reach it again): staying an ordinary `m_listClauses` member
+means the existing whole-database sweep
+(`ExecutionState::collectAllTermTrees()`/`~ExecutionState()`) already frees
+its term tree and the `Clause` object itself exactly once, tombstoned or
+not.
+
+**Logical update view**: an iteration already under way when a clause is
+retracted stops offering that clause **from the moment it is tombstoned
+onward**, even mid-scan — `ClauseIterator::isValid()`'s freshness (previous
+paragraph) means it is checked live, not snapshotted at the iteration's
+start. This is a documented, deliberate simplification rather than strict
+ISO-Prolog logical-update-view semantics (a call is traditionally guaranteed
+to see the exact clause set as it stood at call time, unaffected by any
+assert/retract during its own execution) — real Prolog implementations vary
+on this point too. A clause **appended** mid-scan (by contrast) IS seen by
+an iterator that has not yet advanced past it: `std::list::push_back()`
+never invalidates a previously captured `end()` iterator, and the new node
+becomes part of the reachable range before that sentinel — ordinary
+`std::list` behavior, not special-cased.
+
+**Conformance**: `test/conformance/assert-retract.ufy` — (a) `assert()`
+adds a fact absent beforehand; a separate, later query sees it; (b) the
+state-machine pattern this feature exists for — a rule that reads the
+current value, `retract()`s it, and `assert()`s the new one, with the old
+value flowing back to the caller; (c) `retract()` removes only the FIRST of
+several structurally-identical matching facts, confirmed via `findall`
+still finding the remaining one; (d) `retract()` with no matching clause at
+all fails silently, no output. Deliberately NOT exercised there (documented
+above instead, to keep every query in that program at UnifyNot-or-success):
+asserting a non-ground fact, and asserting/retracting a rule — both a
+`UnifyError`.

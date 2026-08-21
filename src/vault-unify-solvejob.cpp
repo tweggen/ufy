@@ -15,9 +15,46 @@
 #include <vault-unification.hpp>
 #include <vault-unify-solvejob.hpp>
 #include <vault-unify-debug.hpp>
+#include <vault-unify-clause-standard.hpp>
 
 namespace vault {
 namespace unify {
+
+
+/**
+ * ROADMAP Phase 2 (runtime assert/retract, SPEC.md): does pTerm's tree
+ * (typically a resolveTermGrounded() clone) still contain an unbound
+ * VarTerm anywhere? Used by the `__builtin_assert` special form
+ * (SolveJob::performSlice() below) to enforce v1's "facts must be ground"
+ * rule. Walks generically via the existing TermTraversable/
+ * AbstractTermIterator machinery, exactly like collectTermTree()
+ * (vault-unify-terms.cpp) -- but this is a read-only predicate, not a
+ * collect-and-delete pass, so it stays local to this file rather than
+ * joining that module's exported ownership helpers.
+ */
+static bool termTreeHasUnboundVar( const AbstractTerm* pTerm )
+{
+    if( !pTerm ) {
+        return false;
+    }
+    if( dynamic_cast<const VarTerm*>( pTerm ) ) {
+        return true;
+    }
+    bool found = false;
+    AbstractTermIterator* pIt = pTerm->abstractTermIterator();
+    if( pIt ) {
+        while( !found && pIt->isValid() ) {
+            const TermTraversable* pChildTraversable = pIt->getTermTraversable();
+            const AbstractTerm* pChildTerm = dynamic_cast<const AbstractTerm*>( pChildTraversable );
+            if( pChildTerm && termTreeHasUnboundVar( pChildTerm ) ) {
+                found = true;
+            }
+            pIt->next();
+        }
+        delete pIt;
+    }
+    return found;
+}
 
 
 SolveContext::~SolveContext()
@@ -844,6 +881,267 @@ int SolveJob::performSlice()
                 // `out` failed here -- an ordinary goal failure. Nothing is
                 // pushed; sc falls into the "no next child clause"
                 // discardTop() path above the next time it is visited.
+
+                continue;
+            }
+        }
+
+        /*
+         * ROADMAP Phase 2 (runtime assert/retract, SPEC.md): `assert(
+         * fact(a, b) );` desugars (AnyTermFactory::operator()(const
+         * ConsTermInput&), vault-unify-parser.cpp) to the reserved,
+         * 1-arity goal term `__builtin_assert(fact(a, b))`, recognized here
+         * directly -- exactly like cut/findall above -- rather than as a
+         * registered Clause: assert needs the World (to append a new
+         * clause to the root ExecutionState's clause list), which no
+         * Clause::startUnification() implementation ever gets (its
+         * signature only ever hands it two UnifyContexts and an Engine,
+         * include/vault-unify.hpp).
+         *
+         * v1 scope (SPEC.md): FACTS only, and the argument must be fully
+         * GROUND (no unbound variables) once resolved against the current
+         * bindings -- asserting a rule, or a fact whose argument still
+         * contains an unbound variable after resolution, is a v1
+         * limitation reported as a (recorded, job-error-count-raising)
+         * failure, not silently accepted.
+         *
+         * Mechanism: resolveTermGrounded() (vault-unify-terms.cpp) -- the
+         * same helper findall uses for its own per-solution template clone
+         * above -- resolves the argument against the CURRENT live chain:
+         * sc->m_pUnifyContext carries every binding made so far along this
+         * depth-first path (exactly the "search root" every ordinary
+         * candidate unification is handed too -- e.g. the pUCCand
+         * StandardClause::startUnification() receives is always
+         * constructed with sc->m_pUnifyContext as ITS OWN parent, see the
+         * ordinary clause-candidate code below), and pUCOriginScope scopes
+         * the argument term's OWN variables (mirroring findall's pOutTerm
+         * scoping just above). Every node resolveTermGrounded() returns is
+         * a fresh allocation (bound VarTerms resolved recursively, unbound
+         * ones cloned fresh) -- entirely independent of, and never aliased
+         * into, the existing clause database or any live query/clause term
+         * tree, so it is always safe either to free it (deleteTermTree(),
+         * on the v1-limitation paths below) or to hand it over to a brand
+         * new StandardClause (the success path).
+         *
+         * On success the grounded clone (required to be a ConsTerm --
+         * Clause's head is always one, include/vault-unify.hpp) becomes a
+         * new StandardClause's head with NO body (a fact -- mirrors
+         * PrologParser::Context::createClause()'s own `new
+         * StandardClause(head, NULL)` for an ordinary parsed fact,
+         * vault-unify-parser.cpp), appended via
+         * ExecutionState::appendClause() to the END of the World's root
+         * ExecutionState's m_listClauses -- assertz/definition-order
+         * semantics (SPEC.md), and the EXACT list both ClauseIterator and
+         * `__builtin_retract` below walk. From this point on, the new
+         * clause's term tree is owned exactly like any parser-built fact:
+         * ExecutionState::collectAllTermTrees()/~ExecutionState() (driven
+         * by World::~World()'s de-duplicated sweep) frees it once, with no
+         * extra bookkeeping -- appendClause() does not distinguish a
+         * solve-time clause from a parse-time one.
+         *
+         * Like findall, this is deterministic (exactly one outcome, no
+         * choice point) and never produces a continuation goal of its own.
+         */
+        {
+            const ConsTerm* pAssertCandidate = dynamic_cast<const ConsTerm*>( sc->m_csCurrent.getAbstractTerm() );
+            if( pAssertCandidate && 1==pAssertCandidate->getArity()
+                    && pAssertCandidate->getName().value() == "__builtin_assert" ) {
+
+                const AbstractTerm* pArgTerm = pAssertCandidate->getTermAt( 0 );
+                UnifyContext* pUCOriginScope = sc->m_csCurrent.getOriginUnifyContext();
+
+                AbstractTerm* pGrounded = resolveTermGrounded(
+                    pArgTerm, sc->m_pUnifyContext, pUCOriginScope );
+
+                UnifyResult unifyResult;
+
+                if( termTreeHasUnboundVar( pGrounded ) ) {
+                    std::string strError = "assert(): argument '";
+                    strError += pArgTerm->toString();
+                    strError += "' is not ground (contains unbound variable(s)); "
+                        "v1 only supports asserting ground facts.";
+                    VAULT_UNIFY_DI( ALWAYS, "Job %lld: %s\n", (long long) getId(), strError.c_str() );
+                    recordError( strError );
+                    deleteTermTree( pGrounded );
+                    unifyResult = UnifyNot;
+                } else if( ConsTerm* pFactHead = dynamic_cast<ConsTerm*>( pGrounded ) ) {
+                    StandardClause* pNewClause = new StandardClause( pFactHead, NULL );
+                    m_spWorld->getRootState()->appendClause( m_spWorld, pNewClause );
+                    unifyResult = UnifyLast;
+                } else {
+                    std::string strError = "assert(): argument '";
+                    strError += pArgTerm->toString();
+                    strError += "' does not resolve to a named term and cannot become a fact.";
+                    VAULT_UNIFY_DI( ALWAYS, "Job %lld: %s\n", (long long) getId(), strError.c_str() );
+                    recordError( strError );
+                    deleteTermTree( pGrounded );
+                    unifyResult = UnifyNot;
+                }
+
+                // Exactly one outcome, no choice point -- mirrors cut's/
+                // findall's own iterator invalidation above: without this,
+                // a later revisit of sc would re-recognize and re-run this
+                // very block.
+                sc->m_itNextChildClause.invalidate();
+
+                if( Unifies( unifyResult ) ) {
+                    GoalPartCursor csNext( sc->m_csCurrent );
+                    csNext.next();
+
+                    SolveContext* scChild = new SolveContext(
+                        m_pStartState,
+                        sc,
+                        sc->m_pUnifyContext,    // assert binds nothing new.
+                        NULL,
+                        csNext
+                        );
+                    m_stackContext.push_back( scChild );
+                }
+                // else: the ground/head-shape check failed above (error
+                // already recorded); nothing pushed -- sc falls into the
+                // "no next child clause" discardTop() path the next time
+                // it is visited, exactly like an ordinary failed goal.
+
+                continue;
+            }
+        }
+
+        /*
+         * ROADMAP Phase 2 (runtime assert/retract, SPEC.md): `retract(
+         * fact(a, $x) );` desugars to the reserved, 1-arity goal term
+         * `__builtin_retract(fact(a, $x))`, recognized here directly for
+         * the same reason as assert above: retract needs to scan AND
+         * mutate the World's clause database directly, which no Clause
+         * ever gets access to.
+         *
+         * v1 scope (SPEC.md): only STANDARD-CLAUSE FACTS are retractable --
+         * builtins (SimpleBuiltinClause) and rules with a non-empty body
+         * are skipped while scanning, never matched against. Finds the
+         * FIRST such clause (definition/assertz order -- the same
+         * m_listClauses order ExecutionState::ClauseIterator walks) whose
+         * head unifies with the argument; on a match, the clause is
+         * tombstoned (Clause::retire(), include/vault-unify.hpp -- see its
+         * comment for why this, rather than erasing it from
+         * m_listClauses, is the safe choice given how
+         * ExecutionState::ClauseIterator/UnifyContext::m_itClause/
+         * SolveContext::m_itNextChildClause hold plain std::list iterator
+         * copies that could otherwise be positioned on the very node being
+         * removed) and retract succeeds once (no choice point -- the FIRST
+         * match only, per SPEC.md). No match at all is an ordinary,
+         * silent UnifyNot -- exactly like a goal with no matching clauses.
+         *
+         * The trial unification is a throwaway, "check-and-remove" step,
+         * NOT a binding goal (SPEC.md): the argument's own vars are
+         * resolved through pUCOriginScope/sc->m_pUnifyContext (the real,
+         * live chain -- so an already-bound variable used inside the
+         * retract argument, e.g. `retract(fact(a, $y))` after $y was bound
+         * earlier in the very same clause body, is correctly read), but
+         * every NEW binding this trial unification would create is written
+         * only into a fresh, throwaway UnifyContext scoped to this trial
+         * alone (bindVarBinding()/bindVarInstance(), vault-unify-
+         * unifycontext.cpp, always mutate the UnifyContext they are
+         * called ON -- never a parent's own maps), local to this block and
+         * destroyed the moment it ends -- so nothing the trial binds ever
+         * escapes into the enclosing search, matching UnifyBuiltinClause's
+         * own minimal direct-unifyTerm() pattern (vault-unify-clause-
+         * builtin-unify.cpp) rather than going through the normal
+         * candidate-unification machinery (SolveJob::startUnification()),
+         * which always adopts pUCCand into the job's own long-lived arena.
+         */
+        {
+            const ConsTerm* pRetractCandidate = dynamic_cast<const ConsTerm*>( sc->m_csCurrent.getAbstractTerm() );
+            if( pRetractCandidate && 1==pRetractCandidate->getArity()
+                    && pRetractCandidate->getName().value() == "__builtin_retract" ) {
+
+                const AbstractTerm* pArgTerm = pRetractCandidate->getTermAt( 0 );
+                UnifyContext* pUCOriginScope = sc->m_csCurrent.getOriginUnifyContext();
+
+                bool foundMatch = false;
+                {
+                    ExecutionState* pRootState = m_spWorld->getRootState();
+                    std::list<Clause*>::const_iterator
+                        itCand = pRootState->m_listClauses.begin(),
+                        itCandEnd = pRootState->m_listClauses.end();
+                    for( ; !foundMatch && itCand != itCandEnd; ++itCand ) {
+                        Clause* pCand = *itCand;
+                        if( pCand->isRetired() ) {
+                            continue;
+                        }
+                        // Only standard-clause FACTS (no body) are
+                        // retractable in v1 -- skips builtins
+                        // (SimpleBuiltinClause) and rules alike.
+                        StandardClause* pStdCand = dynamic_cast<StandardClause*>( pCand );
+                        if( !pStdCand || !pStdCand->isTerminal() ) {
+                            continue;
+                        }
+
+                        const ConsTerm* pCandHead = pStdCand->leftHandTerm();
+
+                        // Throwaway trial context: parented on the real,
+                        // live chain (sc->m_pUnifyContext) purely so reads
+                        // (findVarBinding()'s parent walk) see every
+                        // binding made so far -- every WRITE this trial
+                        // performs lands in ucScratch itself, discarded
+                        // when this block ends (see the comment above).
+                        UnifyContext ucScratch(
+                            sc->m_pUnifyContext,
+                            GoalPartCursor(),
+                            ExecutionState::ClauseIterator() );
+
+                        UnifyResult trialResult = pArgTerm->unifyTerm(
+                            m_pEngine,
+                            &ucScratch,      // pUCStackTop: the trial's own binding sink.
+                            &ucScratch,      // pUCOther: scope for pCandHead's own vars.
+                            pUCOriginScope,  // pUCMine: scope for pArgTerm's own vars.
+                            pCandHead );
+
+                        if( Unifies( trialResult ) ) {
+                            pCand->retire();
+                            foundMatch = true;
+                        } else if( UnifyError==trialResult ) {
+                            // Defensive: no plain ConsTerm/VarTerm/MapTerm/
+                            // ArrayTerm unification actually returns this
+                            // today (see SPEC.md), but treat it like any
+                            // other unification error rather than silently
+                            // matching or crashing.
+                            std::string strError = "retract(): unification error trying candidate '";
+                            strError += pCandHead->toString();
+                            strError += "' against argument '";
+                            strError += pArgTerm->toString();
+                            strError += "'.";
+                            VAULT_UNIFY_DI( ALWAYS, "Job %lld: %s\n", (long long) getId(), strError.c_str() );
+                            recordError( strError );
+                        }
+                        // ucScratch destructs here -- its m_lsAdoptedTerms
+                        // is always empty (a plain unifyTerm() call on
+                        // ConsTerm/VarTerm/MapTerm/ArrayTerm never adopts a
+                        // freshly allocated term the way ArithEvalBuiltinClause/
+                        // findall do), so there is nothing to free beyond
+                        // the (stack-allocated) UnifyContext object itself.
+                    }
+                }
+
+                // Exactly one outcome, no choice point -- see assert's own
+                // comment above for why.
+                sc->m_itNextChildClause.invalidate();
+
+                if( foundMatch ) {
+                    GoalPartCursor csNext( sc->m_csCurrent );
+                    csNext.next();
+
+                    SolveContext* scChild = new SolveContext(
+                        m_pStartState,
+                        sc,
+                        sc->m_pUnifyContext,    // retract binds nothing new.
+                        NULL,
+                        csNext
+                        );
+                    m_stackContext.push_back( scChild );
+                }
+                // else: no matching clause found -- an ordinary, silent
+                // UnifyNot; nothing pushed, sc falls into the "no next
+                // child clause" discardTop() path the next time it is
+                // visited, exactly like a goal with no matching clauses.
 
                 continue;
             }

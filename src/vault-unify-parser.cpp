@@ -1510,6 +1510,28 @@ public:
             consTermInputName = "__builtin_cut";
         }
 
+        // ROADMAP Phase 2 (runtime assert/retract, SPEC.md): `assert(...)`
+        // and `retract(...)`, each with EXACTLY one argument, are reserved
+        // goal names -- the same exact-name+arity reservation `cut` gets
+        // above (not a purely positional/grammar reservation like `query`),
+        // applied at the same single choke point so a goal statement, a
+        // clause head, or a plain argument are all covered by one change.
+        // Renamed to the internal names SolveJob::performSlice()
+        // (vault-unify-solvejob.cpp) recognizes directly, mirroring
+        // cut/findall: neither is ever a registered Clause/builtin, since
+        // assert needs the World (to append a new clause) and retract needs
+        // to scan+mutate the clause database directly, neither of which a
+        // Clause::startUnification() implementation ever gets access to.
+        // `assert(...)`/`retract(...)` with any OTHER arity (zero, or two
+        // or more) are unaffected and remain ordinary clause heads/calls,
+        // exactly like `cut(a)` remains ordinary once cut takes an
+        // argument.
+        if( consTermInputName=="assert" && 1==consTermInput.values.size() ) {
+            consTermInputName = "__builtin_assert";
+        } else if( consTermInputName=="retract" && 1==consTermInput.values.size() ) {
+            consTermInputName = "__builtin_retract";
+        }
+
         // Atom used, if at all, only to copy-construct ConsTerm::m_name
         // (which stores it BY VALUE) below -- a stack instance avoids
         // orphaning a heap Atom on every single call (both the VarTerm

@@ -1,0 +1,95 @@
+// Conformance: runtime `assert(...)`/`retract(...)` (ROADMAP Phase 2,
+// "runtime assert/retract -- required for device/sensor state in the
+// home-automation workload", SPEC.md).
+//
+// `assert(fact(a, b));` and `retract(fact(a, $x));` are reserved, exactly
+// 1-arity goal names (like `cut`/`findall`, SPEC.md), recognized directly in
+// SolveJob::performSlice() (vault-unify-solvejob.cpp) rather than as
+// registered Clauses/builtins:
+//
+//   assert(Arg) -- resolves Arg against the CURRENT bindings into a fresh,
+//   fully GROUND clone (resolveTermGrounded(), vault-unify-terms.cpp -- the
+//   same helper findall uses); a still-unbound variable anywhere in the
+//   clone is a v1 limitation (facts must be ground) and fails the goal.
+//   Otherwise the clone becomes a new, body-less StandardClause (a FACT --
+//   asserting a RULE is out of v1's scope) appended to the END of the
+//   database (assertz/definition-order semantics) -- visible to every query
+//   from that point on, including later matches of the SAME predicate name.
+//
+//   retract(Arg) -- scans the database in definition order for the FIRST
+//   standard-clause FACT (builtins and rules with a body are skipped, never
+//   matched) whose head unifies with Arg, in a throwaway trial that never
+//   lets any NEW binding escape (only bindings Arg already had going in are
+//   honored) -- see this task's session report for the full ownership/
+//   trial-unification analysis. On a match, that ONE clause is removed
+//   (tombstoned, not literally erased -- so any other iteration already in
+//   progress over the same list is never disturbed) and retract succeeds;
+//   no match is an ordinary, silent failure (UnifyNot), exactly like a goal
+//   with no matching clauses -- no error, no output.
+//
+// v1 does not cover asserting a non-ground fact or a rule -- SPEC.md
+// documents both as a `UnifyError` (raises the job's error count, which
+// makes `unify-run` exit 1) rather than exercising them here, so this
+// program's every query stays at UnifyNot-or-success and `unify-run` exits
+// 0 for the whole file, same as any other conformance program with no
+// UNIFY_EXPECT_EXIT override (test/CMakeLists.txt).
+//
+// Expected output (see this task's session report for the full prediction
+// derivation):
+//   print: off
+//   print: off
+//   print: on
+//   print: [off]
+
+// (a) assert() adds a brand-new fact; a later, separate query sees it
+// (assert's side effect happens while THIS query solves, and -- per
+// SPEC.md section 5's FIFO-single-worker-thread guarantee, the same one
+// print/emit's own cross-query stdout ordering already relies on -- is
+// guaranteed visible to every subsequent query in the file).
+query {
+    assert( sensor( kitchen, off ) );
+}
+
+query {
+    sensor( kitchen, $state );
+    print( $state );
+}
+
+// (b) The state-machine pattern this feature exists for (ROADMAP Phase 2,
+// home-automation workload): a rule that reads the current state, retracts
+// it, and asserts the new one. $old is bound by the first goal and flows
+// back to the caller; $dev/$new are bound at the call site.
+toggle_sensor( $dev, $old, $new ) {
+    sensor( $dev, $old );
+    retract( sensor( $dev, $old ) );
+    assert( sensor( $dev, $new ) );
+}
+
+query {
+    toggle_sensor( kitchen, $old, on );
+    print( $old );
+}
+
+query {
+    sensor( kitchen, $state );
+    print( $state );
+}
+
+// (c) retract removes only the FIRST matching clause (definition order),
+// even when several clauses are structurally identical -- the second,
+// otherwise-indistinguishable fact remains and findall still finds it.
+light( bedroom, off );
+light( bedroom, off );
+
+query {
+    retract( light( bedroom, off ) );
+    $remaining = findall( $s, light( bedroom, $s ) );
+    print( $remaining );
+}
+
+// (d) retract with no matching clause at all fails silently (UnifyNot) --
+// the guarded print is never reached, so this query produces no output.
+query {
+    retract( nosuchfact( x ) );
+    print( "should-not-print" );
+}

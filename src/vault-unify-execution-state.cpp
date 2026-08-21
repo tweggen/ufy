@@ -25,6 +25,35 @@ namespace vault {
 namespace unify {
 
     
+/**
+ * See the declaration (include/vault-unify.hpp) for the full contract; this
+ * body lives here, out-of-line, rather than inline in the class definition
+ * (unlike the rest of ClauseIterator) specifically because it calls
+ * Clause::isRetired() -- Clause is still only forward-declared at
+ * ClauseIterator's point in the header, so this file (which, via
+ * vault-unification.hpp, has already seen Clause's complete definition by
+ * the time this function body is compiled) is where it has to live.
+ */
+bool ExecutionState::ClauseIterator::isValid()
+{
+    if( m_invalidated ) {
+        return false;
+    }
+    while(1) {
+        while( m_itClause != m_itClauseEnd && (*m_itClause)->isRetired() ) {
+            ++m_itClause;
+        }
+        if( m_itClause != m_itClauseEnd ) {
+            return true;
+        }
+        if( NULL==m_currentState->m_pParent ) {
+            return false;
+        }
+        enterState( m_currentState->m_pParent );
+    }
+}
+
+
 int ExecutionState::appendClause( WorldPtr spWorld, Clause* clause )
 {
     // LOCK( this )
