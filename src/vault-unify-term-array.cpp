@@ -30,7 +30,14 @@ UnifyResult ArrayTerm::unifyTerm(
         UnifyContext* pUCMine,
         const AbstractTerm* pOther ) const
 {
-    // One object always unifies with itself.
+    // One object always unifies with itself. See the scope-blindness
+    // analysis above ConsTerm::unifyConsTerm's identical check
+    // (vault-unify-term-cons.cpp) -- it applies here unchanged: an
+    // ArrayTerm literal is always freshly allocated per source occurrence
+    // (AnyTermFactory, vault-unify-parser.cpp), only a repeated VARIABLE
+    // name is ever shared across scopes (SPEC.md section 10), so this
+    // pointer-identity shortcut never hides a cross-scope aliasing bug the
+    // way VarTerm's own analogous check once did.
     if( this == pOther ) return UnifyLast;
 
     // Dispatch second step.
@@ -104,7 +111,9 @@ UnifyResult ArrayTerm::unifyArrayTerm(
     VAULT_UNIFY_DI( UNIFY, "ArrayTerm: Asked to unify %s with %s.\n",
         this->toString().c_str(), pOther->toString().c_str() );
 
-    // 1. If terms are identical, unifies trivially.
+    // 1. If terms are identical, unifies trivially. See the scope-blindness
+    // analysis above ArrayTerm::unifyTerm's own identical check just above
+    // -- applies here unchanged.
     if( this == pOther ) {
         return UnifyLast;
     }

@@ -209,25 +209,52 @@ UnifyResult VarTerm::unifyVarTerm(
      * context for the other one.
      * If neither has a instance, create an empty instance for both.
      */
-    VAULT_UNIFY_DI( UNIFY, "VarTerm: Asked to unify %lld:%s with %lld:%s into %lld.\n", 
+    VAULT_UNIFY_DI( UNIFY, "VarTerm: Asked to unify %lld:%s with %lld:%s into %lld.\n",
         pUCMine?pUCMine->getUnifyContextId():0ll,
         this->toString().c_str(),
         pUCOther?pUCOther->getUnifyContextId():0ll,
         pOther->toString().c_str(),
         pUCStackTop?pUCStackTop->getUnifyContextId():0ll );
 
-    // I am asked to unify with myself, no further binding.
-    if( this == pOther ) return UnifyLast;
-    
     // Resolve the vars.
 
-    boost::shared_ptr<SingleVarInstance> spMyInstance;
     UnifyContextId uidMine;
     if( pUCMine ) {
         uidMine = pUCMine->getUnifyContextId();
     } else {
         uidMine = 0;
     }
+    UnifyContextId uidOther;
+    if( pUCOther ) {
+        uidOther = pUCOther->getUnifyContextId();
+    } else {
+        uidOther = 0;
+    }
+
+    /*
+     * I am asked to unify with myself (the very same VarTerm* C++ object on
+     * both sides) -- but that is only a genuine no-op, requiring no binding
+     * at all, if the two SCOPES also coincide. A clause's head and body
+     * share one ClauseContext, so a repeated variable name (e.g. an
+     * argument threaded unchanged through the clause's own recursive
+     * self-call, SPEC.md section 10) resolves to one shared VarTerm* --
+     * but the head is unified into a BRAND NEW activation's scope
+     * (pUCMine/pUCOther here) while the very same pointer, on the other
+     * side, still belongs to the CALLING activation's scope. Taking the
+     * old scope-blind fast path in that case would report success while
+     * recording no AssignmentId binding whatsoever, silently losing the
+     * value: the new activation's copy of the variable would read back as
+     * unbound. So: same object + same scope -> trivially unifies (and the
+     * general logic below would reach exactly the same conclusion, via
+     * aidMine==aidOther, if allowed to run -- this is purely a shortcut).
+     * Same object + DIFFERENT scope falls through into the ordinary
+     * var-var alias logic below, exactly as if two textually distinct
+     * variables were being unified, so a proper cross-scope alias gets
+     * recorded.
+     */
+    if( this == pOther && uidMine == uidOther ) return UnifyLast;
+
+    boost::shared_ptr<SingleVarInstance> spMyInstance;
     AssignmentId aidMine( uidMine, m_uidTerm );
     InstanceId iidMine = 0;
     (void) pUCStackTop->findVarBinding( aidMine, iidMine );
@@ -237,14 +264,8 @@ UnifyResult VarTerm::unifyVarTerm(
     /*
      * Now, spMyInstance may contain a reference to my binding, if I have any.
      */
-    
+
     boost::shared_ptr<SingleVarInstance> spOtherInstance;
-    UnifyContextId uidOther;
-    if( pUCOther ) {
-        uidOther = pUCOther->getUnifyContextId();
-    } else {
-        uidOther = 0;
-    }
     AssignmentId aidOther( uidOther, pOther->getBinding() );
     InstanceId iidOther = 0;
     (void) pUCStackTop->findVarBinding( aidOther, iidOther );

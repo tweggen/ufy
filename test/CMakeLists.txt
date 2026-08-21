@@ -114,6 +114,7 @@ set(UNIFY_CONFORMANCE_TESTS
     "loops|${UNIFY_CONFORMANCE_DIR}/loops.ufy"
     "assert-retract|${UNIFY_CONFORMANCE_DIR}/assert-retract.ufy"
     "strings|${UNIFY_CONFORMANCE_DIR}/strings.ufy"
+    "recursion|${UNIFY_CONFORMANCE_DIR}/recursion.ufy"
     # NOTE: imports-lib.ufy (same directory) is deliberately NOT listed here
     # -- it is a library file, only ever reached via imports.ufy's own
     # `import "imports-lib.ufy";`, and has no golden-test entry of its own.

@@ -1,0 +1,152 @@
+// Conformance: same-variable-threading recursion (SPEC.md section 10, the
+// "cross-scope same-variable recursion fix" entry). Root cause and fix are
+// documented there in full; this program pins the FIXED behaviour: an
+// ordinary hand-written recursive clause may reuse the exact same head
+// parameter -- the SAME VarTerm* C++ object, since AnyTermFactory resolves a
+// repeated variable name to one shared VarTerm* for a clause's whole
+// head+body (section 6) -- unchanged as an argument to its own recursive
+// self-call, and the value now threads correctly to every recursion depth
+// (previously, `VarTerm::unifyVarTerm`'s scope-blind `this==pOther` fast
+// path silently dropped the binding after the first recursive call).
+//
+// Every construct below is otherwise already proven by the existing corpus:
+// rule-clause + bare-fact fallback recursion (test/conformance/loops.ufy's
+// `__for__`/`__fe__` desugaring uses exactly this shape, just synthesized
+// rather than hand-written), `<`/`<=` comparison and arithmetic `=`
+// (test/conformance/comparison.ufy, arithmetic.ufy), and `cut;`
+// (test/conformance/cut.ufy).
+//
+// CUT IS REQUIRED FOR DETERMINISTIC OUTPUT, exactly as it is for `for`/
+// `foreach` (SPEC.md section 12.2/12.3), and for the same reason: every
+// recursion level below is a genuine CHOICE between two clauses for the
+// SAME predicate (a guarded rule that recurses, and an unconditional bare
+// fact that always succeeds). Without a `cut` committing each activation's
+// own clause choice the moment its rule-clause succeeds, this engine's
+// exhaustive all-solutions backtracking would -- once the recursion bottoms
+// out and unwinds back up through every completed activation -- ALSO retry
+// each activation's own (always-succeeding) fact alternative, producing one
+// extra, spurious solution per completed activation that re-runs whatever
+// follows the top-level call in the ENCLOSING query once per activation
+// instead of once total (the same "soft-if"/pre-cut duplicate-output shape
+// SPEC.md section 10 documents for `if` before it grew a cut). So `cut;` is
+// placed right after the goals that must succeed for a recursion step to
+// "count" -- mirroring `for`'s own cut placement exactly -- before the step
+// computation and the recursive call itself; the recursive call is never
+// itself pruned by it (it has not been pushed onto the solve-context stack
+// yet when the cut runs, exactly as SPEC.md section 12's cut-interaction
+// analysis works out for `for`/`foreach`).
+
+// ---------------------------------------------------------------------
+// (a) The exact motivating example (SPEC.md section 10): $limit is threaded,
+// unchanged, through count_down's own recursive call.
+//
+// Hand-trace (limit=4, start=1; `<` is a strict less-than, so the guard
+// stops holding once $i reaches $limit itself):
+//   i=1: 1<4 true  -> print(1); cut; j=2 -> recurse(4,2)
+//   i=2: 2<4 true  -> print(2); cut; j=3 -> recurse(4,3)
+//   i=3: 3<4 true  -> print(3); cut; j=4 -> recurse(4,4)
+//   i=4: 4<4 false -> rule-clause fails -> bare fact fallback succeeds
+//                     silently (no body)
+// Every one of the three successful rule-clause activations committed via
+// its own `cut`, so the backtracking unwind never retries any of their bare
+// fact alternatives -- "after-count-down" prints exactly once.
+//
+// Predicted stdout:
+//   print: 1
+//   print: 2
+//   print: 3
+//   print: after-count-down
+count_down( $limit, $i ) {
+    $i < $limit;
+    print( $i );
+    cut;
+    $j = $i + 1;
+    count_down( $limit, $j );
+}
+count_down( $limit, $i );
+
+query {
+    count_down( 4, 1 );
+    print( "after-count-down" );
+}
+
+// ---------------------------------------------------------------------
+// (b) TWO invariants threaded through the same recursive call at once:
+// $label (an atom -- a 0-arity ConsTerm, not a number) and $target (a
+// number). Both are the SAME VarTerm* shared between tally's head and its
+// own body, exactly like $limit in (a); exercising both together rules out
+// a narrower fix that happened to only cover e.g. numeric-typed bindings.
+//
+// Hand-trace (label="count", target=3, start=1):
+//   i=1: 1<3 true -> print("count"); print(1); cut; j=2 -> recurse(3,2)
+//   i=2: 2<3 true -> print("count"); print(2); cut; j=3 -> recurse(3,3)
+//   i=3: 3<3 false -> bare fact fallback succeeds silently
+// Same per-activation `cut` discipline as (a) -- "after-tally" prints once.
+//
+// Predicted stdout:
+//   print: count
+//   print: 1
+//   print: count
+//   print: 2
+//   print: after-tally
+tally( $label, $target, $i ) {
+    $i < $target;
+    print( $label );
+    print( $i );
+    cut;
+    $j = $i + 1;
+    tally( $label, $target, $j );
+}
+tally( $label, $target, $i );
+
+query {
+    tally( "count", 3, 1 );
+    print( "after-tally" );
+}
+
+// ---------------------------------------------------------------------
+// (c) A genuine accumulator layered on top of the same threaded $limit,
+// five recursion steps deep. $limit is the same-VarTerm invariant (exactly
+// like (a)/(b), and exactly what used to break after the first step: without
+// the fix, `$i <= $limit` would see $limit as unbound from depth 2 onward --
+// an unbound variable in a comparison is an internal unification error,
+// CompareBuiltinClause/vault-unify-clause-builtin-arith.cpp, which
+// SolveJob::performSlice() records and then treats as an ordinary failed
+// candidate, same as if the comparison had simply not held -- so the
+// rule-clause would fail right there and the base case would run
+// prematurely, printing the WRONG accumulator value 1 instead of the full
+// sum). $acc, by contrast, is a genuine
+// accumulator: a brand new variable ($next) is computed from it and threaded
+// into the next activation's own $acc parameter every step -- an ordinary
+// var-to-var unification between two textually distinct VarTerm objects,
+// ALREADY correct before this fix (only $limit's unchanged-same-pointer
+// threading was ever broken).
+//
+// Hand-trace (limit=5, i=1, acc=0):
+//   i=1,acc=0  -> 1<=5 true; next=0+1=1   ; cut; j=2 -> recurse(5,2,1)
+//   i=2,acc=1  -> 2<=5 true; next=1+2=3   ; cut; j=3 -> recurse(5,3,3)
+//   i=3,acc=3  -> 3<=5 true; next=3+3=6   ; cut; j=4 -> recurse(5,4,6)
+//   i=4,acc=6  -> 4<=5 true; next=6+4=10  ; cut; j=5 -> recurse(5,5,10)
+//   i=5,acc=10 -> 5<=5 true; next=10+5=15 ; cut; j=6 -> recurse(5,6,15)
+//   i=6,acc=15 -> 6<=5 false -> first clause fails; second (unconditional,
+//                 base-case) clause matches instead: print(15)
+// Each of the five successful first-clause activations commits via its own
+// `cut`, so on unwind none of them re-tries the second (always-matching)
+// clause -- only the base case's own single print(15) ever runs.
+//
+// Predicted stdout:
+//   print: 15
+sum_acc( $limit, $i, $acc ) {
+    $i <= $limit;
+    $next = $acc + $i;
+    cut;
+    $j = $i + 1;
+    sum_acc( $limit, $j, $next );
+}
+sum_acc( $limit, $i, $acc ) {
+    print( $acc );
+}
+
+query {
+    sum_acc( 5, 1, 0 );
+}

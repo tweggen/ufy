@@ -1030,38 +1030,81 @@ All verified by direct code reading, collected here for quick reference.
   body-or-true wrapper, so a failing `cond`/`body` genuinely stops the loop
   (section 12.2) — the `cut` commits a *successful* iteration; it does not
   cushion a failing one.
-- **Significant, engine-level finding (not specific to loops) uncovered
-  while implementing section 12, verified independently by two separate
-  investigations**: reusing the exact same `VarTerm*` C++ object as both a
-  clause's head parameter and, *unchanged*, as an argument to that SAME
-  clause's own recursive self-call — the ordinary way any hand-written
-  recursive predicate threads an invariant argument through recursion,
-  e.g. `p(Arr, I) :- ..., J is I+1, p(Arr, J).` with `Arr` reused — does
-  **not** actually propagate that value past the *first* recursive call.
-  A second (or deeper) invocation sees the variable as **unbound**. The
-  mechanism: `VarTerm::unifyVarTerm`'s `if( this == pOther ) return
-  UnifyLast;` fast path (`src/vault-unify-term-var.cpp`) fires on raw
-  pointer identity alone (no scope comparison) and — unlike the ordinary
-  variable-unification path just below it — never calls `bindVarBinding`/
-  `bindVarBindingUsing`, so **no `AssignmentId` entry is ever written**.
-  Since every clause-try gets its own fresh `UnifyContext` (`pUCCand`,
+- *(Superseded, cross-scope same-variable recursion fix, 2026-08-21)* Reusing
+  the exact same `VarTerm*` C++ object as both a clause's head parameter and,
+  *unchanged*, as an argument to that SAME clause's own recursive self-call —
+  the ordinary way any hand-written recursive predicate threads an invariant
+  argument through recursion, e.g. `p(Arr, I) :- ..., J is I+1, p(Arr, J).`
+  with `Arr` reused — used to **not** propagate that value past the *first*
+  recursive call: a second (or deeper) invocation saw the variable as
+  unbound. Root cause: `VarTerm::unifyVarTerm`'s `if( this == pOther ) return
+  UnifyLast;` fast path (`src/vault-unify-term-var.cpp`) fired on raw pointer
+  identity alone, with no scope comparison, and — unlike the ordinary
+  variable-unification path just below it — never called `bindVarBinding`/
+  `bindVarBindingUsing`, so no `AssignmentId` entry was ever written. Since
+  every clause-try gets its own fresh `UnifyContext` (`pUCCand`,
   `SolveJob::performSlice()`, `src/vault-unify-solvejob.cpp`) and a
   variable's binding key is `AssignmentId(uidScope, varTermId)` with
-  `uidScope` tied to the ACTIVATION that introduced it (section 6) —
-  `UnifyContext::findVarBinding` (`src/vault-unify-unifycontext.cpp`) walks
-  the parent chain but searches for one fixed, exact `(uidScope, varId)`
-  key at every level; an entry recorded under an ANCESTOR invocation's own
-  `uidScope` can never satisfy a lookup keyed by a DESCENDANT invocation's
-  different `uidScope`, no matter how far the walk goes. `foreach`/`for`
-  (section 12) do **not** rely on this pattern precisely because of this —
-  every value threaded through either construct's recursive call (`$arr`,
-  every captured `V1..Vk`, even though they are genuinely invariant) is
-  rebound via an explicit `unify(freshVar, current)` goal each iteration
-  instead, forcing the ordinary (non-identity, scope-bridging) unification
-  path. This finding is not otherwise acted on here (fixing it generally is
-  out of scope for this task) but is recorded because it may affect
-  ordinary hand-written recursive predicates elsewhere in this module —
-  worth a dedicated look in a later ROADMAP phase.
+  `uidScope` tied to the ACTIVATION that introduced it (section 6), a repeated
+  variable name — which `AnyTermFactory` resolves to one shared `VarTerm*`
+  for a clause's whole head+body, since both share one `ClauseContext` — is
+  the SAME pointer on both sides of the recursive call's head-unification,
+  but the head side is scoped to the brand-new callee activation while the
+  goal side (the call's own argument, still the caller's copy of that
+  variable) is scoped to the calling activation. The old fast path could not
+  tell these apart from a lone `this==pOther` pointer check and silently
+  dropped the binding that would have bridged them.
+
+  **Fix**: the identity fast path in `VarTerm::unifyVarTerm` now also
+  compares the two sides' `UnifyContext` ids (`pUCMine`/`pUCOther`, i.e. the
+  scope of `this` vs. the scope of `pOther`) and only takes the trivial
+  no-binding path when they coincide too — a same-object-same-scope
+  self-unification is a genuine no-op (the general logic below would reach
+  the identical conclusion anyway, via `aidMine==aidOther`, if allowed to
+  run; the check is purely a shortcut). A same-object-*different*-scope hit
+  now falls through into the ordinary var-var alias logic immediately below
+  it, exactly as if two textually distinct variables were being unified: it
+  records a direct alias from the new activation's `AssignmentId(calleeScope,
+  varId)` to whichever `InstanceId` the caller's `AssignmentId(callerScope,
+  varId)` already resolves to (or, if neither side has one yet, allocates one
+  fresh `InstanceId` shared by both) — the exact same representation
+  ordinary var-var unification already uses for two distinct `VarTerm`s
+  (section 6), so `findVarBinding`/`findVarInstance`'s existing parent-chain
+  resolution walk (`src/vault-unify-unifycontext.cpp`), `getBoundTerm`
+  (`src/vault-unify-terms.cpp`), and every reader built on them (`print`,
+  `resolveTermGrounded`, `SolveJob::getSolutionList`) resolve the aliased
+  variable correctly with no further changes: they were already following
+  var-var alias chains generically, one `InstanceId` hop at a time, never
+  assuming a binding must live in the exact `UnifyContext` currently on top.
+  A same-object recursion now threads correctly to any depth (`p(Arr, I)`
+  above sees the same `Arr` at every level).
+
+  Every OTHER `this==pOther`-style pointer-identity fast path in this module
+  (`ConsTerm`/`MapTerm`/`ArrayTerm`'s own `unifyTerm`/`unifyConsTerm`/
+  `unifyMapTerm`/`unifyArrayTerm`, and `StandardClause::startUnification`'s
+  `pClauseTerm==pGoalTerm` shortcut) was individually re-examined for the
+  same scope-blindness and found NOT to need this treatment: unlike a
+  `VarTerm`, where pointer identity IS the binding key, a compound term's
+  identity carries no binding by itself, and `AnyTermFactory` never shares a
+  compound-term (`ConsTerm`/`MapTerm`/`ArrayTerm`) allocation across two
+  source occurrences the way it deliberately shares a repeated variable's
+  `VarTerm*` — only a `VarTerm` leaf is ever reused this way, and every
+  `VarTerm` leaf a shared compound node might contain is still unified
+  independently, through the fixed path above, regardless of whatever the
+  compound wrapper itself does. See each shortcut's own inline comment
+  (`src/vault-unify-term-cons.cpp`, `vault-unify-term-map.cpp`,
+  `vault-unify-term-array.cpp`, `vault-unify-clause-standard.cpp`) for the
+  per-site detail. `foreach`/`for` (section 12) never depended on the bug
+  being present or absent either way: both already avoid same-object
+  recursion entirely (an independent, pre-existing design choice), rebinding
+  every value threaded through their own recursive call via an explicit
+  `unify(freshVar, current)` goal each iteration instead — this fix changes
+  nothing about that machinery (a var-var unification between two distinct
+  `VarTerm*` objects never touched the identity fast path to begin with, in
+  either the old or new code). See `test/conformance/recursion.ufy` for the
+  conformance coverage (ordinary same-variable recursion, two invariants
+  threaded through one recursive call at once, and a genuine accumulator
+  pattern layered on top of the same threaded `$limit`).
 
 ---
 

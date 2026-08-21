@@ -26,7 +26,14 @@ UnifyResult MapTerm::unifyTerm(
         UnifyContext* pUCMine,
         const AbstractTerm* pOther ) const
 {
-    // One object always unifies with itself.
+    // One object always unifies with itself. See the scope-blindness
+    // analysis above ConsTerm::unifyConsTerm's identical check
+    // (vault-unify-term-cons.cpp) -- it applies here unchanged: a MapTerm
+    // is always freshly allocated per source occurrence (AnyTermFactory,
+    // vault-unify-parser.cpp), only a repeated VARIABLE name is ever shared
+    // across scopes (SPEC.md section 10), so this pointer-identity shortcut
+    // never hides a cross-scope aliasing bug the way VarTerm's own analogous
+    // check once did.
     if( this == pOther ) return UnifyLast;
 
     // Dispatch second step.
@@ -84,7 +91,9 @@ UnifyResult MapTerm::unifyMapTerm(
         this->toString().c_str(), pOther->toString().c_str() );
 
     // MapTerm
-    // 1. If terms are identical, unifies to rhs of clause.
+    // 1. If terms are identical, unifies to rhs of clause. See the
+    // scope-blindness analysis above MapTerm::unifyTerm's own identical
+    // check just above -- applies here unchanged.
     if( this == pOther ) {
         // Generate copy in goal.
         // Unify.

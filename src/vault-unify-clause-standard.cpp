@@ -72,6 +72,21 @@ vault::unify::Clause::UnificationState StandardClause::startUnification(
     
     /*
      * If the are denoting the same object, they obviously unify.
+     *
+     * Scope-blindness analysis (SPEC.md section 10; see the fuller
+     * treatment above ConsTerm::unifyConsTerm's own identical shortcut,
+     * vault-unify-term-cons.cpp): pClauseTerm is always a Clause's static,
+     * per-clause head term (leftHandTerm()), reused unchanged across every
+     * activation of this clause; pGoalTerm is whatever term the current
+     * goal cursor points at. Since the parser never lets a body/query goal
+     * term literally BE another clause's own head object (every compound
+     * term occurrence is a fresh allocation, AnyTermFactory,
+     * vault-unify-parser.cpp), this can only be pointer-equal when
+     * pGoalTerm genuinely IS this exact clause's own head object -- not two
+     * differently-scoped copies of "the same" term -- so short-circuiting
+     * straight to UnifyLast here (skipping unifyTerms(), and therefore
+     * skipping recording any child VarTerm bindings) never hides the
+     * cross-scope aliasing this section documents for VarTerm.
      */
     if( pClauseTerm==pGoalTerm ) {
         // Duplicate clause right hand term.

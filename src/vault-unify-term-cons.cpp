@@ -50,8 +50,26 @@ UnifyResult ConsTerm::unifyConsTerm(
         pUCStackTop?pUCStackTop->getUnifyContextId():0ll
         );
 
-    // ConsTerm 
+    // ConsTerm
     // 1. If terms are identical, unifies to rhs of clause.
+    //
+    // Scope-blindness analysis (SPEC.md section 10; see the cross-scope
+    // analysis in VarTerm::unifyVarTerm, vault-unify-term-var.cpp, for the
+    // case where this shortcut IS unsound for VarTerm): unlike a VarTerm,
+    // where pointer identity IS the binding key, a ConsTerm's identity
+    // carries no binding by itself -- the only way skipping the child
+    // unifications here could lose information is if the exact same
+    // ConsTerm* legitimately needed different scopes on its two sides. That
+    // cannot happen: AnyTermFactory (vault-unify-parser.cpp) allocates a
+    // brand new ConsTerm for every compound-term occurrence in source text
+    // -- only a repeated VARIABLE NAME resolves to one shared object within
+    // a ClauseContext, never a repeated compound sub-expression -- so
+    // whenever the very same ConsTerm* legitimately reaches this check from
+    // two different call sites, it is the identical static occurrence, not
+    // two differently-scoped ones (the recursive-self-call/head-vs-body
+    // aliasing that bit VarTerm never arises for a compound node itself,
+    // only for the VarTerm leaves it may contain, which are unified
+    // independently via the loop below anyway).
     if( this == pOther ) {
         // Generate copy in goal.
         // Unify.
@@ -156,7 +174,11 @@ UnifyResult ConsTerm::unifyTerm(
         UnifyContext* pUCMine,
         const AbstractTerm* pOther ) const
 {
-    // I am asked to unify with myself, no further binding.
+    // I am asked to unify with myself, no further binding. See the
+    // scope-blindness analysis above ConsTerm::unifyConsTerm's own identical
+    // check -- it applies here unchanged (this is the same "am I the exact
+    // same static ConsTerm*" question, just reached via the first-order
+    // dispatch instead of the second-order one).
     if( this == pOther ) return UnifyLast;
 
     // Dispatch second half.
