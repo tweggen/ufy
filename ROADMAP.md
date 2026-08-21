@@ -222,9 +222,19 @@ the reference workload).
       (2) typed declarations, (3) domain-narrowing comparisons for int,
       (4) float intervals. Not started.
 - [ ] String operations (concat, compare, match).
-- [ ] Runtime `assert` / `retract` — required for device/sensor state changes.
+- [x] Runtime `assert` / `retract` — required for device/sensor state changes.
       Implement against the versioned World (see Phase 5, item 2; the
       copy-on-write design is already described in `vault-unify.hpp`).
+      *(2026-08-21: solver special forms; assertz of ground facts
+      (ground-copied into World ownership), retract tombstones the first
+      matching fact (non-binding, live view). Full **logical update view**
+      via a World mutation-generation counter: every clause iteration sees
+      the database exactly as of when it started executing — found the hard
+      way: append-visibility re-triggered the read-retract-assert idiom,
+      and parse-time root snapshots blinded later queries to earlier
+      mutations. Clause-DB writes are now mutex-protected (5.1 item pulled
+      forward); the versioned-World design of 5.2 remains the eventual
+      transactional home. State-machine conformance golden pins it.)*
 - [ ] File imports / include so programs can be split across files.
 - [x] Consistent list/array semantics (construction, unification, member,
       iteration); decide the fate of `include/vault-unify-iterator*-clause.hpp`.
