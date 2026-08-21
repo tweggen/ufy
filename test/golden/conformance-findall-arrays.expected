@@ -1,0 +1,5 @@
+print: arrays-equal
+print: [a, b, c]
+print: [apple, banana, cherry]
+print: []
+print: findall-matches-literal

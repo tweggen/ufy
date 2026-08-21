@@ -186,10 +186,12 @@ the reference workload).
       from stack top through the entry context). `if` gained a cut after
       its condition and is now a true committed if-then-else. Conformance
       goldens pin all four cut behaviours.)*
-- [ ] `findall` / aggregation over solutions.
-      *(Agreed syntax: `$all = findall( $x, goal( $x ) );` producing a
-      first-class array term. Requires the ArrayTerm foundation from the
-      list/array item below — implemented together.)*
+- [x] `findall` / aggregation over solutions.
+      *(2026-08-21: `$all = findall( $x, goal( $x ) );` — solver-level
+      special form running a nested synchronous SolveJob; results
+      ground-copied into a first-class array; deterministic, never fails,
+      `[]` on zero solutions. v1 limitation documented in SPEC: the
+      subgoal solves in a fresh scope, outer bindings not consulted.)*
 - [ ] Classic `for` loop and `foreach` (language owner request, 2026-08-21):
       `for ($i = 0; $i < 10; $i = $i + 1) { ... }` and
       `foreach ($x : $arr) { ... }`, desugared to synthesized recursive
@@ -211,8 +213,14 @@ the reference workload).
       Implement against the versioned World (see Phase 5, item 2; the
       copy-on-write design is already described in `vault-unify.hpp`).
 - [ ] File imports / include so programs can be split across files.
-- [ ] Consistent list/array semantics (construction, unification, member,
+- [x] Consistent list/array semantics (construction, unification, member,
       iteration); decide the fate of `include/vault-unify-iterator*-clause.hpp`.
+      *(2026-08-21: ArrayTerm is a first-class term kind — `[a, b]` literals,
+      element-wise unification with length check, full dispatch/clone/
+      traversal integration; the arrays-as-maps quirk is gone. Iteration
+      arrives with `foreach` (next item); the legacy `vault::ozw`
+      iterator-clause headers are an unrelated external consumer's
+      templates and stay untouched.)*
 - [ ] Restore the example programs (`mediaplayer.ufy` is currently empty) and
       make them part of the golden tests.
 
