@@ -497,6 +497,46 @@ int SolveJob::performSlice()
         ++sc->m_sliceCount;
 
         /*
+         * ROADMAP Phase 2 (runtime assert/retract, SPEC.md -- "logical
+         * update view"): the ROOT SolveContext (m_parentSolveContext==NULL;
+         * exactly one per job, pushed by startJob()) is special: for a
+         * top-level query, startJob() runs on the PARSER thread at PARSE
+         * time (RuntimeContext::parseExecuteSegment() calls it right after
+         * parsing the query, long before this job is drained off the
+         * engine's queue and actually run here, on the worker thread) --
+         * so the m_itNextChildClause SolveContext's constructor built back
+         * then captured its generation snapshot at PARSE time, not at
+         * "when this search actually starts" like every other
+         * SolveContext's iterator correctly does (every non-root
+         * SolveContext is pushed HERE, in performSlice(), already running
+         * on the worker thread). A parse-time snapshot is too early: it
+         * can predate mutations a PRIOR job (FIFO-earlier on this same
+         * worker thread) already made to the database by the time this
+         * job's first slice actually runs, wrongly hiding them.
+         *
+         * Fix: on the root context's very first visit (sc->m_sliceCount
+         * having just become 1, above) -- and ONLY then, never on a later
+         * revisit, which would be a backtrack into an already-in-progress
+         * scan whose view of the database must NOT jump forward mid-scan
+         * -- reconstruct m_itNextChildClause from scratch, capturing the
+         * generation as it stands right now, at actual execution time.
+         * m_pStartState is the same ExecutionState the stale iterator was
+         * originally built from (SolveContext's constructor), so this is
+         * exactly "redo that construction, now instead of at parse time".
+         *
+         * This also fires for the nested findall SolveJob's own root
+         * context (constructed by ITS startJob(), see the
+         * __builtin_findall block below) on its own first slice -- but
+         * harmlessly: that startJob()/performSlice() pair are adjacent
+         * statements on the SAME (worker) thread with no intervening
+         * mutation, so the reconstructed snapshot is identical to the one
+         * already captured.
+         */
+        if( NULL==sc->m_parentSolveContext && 1==sc->m_sliceCount ) {
+            sc->m_itNextChildClause = m_pStartState->clauseIterator();
+        }
+
+        /*
          * If we reached the end of the goal we ought to solve, then we can consider
          * the current state of variables to be a solution n-tuple.
          */

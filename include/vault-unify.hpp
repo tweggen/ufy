@@ -286,6 +286,20 @@ public:
          * point in the header) to call currentGeneration(). This read is
          * deliberately UNLOCKED -- see World::clauseDbMutex()'s comment for
          * why that is a currently-benign, ROADMAP-5.1-scoped race.
+         *
+         * "THIS moment" means when THIS constructor call runs, nothing
+         * more -- for a job's ROOT SolveContext (only), that can be far
+         * earlier than "when this search actually starts" (a top-level
+         * query's root SolveContext is built by SolveJob::startJob() on
+         * the PARSER thread, at parse time); SolveJob::performSlice()
+         * (vault-unify-solvejob.cpp) knows about exactly that one case and
+         * re-invokes this same constructor (via ExecutionState::
+         * clauseIterator()) once, on the root context's first slice, to
+         * replace that stale snapshot with one taken at actual execution
+         * time -- see its comment and SPEC.md's logical-update-view
+         * section for why. Every non-root ClauseIterator is already
+         * constructed live, while its job is actually running, so no such
+         * correction is ever needed for one of those.
          */
         ClauseIterator( ExecutionState* es );
         ~ClauseIterator() {}

@@ -1670,8 +1670,40 @@ through `ExecutionState::clauseIterator()`, called exactly once per
 `SolveContext`, from its constructor — `src/vault-unify-solvejob.cpp` — so a
 goal's candidate-clause search gets one fixed view for its whole lifetime,
 including a `findall`'s or a rule body's own NESTED goals, which each get
-their own snapshot, taken at the moment THEY start). A clause is visible to
-a given iterator iff `getAppendGeneration() <= snapshotGen` **and**
+their own snapshot, taken at the moment THEY start).
+
+**The ROOT `SolveContext`'s snapshot is a special case.** Every `SolveContext`
+other than a job's root is pushed by `SolveJob::performSlice()` itself, so its
+constructor genuinely runs "when this search actually starts", on the worker
+thread. The one root `SolveContext` per job (`m_parentSolveContext==NULL`,
+built by `SolveJob::startJob()`) is different: for a top-level query,
+`startJob()` is called by `RuntimeContext::parseExecuteSegment()` on the
+PARSER thread, at PARSE time — potentially long before this job is ever
+drained off the engine's queue and actually run on the worker thread, and (by
+FIFO order) after every job queued ahead of it has already mutated the
+database in ways this snapshot must see. A construction-time snapshot there
+would be stale, and wrongly hide those prior mutations. So
+`SolveJob::performSlice()` special-cases exactly this one context: on its
+very first visit (`sc->m_parentSolveContext==NULL && sc->m_sliceCount==1`,
+checked before anything else in the main slice loop) it reconstructs
+`m_itNextChildClause` from scratch — `sc->m_itNextChildClause =
+m_pStartState->clauseIterator();` — capturing the generation as it stands
+right then, at actual execution time, discarding the stale parse-time one.
+This never re-fires on a later revisit of the same root context (a
+backtrack into an already-in-progress scan, which must not have its view of
+the database jump forward mid-scan) — `sc->m_sliceCount` is only ever `1` on
+the first visit. The nested `findall` `SolveJob`'s own root context goes
+through the exact same one-time reconstruction on its own first slice, but
+harmlessly: its `startJob()`/`performSlice()` calls are adjacent statements
+on the SAME (worker) thread with no intervening mutation, so the
+reconstructed snapshot is identical to the one construction already
+captured. This is also what makes cross-query ordering fully deterministic,
+not merely FIFO-ordered-but-racy: job N's root snapshot is taken at job N's
+own first slice, which by FIFO + run-to-completion strictly follows every
+earlier-queued job's own completion, so it is guaranteed to already reflect
+every mutation they made.
+
+A clause is visible to a given iterator iff `getAppendGeneration() <= snapshotGen` **and**
 (`!isRetired()` **or** `getRetireGeneration() > snapshotGen`) —
 `ClauseIterator::isValid()` (`src/vault-unify-execution-state.cpp`) skips
 forward over any clause failing this test while walking `m_listClauses`,
