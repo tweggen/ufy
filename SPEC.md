@@ -1348,8 +1348,8 @@ __for__3( $i, V1..Vk ) {
     clonedBody...;
     cut;                         // commit THIS iteration
     $i2 = clonedStep;           // fresh $i2, NOT one of V1..Vk
-    $v1Next = V1; ...; $vkNext = Vk;   // rebind, see below
-    __for__3( $i2, $v1Next..$vkNext );
+    $v1Next = V1; ...;           // rebind, ONLY for OUTER Vk -- see below
+    __for__3( $i2, $v1Next..$vkNext );  // BODY-LOCAL Vk get a fresh placeholder
 }
 __for__3( $i, V1..Vk );         // fallback: cond false -> loop ends
                                  // (also reached, via ordinary goal
@@ -1357,23 +1357,41 @@ __for__3( $i, V1..Vk );         // fallback: cond false -> loop ends
                                  // body ever fails)
 ```
 
-`V1..Vk` (every captured variable OTHER than `$i`) are genuinely invariant
-across the whole recursion, but are still **not** passed to the recursive
-call as the literal same head-parameter object again — doing so would rely
-on `VarTerm::unifyVarTerm`'s `this==pOther` identical-object fast path
+`V1..Vk` (every captured variable OTHER than `$i`) are **not** all alike —
+same OUTER-vs-BODY-LOCAL classification `foreach` uses (section 12.3,
+CI-caught via the `mediaplayer.ufy` demo, 2026-08-21): a snapshot of
+`ClauseContext::m_mapSymbols` taken **before** building `cond`/`body`/
+`step` classifies each `Vk` as OUTER (its name already existed before this
+`for` statement — genuinely invariant across the whole loop) or
+BODY-LOCAL (first introduced while building `cond`/`body`/`step` — e.g. a
+fact-lookup output — rebound to a NEW value some or every iteration, just
+like `$i` itself). Only OUTER `Vk` get the rebind treatment described
+below; a BODY-LOCAL `Vk` instead gets a brand-new, never-bound placeholder
+per recursive call, exactly like `$i2` — rebinding it the same way an
+OUTER `Vk` is rebound would carry iteration N's binding into iteration
+N+1, where the body's own fresh lookup for that iteration would then try
+to bind an ALREADY-bound variable to a DIFFERENT value and fail outright,
+silently stopping the loop there per `for`'s "body failure stops the loop"
+semantics below (an earlier version of this desugaring did not make this
+distinction and had exactly this bug).
+
+For an OUTER `Vk`: still **not** passed to the recursive call as the
+literal same head-parameter object again — doing so would rely on
+`VarTerm::unifyVarTerm`'s `this==pOther` identical-object fast path
 (`src/vault-unify-term-var.cpp`) — which returns `UnifyLast` immediately
 **without recording any `AssignmentId` binding at all**, since both sides
 are literally the same pointer — to still make the value visible several
 recursion levels down. `$v1Next = V1;` etc. (an ordinary `unify(...)` goal
-per captured variable, run once per iteration — ordinary `=` between two
-non-arithmetic terms, section 4) forces a genuine, ordinary variable-to-
-variable binding through `UnifyBuiltinClause` instead, for every iteration
-— see `foreach`'s identical treatment of `$arr`/its own `V1..Vm` below for
-the full reasoning (this task's session report has the investigation this
-design choice is based on: a fresh, never-before-referenced variable linked
-to an existing one via ordinary unification always succeeds and is
-resolvable from any descendant `UnifyContext`, sidestepping any question of
-whether same-object reuse alone would also have worked here).
+per OUTER captured variable, run once per iteration — ordinary `=` between
+two non-arithmetic terms, section 4) forces a genuine, ordinary variable-
+to-variable binding through `UnifyBuiltinClause` instead, for every
+iteration — see `foreach`'s identical treatment of `$arr`/its own `V1..Vm`
+below for the full reasoning (this task's session report has the
+investigation this design choice is based on: a fresh, never-before-
+referenced variable linked to an existing one via ordinary unification
+always succeeds and is resolvable from any descendant `UnifyContext`,
+sidestepping any question of whether same-object reuse alone would also
+have worked here).
 
 The `cut` right after `clonedCond`+`clonedBody` mirrors `foreach`'s own
 `__fe__3` cut placement exactly (section 12.3) — right after the goals
@@ -1465,7 +1483,8 @@ __fe__3( $arr, $i, $xSlot, V1..Vm ) {   // main loop
     __feb__3( $xSlot, V1..Vm );              // body-or-true, see below
     cut;                                     // commit THIS iteration
     $j = $i + 1;
-    $arrNext = $arr; $v1Next = V1; ...; $vmNext = Vm;  // rebind, see below
+    $arrNext = $arr;                    // rebind, ONLY for OUTER captured vars
+    $v1Next = V1; ...;                  // ditto, per OUTER Vk -- see below
     __fe__3( $arrNext, $j, $freshSlot, $v1Next..$vmNext ); // next iteration
 }
 __fe__3( $arr, $i, $xSlot, V1..Vm );    // fallback: index OOB -> loop ends
@@ -1488,30 +1507,68 @@ left it referenced from nowhere in the final term tree and leaked it; this
 was caught alongside the recursion bug below (this task's session report
 has both).
 
-**Two things must never be threaded unchanged through the recursive
-call** (both caught by hand-tracing against `VarTerm` unification, section
-6, before this ever reached CI — see this task's session report):
+**OUTER-vs-BODY-LOCAL classification of `V1..Vm` (CI-caught bug, fixed
+2026-08-21 via the `mediaplayer.ufy` demo — see `test/conformance/
+loops.ufy` query (g) for the regression pinning this)**: `V1..Vm` are
+**not** all alike. `AnyTermFactory::operator()(const
+ForeachStatementInput&)` snapshots the set of `VarTerm`s already present
+in `ClauseContext::m_mapSymbols` **before** building `arrExpr`/the loop
+variable/`body` for this statement. Each `Vk` is then classified:
 
-1. **`$xSlot` itself** — it is rebound to a DIFFERENT array element every
-   iteration by `__builtin_array_at`, so the recursive call passes a
-   BRAND NEW, never-bound `$freshSlot` for that position instead of
-   `$xSlot`'s own (by-then-bound) copy. An early draft reused `$xSlot`
-   directly there, which broke the loop after its first element: the next
-   invocation's own `$xSlot` would already be bound to THIS element, so
-   its own `__builtin_array_at` would then try to bind an already-bound
-   variable to the NEXT element and fail outright (exactly like `for`'s
-   own `$i -> $i2` step, section 12.2, avoids the identical problem for
-   its own per-iteration-changing value).
-2. **`$arr` and `V1..Vm`** — even though these genuinely ARE invariant
-   (the same value every iteration), they are still not passed as the
-   literal same head-parameter object again. Doing so would rely on
+- **OUTER** — `Vk`'s name already existed (bound, or at least mentioned,
+  by an earlier goal in this same clause/query) before this `foreach`
+  statement. Genuinely invariant across the whole loop — carried forward
+  via the explicit `unify(fresh, cur)` rebind described below (`$arr`
+  itself is always treated this way, since it is built from `arrExpr`,
+  evaluated once, before the loop).
+- **BODY-LOCAL** — `Vk`'s name is first introduced while building THIS
+  statement's own `arrExpr`/loop-variable/`body` — typically a fact-lookup
+  output, e.g. `$owner` in `pet_owner($x, $owner)`. This is **not**
+  invariant — it gets a fresh binding every iteration, exactly like the
+  loop variable `$x` — and is therefore given the SAME treatment `$xSlot`
+  gets (see item 1 below): a brand-new, never-bound placeholder per
+  recursive call, no rebind goal at all.
+
+An earlier version of this desugaring treated every `Vk` uniformly as
+"outer" (rebind-and-carry-forward). This is wrong for a body-local
+variable and broke every `foreach` whose body introduced its own
+variables: iteration 1 would bind it (e.g. `$owner = alice`), the rebind
+goal would then carry `alice` into iteration 2's own copy, and iteration
+2's own fact lookup (`pet_owner(b, $owner)`, needing `$owner = bob`) would
+try to unify an ALREADY-bound variable against a DIFFERENT value and fail
+outright — silently absorbed by `foreach`'s own continue-on-failure
+semantics (the semantics decision below), so only the FIRST element's
+lookup ever printed, and every iteration after that silently did nothing.
+This is exactly the shape of bug item 1 below describes for `$xSlot`
+itself, just for a variable the desugaring hadn't previously realized
+needed the same treatment.
+
+**Two kinds of value must never be threaded unchanged through the
+recursive call** (both caught by hand-tracing against `VarTerm`
+unification, section 6 — the first before this ever reached CI, the
+second via CI on `mediaplayer.ufy` — see this task's session reports):
+
+1. **`$xSlot` itself, and every BODY-LOCAL `Vk`** — both are rebound to a
+   DIFFERENT value every iteration (`$xSlot` by `__builtin_array_at`; a
+   body-local `Vk` by whatever body goal first binds it), so the
+   recursive call passes a BRAND NEW, never-bound placeholder for that
+   position instead of the current iteration's own (by-then-bound) copy.
+   Reusing the bound copy directly breaks the loop after its first
+   element/first differing value: the next invocation's own copy would
+   already be bound to THIS iteration's value, so its own binding attempt
+   would try to bind an already-bound variable to a NEW value and fail
+   outright (exactly like `for`'s own `$i -> $i2` step, section 12.2,
+   avoids the identical problem for its own per-iteration-changing value).
+2. **`$arr` and every OUTER `Vk`** — even though these genuinely ARE
+   invariant (the same value every iteration), they are still not passed
+   as the literal same head-parameter object again. Doing so would rely on
    `VarTerm::unifyVarTerm`'s `this==pOther` identical-object fast path
    (`src/vault-unify-term-var.cpp`) — which returns `UnifyLast`
    immediately **without recording any `AssignmentId` binding at all**,
    since both sides are literally the same pointer — to still make the
    value visible several recursion levels down. Rather than rely on that,
-   `$arrNext = $arr;` etc. (an ordinary `unify(...)` goal per captured
-   variable, run once per iteration — plain `=` between two
+   `$arrNext = $arr;` etc. (an ordinary `unify(...)` goal per OUTER
+   captured variable, run once per iteration — plain `=` between two
    non-arithmetic terms, section 4) forces a genuine, ordinary
    variable-to-variable binding through `UnifyBuiltinClause` instead —
    a fresh, never-before-referenced variable linked to an existing one via

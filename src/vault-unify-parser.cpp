@@ -1025,6 +1025,34 @@ public:
      */
     vault::unify::AbstractTerm* operator()( const ForeachStatementInput& foreachStatementInput ) const
     {
+        // 0. CI-caught bug fix (mediaplayer.ufy demo, 2026-08-21): snapshot
+        // which VarTerms already exist in this clause/query's symbol table
+        // BEFORE building anything for this statement. Used below (see the
+        // OUTER-VS-LOCAL note near the recursive call) to classify each
+        // captured free variable as OUTER (its name already existed --
+        // bound, or at least mentioned, by an earlier goal in this same
+        // clause/query) vs BODY-LOCAL (its name is first introduced while
+        // building THIS statement's own arrExpr/loopVar/body, e.g. a
+        // fact-lookup output variable like `$zmeta` in `zone($zid,
+        // $zmeta)`). A body-local variable must get a fresh, never-bound
+        // placeholder every iteration, exactly like the loop variable --
+        // NOT be threaded through the recursion the way a genuinely outer
+        // variable legitimately is: threading it unchanged would leave
+        // iteration 1's binding still in effect when iteration 2's body
+        // tries to bind the SAME variable to a DIFFERENT value, failing
+        // outright -- with `foreach`'s continue-on-failure semantics, this
+        // silently skips every iteration after the first, exactly the bug
+        // CI's mediaplayer.ufy run caught.
+        std::set<const vault::unify::VarTerm*> preExistingVars;
+        {
+            std::map<std::string,vault::unify::VarTerm*>::const_iterator
+                itSym = m_clauseContext.m_mapSymbols.begin(),
+                itSymEnd = m_clauseContext.m_mapSymbols.end();
+            for( ; itSym != itSymEnd; ++itSym ) {
+                preExistingVars.insert( itSym->second );
+            }
+        }
+
         // a. arrExpr, evaluated ONCE in the enclosing scope.
         vault::unify::AbstractTerm* pArrTerm = (*this)( foreachStatementInput.arrExpr );
 
@@ -1144,7 +1172,21 @@ public:
         // `__builtin_array_at` reaches it, exactly like `for`'s `$i -> $i2`
         // step (section 12.2) achieves the same thing for its own
         // per-iteration-changing value.
-        const int mVars = nVars - 1; // outerVars count (nVars >= 1: pLoopVar itself).
+        const int mVars = nVars - 1; // captured-var count (nVars >= 1: pLoopVar itself).
+
+        // OUTER-VS-LOCAL classification (see the snapshot note at the top
+        // of this function): freeVars[1+i] is OUTER iff it already existed
+        // (in preExistingVars) before this foreach statement was built --
+        // i.e. it is reachable via a name already bound/mentioned earlier
+        // in this same clause/query. Everything else is body-local (first
+        // introduced while building arrExpr/loopVar/body) and gets the
+        // SAME "fresh placeholder per iteration, no rebind" treatment as
+        // the loop variable itself, not the "rebind and carry forward"
+        // treatment genuinely-outer captured variables get.
+        std::vector<bool> isOuterVar( mVars );
+        for( int i = 0; i < mVars; ++i ) {
+            isOuterVar[i] = preExistingVars.count( freeVars[1 + i] ) > 0;
+        }
 
         std::map<const vault::unify::VarTerm*, vault::unify::VarTerm*> subMapFeRule;
         vault::unify::VarTerm* pArrParamRule = new vault::unify::VarTerm();
@@ -1193,29 +1235,44 @@ public:
         lsFeRuleBody.push_back( new vault::unify::ConsTerm( "__builtin_eval", pArithNext, pFreshJ ) );
 
         // Explicit rebinds before the recursive call: `unify($fresh, $cur)`
-        // for `$arr` and every outerVar. This is deliberately NOT just
-        // "pass the same head-parameter object again unchanged" (the
-        // ordinary idiom an ordinary user-written recursive predicate's
-        // OWN parser output already relies on) -- seeing every OTHER
-        // synthesized value here (the loop-var slot, the index) needed a
-        // genuinely fresh variable to cross a recursive call safely, this
-        // desugaring plays it safe for `$arr`/outerVars too, rather than
-        // rely on this engine's `VarTerm::unifyVarTerm`'s `this==pOther`
-        // identical-object fast path (which records no `AssignmentId`
-        // binding at all -- see vault-unify-term-var.cpp) to somehow still
-        // make the value visible several recursion levels down. A plain
-        // `unify(fresh, cur)` goal, run once per iteration, forces a real,
-        // ordinary (non-identity) variable-to-variable binding through the
-        // established `UnifyBuiltinClause` path instead -- correctness here
-        // does not depend on any subtler property of how same-object head
-        // parameters behave across recursive calls.
+        // for `$arr` (always genuinely invariant) and for each OUTER
+        // captured var (isOuterVar[i], see the classification above). This
+        // is deliberately NOT just "pass the same head-parameter object
+        // again unchanged" (the ordinary idiom an ordinary user-written
+        // recursive predicate's own parser output already relies on) --
+        // rather than rely on this engine's `VarTerm::unifyVarTerm`'s
+        // `this==pOther` identical-object fast path (which records no
+        // `AssignmentId` binding at all -- see vault-unify-term-var.cpp)
+        // to somehow still make the value visible several recursion levels
+        // down, a plain `unify(fresh, cur)` goal, run once per iteration,
+        // forces a real, ordinary (non-identity) variable-to-variable
+        // binding through the established `UnifyBuiltinClause` path
+        // instead -- correctness here does not depend on any subtler
+        // property of how same-object head parameters behave across
+        // recursive calls.
+        //
+        // A BODY-LOCAL captured var (isOuterVar[i] false -- e.g. `$zmeta`,
+        // a fact-lookup output first bound inside THIS loop's own body)
+        // gets NO rebind goal at all and instead a BRAND NEW, never-bound
+        // placeholder for the recursive call -- exactly like `$xSlot`/
+        // `pFreshPlaceholder` above. Rebinding it the same way `$arr` is
+        // rebound would carry iteration N's binding into iteration N+1,
+        // where the body's own fresh lookup for that iteration would then
+        // try to bind an ALREADY-bound variable to a DIFFERENT value and
+        // fail outright -- with continue-on-failure semantics, this
+        // silently skips every iteration after the first (the CI-caught
+        // mediaplayer.ufy bug this fix addresses).
         vault::unify::VarTerm* pArrNext = new vault::unify::VarTerm();
         lsFeRuleBody.push_back( new vault::unify::ConsTerm( "unify", pArrNext, pArrParamRule ) );
         std::vector<vault::unify::VarTerm*> outerNext( mVars );
         for( int i = 0; i < mVars; ++i ) {
             outerNext[i] = new vault::unify::VarTerm();
-            lsFeRuleBody.push_back( new vault::unify::ConsTerm(
-                "unify", outerNext[i], subMapFeRule[freeVars[1 + i]] ) );
+            if( isOuterVar[i] ) {
+                lsFeRuleBody.push_back( new vault::unify::ConsTerm(
+                    "unify", outerNext[i], subMapFeRule[freeVars[1 + i]] ) );
+            }
+            // else: body-local -- outerNext[i] stays a fresh, never-bound
+            // placeholder; no rebind goal emitted for it.
         }
 
         // __fe__N( $arrNext, $j, freshPlaceholder, outerNext... ) --
@@ -1363,6 +1420,26 @@ public:
      */
     vault::unify::AbstractTerm* operator()( const ForStatementInput& forStatementInput ) const
     {
+        // 0. CI-caught bug fix (mediaplayer.ufy demo, 2026-08-21): snapshot
+        // which VarTerms already exist in this clause/query's symbol table
+        // BEFORE building anything for this statement -- same
+        // OUTER-vs-BODY-LOCAL classification `foreach` uses (see the
+        // snapshot note at the top of operator()(const
+        // ForeachStatementInput&) above for the full reasoning); a
+        // body-local variable first introduced inside cond/body/step (e.g.
+        // a fact-lookup output) must get a fresh, never-bound placeholder
+        // every iteration instead of being rebound-and-carried-forward
+        // like a genuinely outer/invariant captured variable.
+        std::set<const vault::unify::VarTerm*> preExistingVars;
+        {
+            std::map<std::string,vault::unify::VarTerm*>::const_iterator
+                itSym = m_clauseContext.m_mapSymbols.begin(),
+                itSymEnd = m_clauseContext.m_mapSymbols.end();
+            for( ; itSym != itSymEnd; ++itSym ) {
+                preExistingVars.insert( itSym->second );
+            }
+        }
+
         // a. The control variable, from the init assignment's LHS, built in
         // the enclosing scope (same object as every other reference to the
         // same name elsewhere in this clause/query). Documented assumption
@@ -1451,6 +1528,15 @@ public:
         }
         const int nVars = (int) freeVars.size(); // always >= 1 (pForVar itself)
 
+        // OUTER-VS-LOCAL classification (see the snapshot note above):
+        // freeVars[i] (i>=1; freeVars[0] is pForVar, always handled
+        // specially via $i2) is OUTER iff it already existed before this
+        // `for` statement was built.
+        std::vector<bool> isOuterVar( nVars );
+        for( int i = 1; i < nVars; ++i ) {
+            isOuterVar[i] = preExistingVars.count( freeVars[i] ) > 0;
+        }
+
         vault::unify::Atom forAtom( m_clauseContext.nextAnonClauseName( "for" ) );
         WorldPtr spWorld( m_clauseContext.m_context.getWorld() );
 
@@ -1511,21 +1597,38 @@ public:
             stepIsArith ? "__builtin_eval" : "unify", pClonedStep, pFreshI2 );
         lsClonedRuleBody.push_back( pStepAssignGoal );
 
-        // Explicit rebinds for every OTHER captured var before the
-        // recursive call -- same reasoning as `foreach`'s own `$arr`/
-        // outerVar rebinds above: rather than pass subMapRule[freeVars[i]]
-        // (the SAME head-parameter object) unchanged into the recursive
-        // call -- which would rely on `VarTerm::unifyVarTerm`'s
-        // `this==pOther` identical-object fast path recording no
-        // `AssignmentId` binding at all (vault-unify-term-var.cpp) to
-        // still make the value visible several recursion levels down --
-        // force a genuine, ordinary variable-to-variable `unify(fresh,
-        // cur)` binding through `UnifyBuiltinClause` instead.
+        // Explicit rebinds before the recursive call, for every OUTER
+        // captured var (isOuterVar[i], see the classification above) --
+        // same reasoning as `foreach`'s own `$arr`/outer-var rebinds:
+        // rather than pass subMapRule[freeVars[i]] (the SAME head-
+        // parameter object) unchanged into the recursive call -- which
+        // would rely on `VarTerm::unifyVarTerm`'s `this==pOther`
+        // identical-object fast path recording no `AssignmentId` binding
+        // at all (vault-unify-term-var.cpp) to still make the value
+        // visible several recursion levels down -- force a genuine,
+        // ordinary variable-to-variable `unify(fresh, cur)` binding
+        // through `UnifyBuiltinClause` instead.
+        //
+        // A BODY-LOCAL captured var (isOuterVar[i] false -- first bound
+        // inside THIS loop's own cond/body/step, e.g. a fact-lookup output)
+        // gets NO rebind goal and instead a BRAND NEW, never-bound
+        // placeholder for the recursive call, exactly like `$i2` above:
+        // rebinding it the same way `$i`'s OTHER captured/outer siblings
+        // are rebound would carry iteration N's binding into iteration
+        // N+1, where the body's own fresh lookup for that iteration would
+        // then try to bind an ALREADY-bound variable to a DIFFERENT value
+        // and fail outright, silently stopping the loop there (`for`'s own
+        // "body failure stops the loop" semantics, section 12.2) -- the
+        // CI-caught mediaplayer.ufy bug this fix addresses.
         std::vector<vault::unify::VarTerm*> outerNext( nVars );
         for( int i = 1; i < nVars; ++i ) {
             outerNext[i] = new vault::unify::VarTerm();
-            lsClonedRuleBody.push_back( new vault::unify::ConsTerm(
-                "unify", outerNext[i], subMapRule[freeVars[i]] ) );
+            if( isOuterVar[i] ) {
+                lsClonedRuleBody.push_back( new vault::unify::ConsTerm(
+                    "unify", outerNext[i], subMapRule[freeVars[i]] ) );
+            }
+            // else: body-local -- outerNext[i] stays a fresh, never-bound
+            // placeholder; no rebind goal emitted for it.
         }
 
         // Recursive call: $i2 in place of freeVars[0] (pForVar)'s fresh

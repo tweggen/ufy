@@ -19,6 +19,21 @@
 // plain array literal -- `1..4` here is exactly `[1, 2, 3, 4]`, nothing
 // more (SPEC.md section 12.1).
 //
+// (g) REGRESSION (CI-caught via the mediaplayer.ufy demo, 2026-08-21): a
+// foreach body that introduces its OWN variable via a fact lookup
+// ($owner, first bound by pet_owner($x, $owner) -- never mentioned before
+// this statement) must get a FRESH, unbound copy every iteration, exactly
+// like the loop variable itself -- not be threaded through __fe__N's
+// recursive call the way a genuinely outer/invariant captured variable
+// legitimately is. An earlier version of this desugaring classified EVERY
+// captured variable the same way (rebind-and-carry-forward), which left
+// $owner still bound to iteration 1's value ("alice") when iteration 2's
+// own pet_owner(b, $owner) tried to bind it to "bob" -- an outright
+// unification failure, silently absorbed by foreach's own continue-on-
+// failure semantics (query (c) above), so only the FIRST element's lookup
+// ever printed. See SPEC.md section 12.3's OUTER-vs-BODY-LOCAL
+// classification and this task's session report for the full analysis.
+//
 // Predicted stdout, in query order (see this task's session report for
 // the full element-by-element hand-trace backing this prediction,
 // including the cut-interaction analysis for both constructs):
@@ -43,6 +58,10 @@
 //   print: 0
 //   print: 1
 //   print: after-for-body-failure
+//   print: alice
+//   print: bob
+//   print: carol
+//   print: after-foreach-local-lookup
 
 // (a) foreach over an array literal: prints every element in order, then
 // the query continues normally past the loop.
@@ -101,4 +120,22 @@ query {
         print( $i );
     }
     print( "after-for-body-failure" );
+}
+
+// (g) REGRESSION: foreach body-local variable across three iterations --
+// see the header comment above for the bug this pins. $owner is bound
+// fresh by pet_owner($x, $owner) each iteration; if it were incorrectly
+// threaded through the recursion (the bug), only "alice" would ever
+// print, since "bob"/"carol" would fail to unify against the stale
+// "alice" binding and be silently skipped.
+pet_owner( a, alice );
+pet_owner( b, bob );
+pet_owner( c, carol );
+
+query {
+    foreach ( $x : [a, b, c] ) {
+        pet_owner( $x, $owner );
+        print( $owner );
+    }
+    print( "after-foreach-local-lookup" );
 }

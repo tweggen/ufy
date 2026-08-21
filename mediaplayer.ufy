@@ -41,7 +41,8 @@ default_zone( $d ) {
 query {
     print( "unify mediaplayer: booting multi-room controller" );
     default_zone( $d );
-    print( concat( "default zone: ", $d ) );
+    $defLabel = concat( "default zone: ", $d );
+    print( $defLabel );
 }
 
 // ---------------------------------------------------------------------
@@ -57,7 +58,8 @@ query {
     foreach ( $zid : $zoneIds ) {
         zone( $zid, $meta );
         $name = $meta->name;
-        print( concat( "  - ", $name, " (", $zid, ")" ) );
+        $zoneLabel = concat( "  - ", $name, " (", $zid, ")" );
+        print( $zoneLabel );
     }
 }
 
@@ -73,7 +75,8 @@ query {
     zone( living, $lmeta );
     $lvol = $lmeta->volume;
     if ( $lvol > 40 ) {
-        print( concat( "note: living room is configured loud (", $lvol, ")" ) );
+        $loudNote = concat( "note: living room is configured loud (", $lvol, ")" );
+        print( $loudNote );
     }
 
     zone( bedroom, $bmeta );
@@ -114,14 +117,16 @@ apply_event( $zone, play ) {
     playback( $zone, $old );
     retract( playback( $zone, $old ) );
     assert( playback( $zone, playing ) );
-    print( concat( $zone, ": ", $old, " -> playing" ) );
+    $playMsg = concat( $zone, ": ", $old, " -> playing" );
+    print( $playMsg );
 }
 
 apply_event( $zone, stop ) {
     playback( $zone, $old );
     retract( playback( $zone, $old ) );
     assert( playback( $zone, stopped ) );
-    print( concat( $zone, ": ", $old, " -> stopped" ) );
+    $stopMsg = concat( $zone, ": ", $old, " -> stopped" );
+    print( $stopMsg );
 }
 
 query {
@@ -143,7 +148,8 @@ query {
     $finalIds = findall( $fref, zone( $fref, $fm ) );
     foreach ( $fid : $finalIds ) {
         playback( $fid, $state );
-        print( concat( $fid, ": ", $state ) );
+        $stateLine = concat( $fid, ": ", $state );
+        print( $stateLine );
     }
     print( "unify mediaplayer: done" );
 }
