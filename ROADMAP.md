@@ -201,7 +201,7 @@ the reference workload).
       Semantics: foreach continues on body failure (body-or-true wrapper
       clause); for stops on cond/body failure; both commit iterations via
       cut. SPEC.md §12.)*
-- [ ] **Engine bug found by the loop work (2026-08-21):** threading the SAME
+- [x] **Engine bug found by the loop work (2026-08-21):** threading the SAME
       `VarTerm` through a clause's own recursive call (`p($a,$i) { ...;
       p($a,$j); }` reusing `$a`) does not propagate the value past the first
       recursion — `VarTerm::unifyVarTerm`'s `this==pOther` identity fast

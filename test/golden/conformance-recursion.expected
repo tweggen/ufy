@@ -1,0 +1,10 @@
+print: 1
+print: 2
+print: 3
+print: after-count-down
+print: count
+print: 1
+print: count
+print: 2
+print: after-tally
+print: 15
