@@ -221,7 +221,11 @@ the reference workload).
       staged path: (1) range/set VALUES as data + foreach over them,
       (2) typed declarations, (3) domain-narrowing comparisons for int,
       (4) float intervals. Not started.
-- [ ] String operations (concat, compare, match).
+- [x] String operations (concat, compare, match).
+      *(2026-08-21: `$s = concat(...)` (variadic) and `$n = strlen($s)` as
+      `=`-position forms; `contains`/`startswith`/`endswith` goal builtins;
+      comparison was already covered by the comparison operators.
+      SPEC.md §14; golden-pinned.)*
 - [x] Runtime `assert` / `retract` — required for device/sensor state changes.
       Implement against the versioned World (see Phase 5, item 2; the
       copy-on-write design is already described in `vault-unify.hpp`).

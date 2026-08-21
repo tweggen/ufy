@@ -1,0 +1,7 @@
+print: foobarbaz
+print: item-5
+print: 5
+print: contains-yes
+print: startswith-yes
+print: endswith-yes
+print: concat-matches-literal
