@@ -28,9 +28,14 @@ set(UNIFY_GOLDEN_TESTS
     "test2|${UNIFY_MODULE_DIR}/test2.ufy"
     "mapsyntax|${CMAKE_CURRENT_SOURCE_DIR}/mapsyntax.ufy"
     "pathfinder|${UNIFY_MODULE_DIR}/pathfinder.ufy"
+    "mediaplayer|${UNIFY_MODULE_DIR}/mediaplayer.ufy"
 )
-# NOTE: mediaplayer.ufy is currently an empty file (ROADMAP.md) and is
-# intentionally not part of the golden suite until it has content again.
+# NOTE: mediaplayer.ufy (ROADMAP.md Phase 2) is now a self-contained
+# multi-room media-player controller demo again; test/golden/mediaplayer.expected
+# does not exist yet in this environment (no Boost toolchain here to build
+# unify-run and generate it), so this test SKIPs until a golden file is
+# generated on a machine that can build the module -- same as every other
+# golden test below with no pre-existing golden file.
 # NOTE: pathfinder.ufy references home-automation driver builtins (e.g.
 # zw_node_value) that may not exist in vault-unify-core; it may only parse,
 # not solve. run-golden-test.sh handles that gracefully -- it diffs whatever

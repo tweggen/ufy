@@ -1,0 +1,149 @@
+// mediaplayer.ufy -- Unify showcase: a small multi-room media-player
+// controller.
+//
+// Restored per ROADMAP.md Phase 2 ("Restore the example programs
+// (mediaplayer.ufy is currently empty) and make them part of the golden
+// tests"). This is a self-contained demo of the language as documented in
+// SPEC.md: facts carrying map metadata (section 3), findall + foreach for
+// an inventory listing (sections 11, 12.3), an if-based decision (section
+// 4), arithmetic + comparison-bounded volume stepping via a for loop
+// (sections 4.1, 12.2), and a small assert/retract-driven playback state
+// machine, one transition per event, walked with foreach (sections 12.3,
+// 13). One `cut;` commits the boot banner to the very first configured
+// zone (mirrors test/conformance/cut.ufy's `first` idiom, section 8).
+//
+// Run with: unify-run mediaplayer.ufy
+
+// ---------------------------------------------------------------------
+// Zone inventory. Each zone is a fact pairing its id with a metadata map
+// (display name + configured base volume) -- the same map-literal shape
+// test/conformance/deref.ufy's `place( { name: ..., level: ... } )` uses.
+// ---------------------------------------------------------------------
+
+zone( kitchen, { name: "Kitchen", volume: 30 } );
+zone( living, { name: "Living Room", volume: 45 } );
+zone( bedroom, { name: "Bedroom", volume: 20 } );
+
+// Every zone starts idle.
+playback( kitchen, stopped );
+playback( living, stopped );
+playback( bedroom, stopped );
+
+// The controller's boot banner names a "default" zone: the first
+// configured one, picked with cut so only its very first zone/2 solution
+// is kept, exactly like test/conformance/cut.ufy's `first( $x ) { c($x);
+// cut; }`.
+default_zone( $d ) {
+    zone( $d, $dmeta );
+    cut;
+}
+
+query {
+    print( "unify mediaplayer: booting multi-room controller" );
+    default_zone( $d );
+    print( concat( "default zone: ", $d ) );
+}
+
+// ---------------------------------------------------------------------
+// Inventory listing: findall collects every zone id into an array
+// (section 11), foreach walks it (section 12.3), and each zone's own
+// metadata is looked back up and turned into a display label with
+// concat (section 14.1).
+// ---------------------------------------------------------------------
+
+query {
+    print( "zones:" );
+    $zoneIds = findall( $zref, zone( $zref, $zm ) );
+    foreach ( $zid : $zoneIds ) {
+        zone( $zid, $meta );
+        $name = $meta->name;
+        print( concat( "  - ", $name, " (", $zid, ")" ) );
+    }
+}
+
+// ---------------------------------------------------------------------
+// A decision: warn about any zone configured above a comfortable default
+// volume level -- an ordinary if(cond){...} (section 4), cond here being
+// a plain comparison goal (section 4.1), exactly the shape
+// test/conformance/comparison.ufy exercises bare and if-statement.ufy
+// exercises as an if's condition.
+// ---------------------------------------------------------------------
+
+query {
+    zone( living, $lmeta );
+    $lvol = $lmeta->volume;
+    if ( $lvol > 40 ) {
+        print( concat( "note: living room is configured loud (", $lvol, ")" ) );
+    }
+
+    zone( bedroom, $bmeta );
+    $bvol = $bmeta->volume;
+    if ( $bvol > 40 ) {
+        print( "note: bedroom is configured loud" );
+    }
+}
+
+// ---------------------------------------------------------------------
+// Volume ramp: simulate a "volume up" button held for a few ticks,
+// raising the kitchen zone in steps of 15. The for loop's own comparison
+// condition is what clamps it -- once the next step would land above the
+// loudest allowed setting of 90, the loop simply ends (section 12.2).
+// ---------------------------------------------------------------------
+
+query {
+    print( "kitchen volume ramp:" );
+    for ( $vol = 30; $vol <= 90; $vol = $vol + 15 ) {
+        print( $vol );
+    }
+    print( "ramp done" );
+}
+
+// ---------------------------------------------------------------------
+// Playback events: a small ordered log, each entry naming a zone and a
+// requested action. Applying one is a state transition -- read the
+// current playback state, retract it, and assert the new one, the exact
+// retract/assert idiom test/conformance/assert-retract.ufy's
+// `toggle_sensor` documents for device/sensor state (section 13).
+// ---------------------------------------------------------------------
+
+event_step( 1, kitchen, play );
+event_step( 2, living, play );
+event_step( 3, kitchen, stop );
+
+apply_event( $zone, play ) {
+    playback( $zone, $old );
+    retract( playback( $zone, $old ) );
+    assert( playback( $zone, playing ) );
+    print( concat( $zone, ": ", $old, " -> playing" ) );
+}
+
+apply_event( $zone, stop ) {
+    playback( $zone, $old );
+    retract( playback( $zone, $old ) );
+    assert( playback( $zone, stopped ) );
+    print( concat( $zone, ": ", $old, " -> stopped" ) );
+}
+
+query {
+    print( "processing events:" );
+    foreach ( $i : 1..3 ) {
+        event_step( $i, $evzone, $evaction );
+        apply_event( $evzone, $evaction );
+    }
+    print( "events done" );
+}
+
+// ---------------------------------------------------------------------
+// Final report: the same findall + foreach inventory shape as above, now
+// reading back each zone's playback state after the events settled.
+// ---------------------------------------------------------------------
+
+query {
+    print( "final state:" );
+    $finalIds = findall( $fref, zone( $fref, $fm ) );
+    foreach ( $fid : $finalIds ) {
+        playback( $fid, $state );
+        print( concat( $fid, ": ", $state ) );
+    }
+    print( "unify mediaplayer: done" );
+}
