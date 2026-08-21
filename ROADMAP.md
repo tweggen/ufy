@@ -281,7 +281,12 @@ the reference workload).
 - [ ] REPL (readline is already linked) with query, assert, and inspection.
 - [ ] Finish the xdebug debugger front-to-back (breakpoints, stepping,
       variable inspection are scaffolded — make one editor integration work).
-- [ ] User documentation: tutorial + the Phase 1 spec.
+- [x] User documentation: tutorial + the Phase 1 spec.
+      *(2026-08-21: `LANGUAGE.md` — a ~1000-line tutorial for developers
+      with no Prolog background, every example lifted from the
+      golden-verified conformance corpus with real outputs, plus a
+      reference appendix (reserved words, precedence, builtins,
+      limitations with workarounds). Complements the normative SPEC.md.)*
 - [ ] Better runtime diagnostics: warnings for unbound-variable printing,
       unknown predicates (typo detection via name/arity index).
 
