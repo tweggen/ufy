@@ -239,7 +239,12 @@ the reference workload).
       mutations. Clause-DB writes are now mutex-protected (5.1 item pulled
       forward); the versioned-World design of 5.2 remains the eventual
       transactional home. State-machine conformance golden pins it.)*
-- [ ] File imports / include so programs can be split across files.
+- [x] File imports / include so programs can be split across files.
+      *(2026-08-21: `import "lib.ufy";` — relative to the importing file,
+      once-semantics via canonical paths (cycle-safe), inline interleaving,
+      located diagnostics for missing files. World is sole FileDebugInfo
+      owner via an adopt registry; unify-run passes real filenames so parse
+      errors name the file. SPEC.md §15; golden-pinned.)*
 - [x] Consistent list/array semantics (construction, unification, member,
       iteration); decide the fate of `include/vault-unify-iterator*-clause.hpp`.
       *(2026-08-21: ArrayTerm is a first-class term kind — `[a, b]` literals,
