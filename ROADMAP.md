@@ -253,8 +253,16 @@ the reference workload).
       arrives with `foreach` (next item); the legacy `vault::ozw`
       iterator-clause headers are an unrelated external consumer's
       templates and stay untouched.)*
-- [ ] Restore the example programs (`mediaplayer.ufy` is currently empty) and
+- [x] Restore the example programs (`mediaplayer.ufy` is currently empty) and
       make them part of the golden tests.
+      *(2026-08-21: mediaplayer.ufy rewritten as the flagship demo — a
+      multi-room audio controller exercising every language feature with a
+      24-line golden-pinned narrative. Writing it immediately caught two
+      real bugs: the foreach body-local variable threading bug (fixed) and
+      concat's `=`-only recognition tripping natural usage (documented).
+      With this, every Phase 2 feature item is done: arithmetic, cut,
+      findall, arrays, loops/ranges, assert/retract, strings, imports,
+      examples.)*
 
 ## Phase 3 — Engine robustness and performance
 

@@ -1,0 +1,24 @@
+print: unify mediaplayer: booting multi-room controller
+print: default zone: kitchen
+print: zones:
+print:   - Kitchen (kitchen)
+print:   - Living Room (living)
+print:   - Bedroom (bedroom)
+print: note: living room is configured loud (45)
+print: kitchen volume ramp:
+print: 30
+print: 45
+print: 60
+print: 75
+print: 90
+print: ramp done
+print: processing events:
+print: kitchen: stopped -> playing
+print: living: stopped -> playing
+print: kitchen: playing -> stopped
+print: events done
+print: final state:
+print: kitchen: stopped
+print: living: playing
+print: bedroom: stopped
+print: unify mediaplayer: done
