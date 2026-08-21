@@ -1,0 +1,104 @@
+// Conformance: `for`/`foreach` loops and ranges (SPEC.md section 12,
+// language owner request 2026-08-21).
+//
+// foreach ( $x : arrExpr ) { body } -- iterates an array's elements in
+// order, binding $x to each and running body. SEMANTICS: a body failure
+// for ONE element fails that iteration silently and the loop CONTINUES to
+// the next element (the recommended, silent-failure-tolerant default --
+// see the "b-skipped" query below). The loop itself always succeeds
+// exactly once, however many elements it actually visited.
+//
+// for ( $i = init; cond; $i = step ) { body } -- classic C-shaped loop.
+// SEMANTICS: unlike foreach, a failing cond or body STOPS the loop
+// outright (the honest logic-language reading of "a loop body failed" --
+// see the "stops-at-2" query below). A `for` whose cond is false from the
+// very first check runs zero iterations and the loop still succeeds once.
+//
+// Ranges (`<a>..<b>`, inclusive): with BOTH bounds literal integers (as
+// every range below is), a range is expanded EAGERLY at parse time into a
+// plain array literal -- `1..4` here is exactly `[1, 2, 3, 4]`, nothing
+// more (SPEC.md section 12.1).
+//
+// Predicted stdout, in query order (see this task's session report for
+// the full element-by-element hand-trace backing this prediction,
+// including the cut-interaction analysis for both constructs):
+//   print: a
+//   print: b
+//   print: c
+//   print: after-foreach-array
+//   print: 1
+//   print: 2
+//   print: 3
+//   print: 4
+//   print: after-foreach-range
+//   print: a
+//   print: c
+//   print: after-foreach-body-failure
+//   print: 0
+//   print: 1
+//   print: 2
+//   print: 3
+//   print: after-for-count
+//   print: after-for-zero-iterations
+//   print: 0
+//   print: 1
+//   print: after-for-body-failure
+
+// (a) foreach over an array literal: prints every element in order, then
+// the query continues normally past the loop.
+query {
+    foreach ( $x : [a, b, c] ) {
+        print( $x );
+    }
+    print( "after-foreach-array" );
+}
+
+// (b) foreach over a literal range -- 1..4 desugars to [1, 2, 3, 4] at
+// parse time (SPEC.md section 12.1); otherwise identical to (a).
+query {
+    foreach ( $x : 1..4 ) {
+        print( $x );
+    }
+    print( "after-foreach-range" );
+}
+
+// (c) foreach body failure does NOT stop the loop: "b" fails the guard
+// ($x != b) silently, so its print is skipped, but "c" still runs --
+// pins the CONTINUE semantics (contrast (f) below).
+query {
+    foreach ( $x : [a, b, c] ) {
+        $x != b;
+        print( $x );
+    }
+    print( "after-foreach-body-failure" );
+}
+
+// (d) for loop counting 0..3 (four iterations; cond is false at $i==4,
+// ending the loop with no further output from inside it).
+query {
+    for ( $i = 0; $i < 4; $i = $i + 1 ) {
+        print( $i );
+    }
+    print( "after-for-count" );
+}
+
+// (e) for whose cond is false from the very first check: zero iterations,
+// the loop still succeeds once, and the query continues normally.
+query {
+    for ( $i = 5; $i < 4; $i = $i + 1 ) {
+        print( $i );
+    }
+    print( "after-for-zero-iterations" );
+}
+
+// (f) for loop body failure STOPS the loop: the guard ($i != 2) fails at
+// $i==2, ending the loop right there -- "2" and "3" are never reached,
+// unlike (c)'s foreach, which would have skipped just the one element and
+// continued.
+query {
+    for ( $i = 0; $i < 4; $i = $i + 1 ) {
+        $i != 2;
+        print( $i );
+    }
+    print( "after-for-body-failure" );
+}

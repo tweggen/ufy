@@ -192,10 +192,23 @@ the reference workload).
       ground-copied into a first-class array; deterministic, never fails,
       `[]` on zero solutions. v1 limitation documented in SPEC: the
       subgoal solves in a fresh scope, outer bindings not consulted.)*
-- [ ] Classic `for` loop and `foreach` (language owner request, 2026-08-21):
+- [x] Classic `for` loop and `foreach` (language owner request, 2026-08-21):
       `for ($i = 0; $i < 10; $i = $i + 1) { ... }` and
       `foreach ($x : $arr) { ... }`, desugared to synthesized recursive
       clauses the same way `if` desugars — no new solver machinery.
+      *(2026-08-21: shipped incl. range literals `a..b` (eager array for
+      literal bounds, `__builtin_range` for variable bounds, 100k cap).
+      Semantics: foreach continues on body failure (body-or-true wrapper
+      clause); for stops on cond/body failure; both commit iterations via
+      cut. SPEC.md §12.)*
+- [ ] **Engine bug found by the loop work (2026-08-21):** threading the SAME
+      `VarTerm` through a clause's own recursive call (`p($a,$i) { ...;
+      p($a,$j); }` reusing `$a`) does not propagate the value past the first
+      recursion — `VarTerm::unifyVarTerm`'s `this==pOther` identity fast
+      path records no binding, and `AssignmentId` lookups have no
+      ancestor-scope fallback. The loop desugaring works around it with
+      explicit rebinding; hand-written recursive predicates hit it. Needs a
+      proper fix in the binding machinery (SPEC.md §10 documents it).
 - [ ] **Exploratory — constraint domains (language owner's long-term wish):**
       typed declarations (`int $a;`, `float $a;`) giving unbound variables a
       DOMAIN instead of a single binding; comparisons over unbound typed

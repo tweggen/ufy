@@ -106,6 +106,7 @@ set(UNIFY_CONFORMANCE_TESTS
     "comparison|${UNIFY_CONFORMANCE_DIR}/comparison.ufy"
     "cut|${UNIFY_CONFORMANCE_DIR}/cut.ufy"
     "findall-arrays|${UNIFY_CONFORMANCE_DIR}/findall-arrays.ufy"
+    "loops|${UNIFY_CONFORMANCE_DIR}/loops.ufy"
 )
 
 foreach(UNIFY_CONFORMANCE_TEST ${UNIFY_CONFORMANCE_TESTS})

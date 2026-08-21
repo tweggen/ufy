@@ -61,6 +61,7 @@ struct PrefixTermInput;
 struct MapPairInput;
 struct ArithTermInput;
 struct CompareTermInput;
+struct RangeTermInput;
 
 struct MapTermInput {
     MapTermInput() {};
@@ -83,7 +84,8 @@ typedef boost::variant<
         boost::recursive_wrapper<PrefixTermInput>,
         boost::recursive_wrapper<InfixTermsInput>,
         boost::recursive_wrapper<ArithTermInput>,
-        boost::recursive_wrapper<CompareTermInput>
+        boost::recursive_wrapper<CompareTermInput>,
+        boost::recursive_wrapper<RangeTermInput>
         > AnyTermRecursiveType;
 
 struct AnyTermInput {
@@ -110,6 +112,11 @@ struct AnyTermInput {
     // produces.
     AnyTermInput( const ArithTermInput& ati ) : term( ati ) {}
     AnyTermInput( const CompareTermInput& cti ) : term( cti ) {}
+    // ROADMAP ("for"/"foreach" + ranges, language owner request 2026-08-21):
+    // `<a>..<b>`, inserted between m_ruleAdditive and m_ruleComparison --
+    // see RangeTermInput below and AnyTermFactory::operator()(const
+    // RangeTermInput&), src/vault-unify-parser.cpp, for the desugaring.
+    AnyTermInput( const RangeTermInput& rti ) : term( rti ) {}
 
     AnyTermRecursiveType term;
 };
@@ -189,6 +196,33 @@ struct CompareTermInput {
 };
 
 
+/**
+ * `<a>..<b>` (ROADMAP: language owner request "for/foreach + ranges",
+ * 2026-08-21): inserted between m_ruleAdditive and m_ruleComparison, so a
+ * range's bounds are additive-level expressions (may themselves be
+ * arithmetic, e.g. `1+1..5`) and a range can appear anywhere an ordinary
+ * AnyTerm can (not just inside foreach's header) -- see SPEC.md and
+ * AnyTermFactory::operator()(const RangeTermInput&) (vault-unify-parser.cpp)
+ * for the desugaring (eager ArrayTerm literal for literal integer bounds,
+ * else a `__builtin_range` pre-goal). `..` is a two-character `qi::lit`
+ * token contributing no attribute of its own (mirroring `->`'s `'\0'`-op
+ * case, InfixTermRightHandSide above), hence the same
+ * AnyTermInput-converting-constructor trick to accept whatever
+ * m_ruleAdditive's plain ArithTermInput attribute converts through.
+ */
+struct RangeTermRhsInput {
+    RangeTermRhsInput() {}
+    RangeTermRhsInput( const AnyTermInput& ati ) : second( ati ) {}
+    AnyTermInput second;
+};
+
+struct RangeTermInput {
+    RangeTermInput() {}
+    AnyTermInput lhs;
+    boost::optional<RangeTermRhsInput> rhs;
+};
+
+
 struct MapPairInput {
     MapPairInput() {}
     MapPairInput( const MapPairInput& other ) : pairKey( other.pairKey ), pairValue( other.pairValue ) {}
@@ -201,25 +235,31 @@ struct MapPairInput {
 class IfStatementInput;
 class SingleGoalInput;
 class AnyStatementInput;
+class ForeachStatementInput;
+class ForStatementInput;
 
 typedef boost::variant<
 #if USE_NIL
-        unifynil, 
+        unifynil,
 #endif
         boost::recursive_wrapper<IfStatementInput>,
+        boost::recursive_wrapper<ForeachStatementInput>,
+        boost::recursive_wrapper<ForStatementInput>,
         boost::recursive_wrapper<SingleGoalInput>,
         boost::recursive_wrapper<AnyStatementInput>
         > AnyStatementRecursiveType;
 
 
 struct AnyStatementInput {
-    AnyStatementInput() 
+    AnyStatementInput()
 #if USE_NIL
     : statement( unifynil() )
 #endif
     {};
     AnyStatementInput( const AnyStatementInput& other ) : statement( other.statement ) {}
     AnyStatementInput( const IfStatementInput& isi ) : statement( isi ) {}
+    AnyStatementInput( const ForeachStatementInput& fsi ) : statement( fsi ) {}
+    AnyStatementInput( const ForStatementInput& fsi ) : statement( fsi ) {}
     AnyStatementInput( const SingleGoalInput& sgi ) : statement( sgi ) {}
 
     AnyStatementRecursiveType statement;
@@ -245,6 +285,43 @@ struct IfStatementInput {
     IfStatementInput( const SingleGoalInput& sgi ) : lhs( sgi ) {}
     SingleGoalInput lhs;
     GoalInput rhs;
+};
+
+
+/**
+ * `foreach ( $x : arrExpr ) { body }` (ROADMAP: language owner request
+ * "classic for/foreach loops", 2026-08-21). `loopVar` is parsed via
+ * m_ruleConsTerm (the same production every other bare `$name` variable
+ * reference in this grammar goes through) rather than a dedicated rule --
+ * conventionally, but NOT grammatically enforced, a `$`-prefixed variable
+ * (SPEC.md documents this). `arrExpr` is anything m_ruleAnyTerm accepts,
+ * including a range (RangeTermInput above). See
+ * AnyTermFactory::operator()(const ForeachStatementInput&)
+ * (vault-unify-parser.cpp) for the desugaring.
+ */
+struct ForeachStatementInput {
+    ForeachStatementInput() {}
+    ConsTermInput loopVar;
+    AnyTermInput arrExpr;
+    GoalInput body;
+};
+
+
+/**
+ * `for ( $i = init; cond; $i = step ) { body }` (ROADMAP: language owner
+ * request "classic for/foreach loops", 2026-08-21). All three header pieces
+ * reuse m_ruleSingleGoal (the same production a bare goal statement or an
+ * `if` condition uses) -- `initAssign`/`stepAssign` are conventionally, but
+ * not grammatically enforced, a `$var = expr` assignment (SPEC.md documents
+ * this). See AnyTermFactory::operator()(const ForStatementInput&)
+ * (vault-unify-parser.cpp) for the desugaring.
+ */
+struct ForStatementInput {
+    ForStatementInput() {}
+    SingleGoalInput initAssign;
+    SingleGoalInput condGoal;
+    SingleGoalInput stepAssign;
+    GoalInput body;
 };
 
 
@@ -333,6 +410,17 @@ BOOST_FUSION_ADAPT_STRUCT(
 )
 
 BOOST_FUSION_ADAPT_STRUCT(
+    vault::unify::PrologParser::RangeTermRhsInput,
+    (vault::unify::PrologParser::AnyTermInput, second)
+)
+
+BOOST_FUSION_ADAPT_STRUCT(
+    vault::unify::PrologParser::RangeTermInput,
+    (vault::unify::PrologParser::AnyTermInput, lhs)
+    (boost::optional<vault::unify::PrologParser::RangeTermRhsInput>, rhs)
+)
+
+BOOST_FUSION_ADAPT_STRUCT(
     vault::unify::PrologParser::MapTermInput,
     (std::vector<vault::unify::PrologParser::MapPairInput>, pairs)
 )
@@ -363,6 +451,21 @@ BOOST_FUSION_ADAPT_STRUCT(
     vault::unify::PrologParser::IfStatementInput,
     (vault::unify::PrologParser::SingleGoalInput, lhs)
     (vault::unify::PrologParser::GoalInput,rhs)
+)
+
+BOOST_FUSION_ADAPT_STRUCT(
+    vault::unify::PrologParser::ForeachStatementInput,
+    (vault::unify::PrologParser::ConsTermInput, loopVar)
+    (vault::unify::PrologParser::AnyTermInput, arrExpr)
+    (vault::unify::PrologParser::GoalInput, body)
+)
+
+BOOST_FUSION_ADAPT_STRUCT(
+    vault::unify::PrologParser::ForStatementInput,
+    (vault::unify::PrologParser::SingleGoalInput, initAssign)
+    (vault::unify::PrologParser::SingleGoalInput, condGoal)
+    (vault::unify::PrologParser::SingleGoalInput, stepAssign)
+    (vault::unify::PrologParser::GoalInput, body)
 )
 
 BOOST_FUSION_ADAPT_STRUCT(
@@ -624,14 +727,26 @@ public:
                 ( m_ruleMultiplicative >> *( ( qi::char_( '+' ) | qi::char_( '-' ) ) >> m_ruleMultiplicative ) )
             ;
 
+        // ROADMAP ("for"/"foreach" + ranges, language owner request
+        // 2026-08-21): `<a>..<b>`, inserted between m_ruleAdditive and
+        // m_ruleComparison -- see RangeTermInput (this header) and
+        // AnyTermFactory::operator()(const RangeTermInput&) (vault-unify-
+        // parser.cpp). ".." is a plain two-character qi::lit token; nothing
+        // else in this grammar ever uses a bare '.', so there is no
+        // longest-match ambiguity to resolve (unlike the comparison
+        // operators just below).
+        m_ruleRange %=
+                ( m_ruleAdditive >> -( qi::lit( ".." ) >> m_ruleAdditive ) )
+            ;
+
         // Longest-match ordering matters: "=="/"!="/"<="/">=" must be tried
         // before "<"/">" so e.g. `a <= b` cannot half-match as `a < ...`.
         m_ruleComparison %=
-                ( m_ruleAdditive >> -(
+                ( m_ruleRange >> -(
                         ( qi::string( "==" ) | qi::string( "!=" )
                         | qi::string( "<=" ) | qi::string( ">=" )
                         | qi::string( "<" )  | qi::string( ">" ) )
-                    >> m_ruleAdditive ) )
+                    >> m_ruleRange ) )
             ;
 
         m_ruleInfixTerm %=
@@ -651,8 +766,41 @@ public:
                     >> qi::lit( "{" ) >> m_ruleGoal >> qi::lit( "}" )
             ;
 
+        // ROADMAP ("for"/"foreach" loops, language owner request
+        // 2026-08-21): reserved statement keywords, mirroring `if`'s own
+        // reservation (SPEC.md section 2) -- structural/positional, not by
+        // exact name+arity like `cut`/`query`. `m_ruleForeachStatement`/
+        // `m_ruleForStatement` are tried BEFORE `m_ruleSingleGoal` in
+        // `m_ruleAnyStatement` below; a goal that merely happens to be a
+        // call to a predicate named `for`/`foreach` but does NOT match the
+        // full loop-header-plus-`{ }`-body shape simply fails to match here
+        // and backtracks to `m_ruleSingleGoal`, parsing as an ordinary call
+        // -- exactly the same PEG backtracking `if`/`query` already rely on
+        // (see SPEC.md section 2's `query` reservation trace). A clause
+        // HEAD literally named `for(...)`/`foreach(...)` is unaffected
+        // either way: `m_ruleAnyStatement` is never reached from
+        // `m_ruleClause`, which parses a clause head via m_ruleConsTerm
+        // directly.
+        m_ruleForeachStatement %=
+                qi::lit( "foreach" ) >> qi::lit( "(" )
+                    >> m_ruleConsTerm >> qi::lit( ":" ) >> m_ruleAnyTerm
+                >> qi::lit( ")" )
+                    >> qi::lit( "{" ) >> m_ruleGoal >> qi::lit( "}" )
+            ;
+
+        m_ruleForStatement %=
+                qi::lit( "for" ) >> qi::lit( "(" )
+                    >> m_ruleSingleGoal >> qi::lit( ";" )
+                    >> m_ruleSingleGoal >> qi::lit( ";" )
+                    >> m_ruleSingleGoal
+                >> qi::lit( ")" )
+                    >> qi::lit( "{" ) >> m_ruleGoal >> qi::lit( "}" )
+            ;
+
         m_ruleAnyStatement %=
-                m_ruleIfStatement
+                m_ruleForeachStatement
+            |   m_ruleForStatement
+            |   m_ruleIfStatement
             |   m_ruleSingleGoal >> ';'
             ;
 
@@ -692,6 +840,7 @@ public:
         m_rulePrefixTerm.name( "PrefixTerm" );
         m_ruleMultiplicative.name( "Multiplicative" );
         m_ruleAdditive.name( "Additive" );
+        m_ruleRange.name( "Range" );
         m_ruleComparison.name( "Comparison" );
         m_ruleAssignmentPart.name( "AssignmentPart" );
         m_ruleMapPair.name( "MapPair" );
@@ -699,6 +848,8 @@ public:
         m_ruleAnyConsTerm.name( "AnyConsTerm" );
         m_ruleAnyTerm.name( "AnyTerm" );
         m_ruleSingleGoal.name( "SingleGoal" );
+        m_ruleForeachStatement.name( "ForeachStatement" );
+        m_ruleForStatement.name( "ForStatement" );
         m_ruleGoal.name( "Goal" );
         m_ruleClause.name( "Clause" );
         m_ruleQuery.name( "Query" );
@@ -772,6 +923,7 @@ public:
     qi::rule<Iterator, PrefixTermInput(), Skipper> m_rulePrefixTerm;
     qi::rule<Iterator, ArithTermInput(), Skipper> m_ruleMultiplicative;
     qi::rule<Iterator, ArithTermInput(), Skipper> m_ruleAdditive;
+    qi::rule<Iterator, RangeTermInput(), Skipper> m_ruleRange;
     qi::rule<Iterator, CompareTermInput(), Skipper> m_ruleComparison;
     qi::rule<Iterator, InfixTermsInput(), Skipper> m_ruleAssignmentPart;
     qi::rule<Iterator, InfixTermsInput(), Skipper> m_ruleArrayDeref;
@@ -782,6 +934,8 @@ public:
     qi::rule<Iterator, AnyTermInput(), Skipper> m_ruleAnyTerm;
     qi::rule<Iterator, SingleGoalInput(), Skipper> m_ruleSingleGoal;
     qi::rule<Iterator, IfStatementInput(), Skipper> m_ruleIfStatement;
+    qi::rule<Iterator, ForeachStatementInput(), Skipper> m_ruleForeachStatement;
+    qi::rule<Iterator, ForStatementInput(), Skipper> m_ruleForStatement;
     qi::rule<Iterator, AnyStatementInput(), Skipper> m_ruleAnyStatement;
     qi::rule<Iterator, GoalInput(), Skipper> m_ruleGoal;
     qi::rule<Iterator, ClauseInput(), Skipper> m_ruleClause;

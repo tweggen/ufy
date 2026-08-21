@@ -2,6 +2,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <cerrno>
 
 /*
  * Workaround for a but in boost 1.58: It does not support
@@ -23,6 +24,50 @@ namespace PrologParser {
 int ClauseContext::m_anonClauseIndex;
 
 namespace {
+
+/**
+ * ROADMAP ("for"/"foreach" + ranges, language owner request 2026-08-21):
+ * a range with both bounds LITERAL integer atoms is expanded eagerly, right
+ * here at parse time (AnyTermFactory::operator()(const RangeTermInput&)
+ * below), into a plain ArrayTerm -- so it needs the same "does this atom's
+ * text parse fully as an int64" check
+ * vault-unify-clause-builtin-arith.cpp's parseInt64() performs for solve-
+ * time arithmetic. Duplicated locally (same ~15 lines) rather than shared
+ * across translation units, matching this module's existing per-file
+ * anonymous-namespace-helper style (e.g. every builtin .cpp under src/ has
+ * its own small local helpers rather than a shared utility header).
+ */
+bool parseRangeLiteralInt64( const std::string& s, int64_t& out_value )
+{
+    if( s.empty() ) {
+        return false;
+    }
+    errno = 0;
+    char* pEnd = NULL;
+    long long v = strtoll( s.c_str(), &pEnd, 10 );
+    if( pEnd != s.c_str() + s.length() ) {
+        return false;
+    }
+    if( ERANGE == errno ) {
+        return false;
+    }
+    out_value = (int64_t) v;
+    return true;
+}
+
+/**
+ * Cap on the number of elements an eagerly-expanded (literal-bounds) range
+ * literal may produce, mirroring the same cap `RangeBuiltinClause`
+ * (vault-unify-clause-builtin-arith.cpp) enforces for a solve-time,
+ * variable-bounds range -- see SPEC.md's ranges section. A literal range
+ * this large in SOURCE TEXT is almost certainly a typo, not a genuine 100k-
+ * element array literal; there is no clean way to fail a parse-time
+ * desugaring the way a builtin can return UnifyError, so this silently
+ * truncates (logged) rather than attempting the full allocation.
+ */
+const int64_t RANGE_MAX_ELEMENTS = 100000;
+
+
 
 /**
  * Collect the distinct VarTerms reachable from pTerm, in first-encounter
@@ -686,7 +731,764 @@ public:
     }
 
 
-    vault::unify::AbstractTerm* operator()( const ConsTermInput& consTermInput ) const 
+    /**
+     * `<a>..<b>` (ROADMAP: language owner request "for/foreach + ranges",
+     * 2026-08-21). No operator present -> just the (unchanged) lhs, exactly
+     * like every other precedence level's single-operand fast path
+     * (ArithTermInput/CompareTermInput above). Otherwise: if BOTH bounds,
+     * once built, turn out to be literal 0-arity ConsTerm atoms whose text
+     * parses fully as an int64 (parseRangeLiteralInt64() above), the range
+     * is expanded EAGERLY into a plain ArrayTerm literal, right here at
+     * parse time -- indistinguishable from writing the array out by hand
+     * (SPEC.md's "simplest honest rule": a literal-bounds range IS an array
+     * literal, nothing more). The two scratch bound terms just built are
+     * then immediately redundant and are deleted directly (mirroring the
+     * orphaned-wrapper-ConsTerm deletion in the findall desugar above --
+     * same reasoning: never reachable from anywhere collectAllTermTrees()
+     * walks, so leaving them would leak, and any TermDebugInfo map entry
+     * for them becomes a harmless dangling KEY, never dereferenced by
+     * World::~World()'s de-duplicating sweep over map VALUES).
+     *
+     * Otherwise (either bound is a variable, or itself an arithmetic
+     * expression) this is a genuinely dynamic range: a fresh anonymous var
+     * is substituted for it (mirroring '->' 's own pre-goal pattern,
+     * operator()(const InfixTermsInput&) above) and a
+     * `__builtin_range(lhs, rhs, freshVar)` pre-goal is pushed onto
+     * m_lsTerms, resolved at SOLVE time by RangeBuiltinClause
+     * (vault-unify-clause-builtin-arith.cpp). Because this level sits below
+     * every other precedence level (comparison, '='), a dynamic range is
+     * usable anywhere any other AnyTerm is -- not only inside foreach's
+     * header.
+     */
+    vault::unify::AbstractTerm* operator()( const RangeTermInput& rangeTermInput ) const
+    {
+        vault::unify::AbstractTerm* lhs = (*this)( rangeTermInput.lhs );
+
+        if( !rangeTermInput.rhs ) {
+            return lhs;
+        }
+        vault::unify::AbstractTerm* rhs = (*this)( rangeTermInput.rhs.get().second );
+
+        const vault::unify::ConsTerm* pLhsCons = dynamic_cast<const vault::unify::ConsTerm*>( lhs );
+        const vault::unify::ConsTerm* pRhsCons = dynamic_cast<const vault::unify::ConsTerm*>( rhs );
+        int64_t a = 0, b = 0;
+        bool lhsLiteral = pLhsCons && 0==pLhsCons->getArity()
+            && parseRangeLiteralInt64( pLhsCons->getName().value(), a );
+        bool rhsLiteral = pRhsCons && 0==pRhsCons->getArity()
+            && parseRangeLiteralInt64( pRhsCons->getName().value(), b );
+
+        if( lhsLiteral && rhsLiteral ) {
+            delete lhs;
+            delete rhs;
+
+            int64_t count = (b>=a) ? (b - a + 1) : 0;
+            if( count > RANGE_MAX_ELEMENTS ) {
+                VAULT_UNIFY_DI( ALWAYS, "Range %lld..%lld exceeds the %lld-element cap; truncating.\n",
+                    (long long) a, (long long) b, (long long) RANGE_MAX_ELEMENTS );
+                count = RANGE_MAX_ELEMENTS;
+            }
+            vault::unify::AbstractTerm** ppTerms = count ? new vault::unify::AbstractTerm*[(size_t) count] : NULL;
+            for( int64_t i = 0; i < count; ++i ) {
+                char buf[32];
+                snprintf( buf, sizeof(buf), "%lld", (long long)(a + i) );
+                ppTerms[i] = new vault::unify::ConsTerm( buf );
+            }
+            vault::unify::ArrayTerm* pArrayTerm = new vault::unify::ArrayTerm( ppTerms, (int) count );
+            delete[] ppTerms;
+            return pArrayTerm;
+        }
+
+        vault::unify::VarTerm* pVarTerm1 = new vault::unify::VarTerm();
+        std::string strVarTerm1 = m_clauseContext.nextAnonVarName();
+        pVarTerm1->setOriginalVarName( strVarTerm1 );
+        m_clauseContext.m_mapSymbols[strVarTerm1] = pVarTerm1;
+
+        vault::unify::ConsTerm* pPreGoal = new vault::unify::ConsTerm(
+            "__builtin_range", lhs, rhs, pVarTerm1 );
+        m_lsTerms.push_back( pPreGoal );
+
+        return pVarTerm1;
+    }
+
+
+    /**
+     * `foreach ( $x : arrExpr ) { body }` (ROADMAP: language owner request
+     * "classic for/foreach loops", 2026-08-21). Mirrors the `if` desugaring
+     * above closely: any term spliced into a clause permanently appended to
+     * World's root ExecutionState must not alias a VarTerm with the
+     * enclosing, per-query/-clause-lifetime term tree (see World::~World()/
+     * ~SolveJob()'s comments), so every synthesized clause below gets its
+     * own fresh substitution via cloneTermTree(), exactly like `if`'s
+     * rule/fact pair.
+     *
+     * Two mutually-recursive auxiliary predicates are synthesized (unique
+     * names via ClauseContext::nextAnonClauseName(), e.g. "__fe__3"/
+     * "__feb__3"):
+     *
+     *   __fe__3( $arr, $i, $xSlot, V1..Vm ) {   // main loop
+     *       __builtin_array_at( $arr, $i, $xSlot ); // fails -> index OOB
+     *       __feb__3( $xSlot, V1..Vm );              // body-or-true, below
+     *       cut;                                     // commit THIS iter
+     *       $j = $i + 1;
+     *       $arrNext = $arr; $v1Next = V1; ...; $vmNext = Vm; // rebind, see below
+     *       __fe__3( $arrNext, $j, $freshSlot, $v1Next..$vmNext ); // next iter
+     *   }
+     *   __fe__3( $arr, $i, $xSlot, V1..Vm );    // fallback: index OOB -> end
+     *
+     *   __feb__3( $x, V1..Vm ) { clonedBody...; cut; } // body-or-true, rule
+     *   __feb__3( $x, V1..Vm );                         // body-or-true, fallback
+     *
+     * `freeVars` = the free VarTerms of ($x, body), with $x (the loop
+     * variable) FORCE-INCLUDED as freeVars[0] even if body never mentions
+     * it (so `freeVars[0] == $x` always, by construction -- the same
+     * "force-include as the first collection root" trick `for` uses for its
+     * own control variable below); V1..Vm = freeVars[1..] (every OTHER free
+     * variable). $arr/$i are BRAND NEW synthesized parameters (never part
+     * of the enclosing scope); $xSlot occupies the loop variable's own
+     * position (position 2) so the call site below can legitimately pass
+     * the ORIGINAL enclosing $x there (keeping it reachable/owned -- see
+     * the OWNERSHIP NOTE further down; an EARLIER draft excluded $x from
+     * __fe__3's parameters entirely, which leaked it).
+     *
+     * TWO THINGS MUST NEVER BE THREADED UNCHANGED THROUGH THE RECURSIVE
+     * CALL (both caught by hand-tracing against VarTerm unification,
+     * section 6, before this ever reached CI):
+     *
+     * (1) $xSlot itself -- it is rebound to a DIFFERENT array element every
+     * iteration by `__builtin_array_at`, so the recursive call passes a
+     * BRAND NEW, never-bound `$freshSlot` for that position instead (an
+     * earlier draft reused $xSlot directly there, which broke the loop
+     * after its first element: the next invocation's own $xSlot would
+     * already be bound to THIS element, so its own `__builtin_array_at`
+     * would then try to bind an already-bound variable to the NEXT
+     * element and fail outright).
+     *
+     * (2) $arr and V1..Vm -- even though these genuinely ARE invariant
+     * (the same value every iteration, unlike $xSlot), they are STILL not
+     * passed as the literal same head-parameter object again. Doing so
+     * would rely on `VarTerm::unifyVarTerm`'s `this==pOther` identical-
+     * object fast path (vault-unify-term-var.cpp) -- which returns
+     * `UnifyLast` immediately WITHOUT recording any `AssignmentId`
+     * binding at all, since both sides are literally the same pointer.
+     * Whether that is actually safe several recursion levels down (i.e.
+     * whether some OTHER mechanism still makes the value visible to a
+     * deeper invocation) was not a risk worth taking here: `$arrNext`/
+     * `$v1Next`../`$vmNext` are BRAND NEW variables, and `$arrNext = $arr`
+     * etc. (an ordinary `unify(...)` goal -- see AnyTermFactory::
+     * operator()(const InfixTermsInput&)'s `=` case, section 4) forces a
+     * genuine, ordinary variable-to-variable binding through the
+     * established `UnifyBuiltinClause` path for every iteration instead,
+     * which this task's investigation independently confirmed correct
+     * (a fresh var linked to an existing one always succeeds and is
+     * resolvable from any descendant context, regardless of any subtlety
+     * of same-object reuse) -- see this task's session report.
+     *
+     * SEMANTICS DECISION (documented in SPEC.md, per this task's brief): a
+     * body failure for one element does NOT stop the loop -- it fails that
+     * one iteration silently and the loop CONTINUES (the recommended
+     * default, matching the language's overall silent-failure character).
+     * This is exactly what `__feb__3` buys: WITHOUT it (i.e. if body were
+     * inlined directly into `__fe__3`'s own rule-clause), a failing body
+     * would fail `__fe__3`'s rule-clause candidate outright -- no
+     * continuation would ever reach the recursive call -- backtracking
+     * straight past it to `__fe__3`'s OWN fallback fact, i.e. STOPPING the
+     * loop rather than continuing it (indistinguishable from "index out of
+     * bounds"). `__feb__3`'s own fallback fact absorbs exactly that
+     * failure (always succeeds trivially when its rule-clause -- i.e. body
+     * -- has no solution at all), so `__fe__3`'s rule-clause always reaches
+     * `cut` and the recursive step regardless of whether body succeeded.
+     *
+     * CUT-INTERACTION ANALYSIS (verified against SolveJob::performSlice(),
+     * vault-unify-solvejob.cpp -- see also this task's report for the full
+     * hand-trace): the `cut` right after the `__feb__3` call commits
+     * `__fe__3`'s OWN clause choice for THIS call (rule vs. fallback) and
+     * every choice point to its LEFT within this one activation -- which
+     * includes pruning `body`'s own remaining alternatives (via `__feb__3`'s
+     * choice, still on the stack at that point) down to its first solution,
+     * standard cut semantics (section 8). Crucially it does NOT reach the
+     * recursive `__fe__3(...)` call written a few lines later: that call has
+     * not been pushed onto the SolveContext stack yet when this cut runs
+     * (`performSlice()` only ever invalidates `m_itNextChildClause` on
+     * contexts ALREADY on the stack, walking from the top down to and
+     * including THIS activation's own entry context) -- so the recursive
+     * call gets its own, entirely unaffected, fresh entry context and fresh
+     * choice points once its turn comes. This is why the recursion is not
+     * itself pruned/truncated by this cut.
+     *
+     * `arrExpr` is evaluated exactly ONCE, in the ENCLOSING scope, via
+     * `this` factory directly -- any of ITS OWN pre-goals (e.g. a nested
+     * `->`, or a variable-bounds range's `__builtin_range` pre-goal) land in
+     * the enclosing goal chain (m_lsTerms) exactly once, before the loop
+     * starts. This is different from `if`'s `cond`, which is deliberately
+     * rebuilt/cloned fresh into the synthesized clause since it must
+     * re-run every iteration -- `arrExpr` is a single, fixed value for the
+     * whole loop, evaluated once up front, exactly like a classic
+     * for-each's collection expression.
+     */
+    vault::unify::AbstractTerm* operator()( const ForeachStatementInput& foreachStatementInput ) const
+    {
+        // a. arrExpr, evaluated ONCE in the enclosing scope.
+        vault::unify::AbstractTerm* pArrTerm = (*this)( foreachStatementInput.arrExpr );
+
+        // b. Loop variable, same enclosing scope. Documented assumption
+        // (SPEC.md): this is a `$name` variable; if not (not enforced by
+        // the grammar), fall back to a fresh, unbound variable rather than
+        // crash -- an unsupported, never-exercised shape.
+        vault::unify::AbstractTerm* pLoopVarRaw = (*this)( foreachStatementInput.loopVar );
+        vault::unify::VarTerm* pLoopVar = dynamic_cast<vault::unify::VarTerm*>( pLoopVarRaw );
+        if( !pLoopVar ) {
+            VAULT_UNIFY_DI( ALWAYS, "foreach: loop-variable position \"%s\" is not a $-variable; using a fresh variable instead.\n",
+                pLoopVarRaw->toString().c_str() );
+            pLoopVar = new vault::unify::VarTerm();
+        }
+
+        // c. Body, built in the enclosing scope (pre-goal-inclusive, via
+        // createGoal() exactly like `if`'s body).
+        std::list<vault::unify::AbstractTerm*> lsBodyTerms;
+        (void) m_clauseContext.m_context.createGoal(
+            m_clauseContext, foreachStatementInput.body, lsBodyTerms );
+
+        // d. Free variables: the loop variable is force-included (an extra
+        // collection root) even if body never mentions it; then every
+        // VarTerm actually occurring in body.
+        std::vector<const vault::unify::AbstractTerm*> varRoots;
+        varRoots.push_back( pLoopVar );
+        {
+            std::list<vault::unify::AbstractTerm*>::const_iterator it, itEnd = lsBodyTerms.end();
+            for( it = lsBodyTerms.begin(); it != itEnd; ++it ) {
+                varRoots.push_back( *it );
+            }
+        }
+        std::vector<vault::unify::VarTerm*> freeVars;
+        {
+            std::set<const vault::unify::AbstractTerm*> visited;
+            std::vector<const vault::unify::AbstractTerm*>::const_iterator it, itEnd = varRoots.end();
+            for( it = varRoots.begin(); it != itEnd; ++it ) {
+                collectVarTermsOrdered( *it, visited, freeVars );
+            }
+        }
+        const int nVars = (int) freeVars.size();
+
+        WorldPtr spWorld( m_clauseContext.m_context.getWorld() );
+        vault::unify::Atom feAtom( m_clauseContext.nextAnonClauseName( "fe" ) );
+        vault::unify::Atom febAtom( m_clauseContext.nextAnonClauseName( "feb" ) );
+
+        // e. __feb__N (body-or-true): built FIRST since __fe__N's own
+        // rule-clause body calls it. Rule clause: clonedBody; cut. Fallback
+        // fact: empty body, always succeeds (absorbs a failing body).
+        std::map<const vault::unify::VarTerm*, vault::unify::VarTerm*> subMapFebRule;
+        vault::unify::AbstractTerm** ppFebRuleArgs = nVars ? new vault::unify::AbstractTerm*[nVars] : NULL;
+        for( int i = 0; i < nVars; ++i ) {
+            vault::unify::VarTerm* pFresh = new vault::unify::VarTerm();
+            pFresh->setOriginalVarName( freeVars[i]->getOriginalVarName() );
+            subMapFebRule[freeVars[i]] = pFresh;
+            ppFebRuleArgs[i] = pFresh;
+        }
+        vault::unify::ConsTerm* pFebHeadRule = new vault::unify::ConsTerm( febAtom, nVars, ppFebRuleArgs );
+        delete[] ppFebRuleArgs;
+
+        std::list<const vault::unify::AbstractTerm*> lsFebRuleBody;
+        {
+            std::list<vault::unify::AbstractTerm*>::const_iterator it, itEnd = lsBodyTerms.end();
+            for( it = lsBodyTerms.begin(); it != itEnd; ++it ) {
+                lsFebRuleBody.push_back( vault::unify::cloneTermTree( *it, subMapFebRule ) );
+            }
+        }
+        lsFebRuleBody.push_back( new vault::unify::ConsTerm( "__builtin_cut" ) );
+        vault::unify::Goal* pFebRuleGoal = new vault::unify::Goal( lsFebRuleBody.begin(), lsFebRuleBody.end() );
+        Clause* pFebRuleClause = new vault::unify::StandardClause( pFebHeadRule, pFebRuleGoal );
+
+        vault::unify::AbstractTerm** ppFebFactArgs = nVars ? new vault::unify::AbstractTerm*[nVars] : NULL;
+        for( int i = 0; i < nVars; ++i ) {
+            vault::unify::VarTerm* pFresh = new vault::unify::VarTerm();
+            pFresh->setOriginalVarName( freeVars[i]->getOriginalVarName() );
+            ppFebFactArgs[i] = pFresh;
+        }
+        vault::unify::ConsTerm* pFebHeadFact = new vault::unify::ConsTerm( febAtom, nVars, ppFebFactArgs );
+        delete[] ppFebFactArgs;
+        Clause* pFebFactClause = new vault::unify::StandardClause( pFebHeadFact, NULL );
+
+        spWorld->getRootState()->appendClause( spWorld, pFebRuleClause );
+        spWorld->getRootState()->appendClause( spWorld, pFebFactClause );
+
+        // f. __fe__N (main loop). $arr/$i are brand-new synthesized
+        // parameters (positions 0/1); the loop variable itself occupies
+        // position 2 (so the call site below can legitimately pass the
+        // ORIGINAL enclosing pLoopVar there -- see the ownership note
+        // just below); outerVars (freeVars[1..nVars-1]) follow after it.
+        //
+        // OWNERSHIP NOTE: pLoopVar (freeVars[0]) must remain reachable
+        // from SOMEWHERE this factory's caller ultimately keeps alive (the
+        // enclosing query/clause's own term tree), or it leaks -- exactly
+        // like every other VarTerm this parser ever allocates (see
+        // World::~World()/~SolveJob()'s ownership comments). The call
+        // site below (`ppCallArgs[2] = pLoopVar`) is what keeps it
+        // reachable.
+        //
+        // RECURSION NOTE (the actual bug this design avoids -- an earlier
+        // draft shipped it, then a hand-trace against VarTerm unification,
+        // section 6, caught it before this ever reached CI): a value that
+        // must change every iteration (the loop variable, rebound to a
+        // NEW array element each time by `__builtin_array_at`) must NEVER
+        // be threaded UNCHANGED through a recursive call the way an
+        // invariant argument (outerVars, `$arr` itself) legitimately is --
+        // doing so would hand the NEXT invocation's own head parameter an
+        // ALREADY-bound value (this iteration's element), so that
+        // invocation's OWN `__builtin_array_at` would then try to bind an
+        // ALREADY-bound variable to the NEXT element (e.g. unifying "a"
+        // against "b"), which fails outright and breaks the loop after its
+        // first element. So: the call site passes pLoopVar (unbound) for
+        // position 2 ONLY at the very first call; the RECURSIVE call
+        // instead passes a BRAND NEW, never-bound placeholder for that
+        // SAME position every time -- never the current iteration's own
+        // (by-then-bound) copy. Each invocation's own head-parameter copy
+        // for position 2 is therefore always freshly unbound when
+        // `__builtin_array_at` reaches it, exactly like `for`'s `$i -> $i2`
+        // step (section 12.2) achieves the same thing for its own
+        // per-iteration-changing value.
+        const int mVars = nVars - 1; // outerVars count (nVars >= 1: pLoopVar itself).
+
+        std::map<const vault::unify::VarTerm*, vault::unify::VarTerm*> subMapFeRule;
+        vault::unify::VarTerm* pArrParamRule = new vault::unify::VarTerm();
+        vault::unify::VarTerm* pIdxParamRule = new vault::unify::VarTerm();
+        vault::unify::VarTerm* pXSlotRule = new vault::unify::VarTerm();
+        vault::unify::AbstractTerm** ppFeRuleArgs = new vault::unify::AbstractTerm*[3 + mVars];
+        ppFeRuleArgs[0] = pArrParamRule;
+        ppFeRuleArgs[1] = pIdxParamRule;
+        ppFeRuleArgs[2] = pXSlotRule;
+        for( int i = 0; i < mVars; ++i ) {
+            vault::unify::VarTerm* pFresh = new vault::unify::VarTerm();
+            pFresh->setOriginalVarName( freeVars[1 + i]->getOriginalVarName() );
+            subMapFeRule[freeVars[1 + i]] = pFresh;
+            ppFeRuleArgs[3 + i] = pFresh;
+        }
+        vault::unify::ConsTerm* pFeHeadRule = new vault::unify::ConsTerm( feAtom, 3 + mVars, ppFeRuleArgs );
+        delete[] ppFeRuleArgs;
+
+        std::list<const vault::unify::AbstractTerm*> lsFeRuleBody;
+
+        // __builtin_array_at( $arr, $i, $xSlot )
+        lsFeRuleBody.push_back( new vault::unify::ConsTerm(
+            "__builtin_array_at", pArrParamRule, pIdxParamRule, pXSlotRule ) );
+
+        // __feb__N( $xSlot, freshOuterVars... ) -- position 0 is this
+        // iteration's element (from $xSlot, just bound above); freeVars[1..]
+        // map to their fresh subMapFeRule slot, same order __feb__N's own
+        // head expects.
+        vault::unify::AbstractTerm** ppFebCallArgs = new vault::unify::AbstractTerm*[nVars];
+        ppFebCallArgs[0] = pXSlotRule;
+        for( int i = 0; i < mVars; ++i ) {
+            ppFebCallArgs[1 + i] = subMapFeRule[freeVars[1 + i]];
+        }
+        lsFeRuleBody.push_back( new vault::unify::ConsTerm( febAtom, nVars, ppFebCallArgs ) );
+        delete[] ppFebCallArgs;
+
+        lsFeRuleBody.push_back( new vault::unify::ConsTerm( "__builtin_cut" ) );
+
+        // $j = $i + 1
+        vault::unify::VarTerm* pFreshJ = new vault::unify::VarTerm();
+        pFreshJ->setOriginalVarName( m_clauseContext.nextAnonVarName() );
+        vault::unify::ConsTerm* pOneAtom = new vault::unify::ConsTerm( "1" );
+        vault::unify::ConsTerm* pPlusAtom = new vault::unify::ConsTerm( "+" );
+        vault::unify::ConsTerm* pArithNext = new vault::unify::ConsTerm(
+            "__builtin_arith", pPlusAtom, pIdxParamRule, pOneAtom );
+        lsFeRuleBody.push_back( new vault::unify::ConsTerm( "__builtin_eval", pArithNext, pFreshJ ) );
+
+        // Explicit rebinds before the recursive call: `unify($fresh, $cur)`
+        // for `$arr` and every outerVar. This is deliberately NOT just
+        // "pass the same head-parameter object again unchanged" (the
+        // ordinary idiom an ordinary user-written recursive predicate's
+        // OWN parser output already relies on) -- seeing every OTHER
+        // synthesized value here (the loop-var slot, the index) needed a
+        // genuinely fresh variable to cross a recursive call safely, this
+        // desugaring plays it safe for `$arr`/outerVars too, rather than
+        // rely on this engine's `VarTerm::unifyVarTerm`'s `this==pOther`
+        // identical-object fast path (which records no `AssignmentId`
+        // binding at all -- see vault-unify-term-var.cpp) to somehow still
+        // make the value visible several recursion levels down. A plain
+        // `unify(fresh, cur)` goal, run once per iteration, forces a real,
+        // ordinary (non-identity) variable-to-variable binding through the
+        // established `UnifyBuiltinClause` path instead -- correctness here
+        // does not depend on any subtler property of how same-object head
+        // parameters behave across recursive calls.
+        vault::unify::VarTerm* pArrNext = new vault::unify::VarTerm();
+        lsFeRuleBody.push_back( new vault::unify::ConsTerm( "unify", pArrNext, pArrParamRule ) );
+        std::vector<vault::unify::VarTerm*> outerNext( mVars );
+        for( int i = 0; i < mVars; ++i ) {
+            outerNext[i] = new vault::unify::VarTerm();
+            lsFeRuleBody.push_back( new vault::unify::ConsTerm(
+                "unify", outerNext[i], subMapFeRule[freeVars[1 + i]] ) );
+        }
+
+        // __fe__N( $arrNext, $j, freshPlaceholder, outerNext... ) --
+        // freshPlaceholder is a BRAND NEW, never-bound var (see the
+        // RECURSION NOTE above): never $xSlot's own (by-now-bound) copy.
+        vault::unify::VarTerm* pFreshPlaceholder = new vault::unify::VarTerm();
+        vault::unify::AbstractTerm** ppFeRecurseArgs = new vault::unify::AbstractTerm*[3 + mVars];
+        ppFeRecurseArgs[0] = pArrNext;
+        ppFeRecurseArgs[1] = pFreshJ;
+        ppFeRecurseArgs[2] = pFreshPlaceholder;
+        for( int i = 0; i < mVars; ++i ) {
+            ppFeRecurseArgs[3 + i] = outerNext[i];
+        }
+        lsFeRuleBody.push_back( new vault::unify::ConsTerm( feAtom, 3 + mVars, ppFeRecurseArgs ) );
+        delete[] ppFeRecurseArgs;
+
+        vault::unify::Goal* pFeRuleGoal = new vault::unify::Goal( lsFeRuleBody.begin(), lsFeRuleBody.end() );
+        Clause* pFeRuleClause = new vault::unify::StandardClause( pFeHeadRule, pFeRuleGoal );
+
+        vault::unify::AbstractTerm** ppFeFactArgs = new vault::unify::AbstractTerm*[3 + mVars];
+        ppFeFactArgs[0] = new vault::unify::VarTerm();
+        ppFeFactArgs[1] = new vault::unify::VarTerm();
+        ppFeFactArgs[2] = new vault::unify::VarTerm();
+        for( int i = 0; i < mVars; ++i ) {
+            vault::unify::VarTerm* pFresh = new vault::unify::VarTerm();
+            pFresh->setOriginalVarName( freeVars[1 + i]->getOriginalVarName() );
+            ppFeFactArgs[3 + i] = pFresh;
+        }
+        vault::unify::ConsTerm* pFeHeadFact = new vault::unify::ConsTerm( feAtom, 3 + mVars, ppFeFactArgs );
+        delete[] ppFeFactArgs;
+        Clause* pFeFactClause = new vault::unify::StandardClause( pFeHeadFact, NULL );
+
+        spWorld->getRootState()->appendClause( spWorld, pFeRuleClause );
+        spWorld->getRootState()->appendClause( spWorld, pFeFactClause );
+
+        // g. body's scratch term trees have now been fully cloned into
+        // __feb__N's rule clause; free their structural nodes (VarTerms
+        // among them ARE freeVars, reused directly at the call site below,
+        // so leave those alone -- see deleteScratchTermTree()'s comment).
+        {
+            std::set<const vault::unify::AbstractTerm*> visited;
+            std::list<vault::unify::AbstractTerm*>::const_iterator it, itEnd = lsBodyTerms.end();
+            for( it = lsBodyTerms.begin(); it != itEnd; ++it ) {
+                deleteScratchTermTree( *it, visited );
+            }
+        }
+
+        // h. Call site: __fe__N( arrTerm, 0, pLoopVar, origOuterVars... ),
+        // spliced into the enclosing goal chain in place of the foreach
+        // statement -- pLoopVar (freeVars[0], the ORIGINAL enclosing
+        // VarTerm) is reused directly here, exactly like every other
+        // freeVars entry, keeping it reachable/owned (see the OWNERSHIP
+        // NOTE above); it starts this one call unbound, same as any other
+        // fresh loop variable.
+        vault::unify::ConsTerm* pZeroAtom = new vault::unify::ConsTerm( "0" );
+        vault::unify::AbstractTerm** ppCallArgs = new vault::unify::AbstractTerm*[3 + mVars];
+        ppCallArgs[0] = pArrTerm;
+        ppCallArgs[1] = pZeroAtom;
+        ppCallArgs[2] = pLoopVar;
+        for( int i = 0; i < mVars; ++i ) {
+            ppCallArgs[3 + i] = freeVars[1 + i];
+        }
+        vault::unify::ConsTerm* pCallTerm = new vault::unify::ConsTerm( feAtom, 3 + mVars, ppCallArgs );
+        delete[] ppCallArgs;
+
+        return pCallTerm;
+    }
+
+
+    /**
+     * `for ( $i = init; cond; $i = step ) { body }` (ROADMAP: language owner
+     * request "classic for/foreach loops", 2026-08-21). Same ownership
+     * discipline as `if`/`foreach` above (fresh cloneTermTree() substitution
+     * per synthesized clause), but simpler: only ONE synthesized auxiliary
+     * predicate is needed (no `feb`-style body-or-true wrapper -- body/cond
+     * failure STOPS the loop here, unlike `foreach`; SPEC.md documents both
+     * loop constructs' choice side by side):
+     *
+     *   __for__3( $i, V1..Vk ) {
+     *       clonedCond;
+     *       clonedBody...;
+     *       cut;                       // commit THIS iteration
+     *       $i2 = clonedStep;          // fresh $i2, NOT one of V1..Vk
+     *       $v1Next = V1; ...; $vkNext = Vk;  // rebind, see below
+     *       __for__3( $i2, $v1Next..$vkNext );
+     *   }
+     *   __for__3( $i, V1..Vk );         // fallback: cond false -> loop ends
+     *                                    // (also reached, via ordinary
+     *                                    // failure+backtracking, if cond
+     *                                    // or body ever fails)
+     *
+     * V1..Vk (every captured variable OTHER than $i) are genuinely
+     * invariant across the whole recursion, but are still NOT passed to
+     * the recursive call as the literal same head-parameter object again
+     * -- doing so would rely on `VarTerm::unifyVarTerm`'s `this==pOther`
+     * identical-object fast path (vault-unify-term-var.cpp), which
+     * records no `AssignmentId` binding at all, to still make the value
+     * visible several recursion levels down. `$v1Next = V1;` etc. (an
+     * ordinary `unify(...)` goal per variable, run once per iteration)
+     * forces a ordinary variable-to-variable binding through
+     * `UnifyBuiltinClause` instead -- see `foreach`'s own identical
+     * treatment of `$arr`/its own V1..Vm, section 12.3, for the full
+     * reasoning (this task's session report has the investigation).
+     *
+     * The `cut` right after clonedCond+clonedBody mirrors `foreach`'s own
+     * `__fe__N` cut placement (right after the goals that must succeed for
+     * this iteration to "count", before the step+recursive call), for the
+     * SAME two reasons: (a) WITHOUT it, once the loop eventually ends and
+     * the rest of the enclosing query runs to completion, this engine's
+     * exhaustive all-solutions backtracking would ALSO retry THIS call's
+     * own fallback fact as a sibling alternative -- once per iteration
+     * already passed through -- printing everything after the loop once
+     * per iteration instead of once total (the exact "soft-if" duplicate-
+     * output bug section 8/10 document for the pre-cut `if`); (b) it also
+     * commits `for` to cond/body's FIRST solution each iteration, matching
+     * `if`'s own commit-to-first-solution semantics, rather than letting a
+     * non-deterministic cond/body multiply the recursion. Crucially this
+     * does NOT weaken "body failure stops the loop": cut is only reached
+     * once cond+body have ALREADY succeeded for this call -- a failing
+     * body never reaches it, and the whole rule-clause candidate fails
+     * exactly as it would without the cut, falling back to the fallback
+     * fact and ending the loop.
+     *
+     * $i is the for-header's own control variable (`initAssign`'s LHS),
+     * force-included as the FIRST var-collection root -- guaranteeing
+     * freeVars[0]==$i by construction (collectVarTermsOrdered's dedup means
+     * a later reference to the same VarTerm, e.g. from cond, is not added
+     * again) -- so it always has a head-parameter slot, and so the
+     * recursive call can unambiguously replace exactly that ONE slot with
+     * $i2 while carrying every other captured variable through via its
+     * own rebind (see below).
+     *
+     * The step value is handled specially: `stepAssign` as WRITTEN
+     * ("$i = $i + 1") would, if cloned verbatim like cond/body, produce
+     * `__builtin_eval(__builtin_arith("+", freshI, "1"), freshI)` -- binding
+     * freshI (already bound, from this call's own head-parameter
+     * unification, to THIS iteration's value V) to V+1 AGAIN, which never
+     * unifies (V+1 != V). Instead, only the step's RHS EXPRESSION
+     * (`stepAssign.rhs.rhs.second`, e.g. just "$i + 1") is built and cloned
+     * via the SAME per-clause substitution as cond/body (so any "$i" within
+     * it correctly reads the CURRENT iteration's fresh value), and its
+     * result is assigned to a BRAND NEW fresh local $i2 (never one of
+     * V1..Vk) -- exactly mirroring `foreach`'s `$j = $i + 1` step, and
+     * sidestepping the double-occurrence problem entirely.
+     */
+    vault::unify::AbstractTerm* operator()( const ForStatementInput& forStatementInput ) const
+    {
+        // a. The control variable, from the init assignment's LHS, built in
+        // the enclosing scope (same object as every other reference to the
+        // same name elsewhere in this clause/query). Documented assumption
+        // (SPEC.md): a `$name` variable; not enforced by the grammar.
+        vault::unify::AbstractTerm* pForVarRaw = (*this)( forStatementInput.initAssign.rhs.atilhs );
+        vault::unify::VarTerm* pForVar = dynamic_cast<vault::unify::VarTerm*>( pForVarRaw );
+        if( !pForVar ) {
+            VAULT_UNIFY_DI( ALWAYS, "for: init clause's left-hand side \"%s\" is not a $-variable; using a fresh variable instead.\n",
+                pForVarRaw->toString().c_str() );
+            pForVar = new vault::unify::VarTerm();
+        }
+
+        // b. The init assignment itself ($i = E0), run ONCE in the
+        // enclosing scope, right before the loop starts (any pre-goals, and
+        // the assignment goal itself, land in m_lsTerms via `this` factory).
+        vault::unify::AbstractTerm* pInitGoal = (*this)( forStatementInput.initAssign );
+        m_lsTerms.push_back( pInitGoal );
+
+        // c. cond/body/step, all built ONCE in the enclosing scope -- cond
+        // and step get their own scratch pre-goal lists (mirroring `if`'s
+        // cond), since they are cloned into, and re-run fresh by, EVERY
+        // iteration of the synthesized clause; body reuses createGoal()
+        // exactly like `if`'s body.
+        std::list<vault::unify::AbstractTerm*> lsCondPreGoals;
+        AnyTermFactory condFactory( m_clauseContext, lsCondPreGoals );
+        vault::unify::AbstractTerm* pCondTerm = condFactory( forStatementInput.condGoal );
+
+        std::list<vault::unify::AbstractTerm*> lsBodyTerms;
+        (void) m_clauseContext.m_context.createGoal(
+            m_clauseContext, forStatementInput.body, lsBodyTerms );
+
+        std::list<vault::unify::AbstractTerm*> lsStepPreGoals;
+        AnyTermFactory stepFactory( m_clauseContext, lsStepPreGoals );
+        vault::unify::AbstractTerm* pStepValueTerm = forStatementInput.stepAssign.rhs.rhs
+            ? stepFactory( forStatementInput.stepAssign.rhs.rhs.get().second )
+            // Defensive fallback if the step clause has no top-level '='
+            // (malformed for-header; not exercised by any test) -- treat
+            // the whole clause as the "next value" expression directly
+            // rather than crash.
+            : stepFactory( forStatementInput.stepAssign );
+
+        // d. auxRuleRoots: cond+body, in order -- cloned-and-emitted
+        // verbatim as this synthesized clause's own goal statements (step
+        // is handled specially below, never emitted verbatim).
+        std::vector<const vault::unify::AbstractTerm*> auxRuleRoots;
+        {
+            std::list<vault::unify::AbstractTerm*>::const_iterator it, itEnd;
+            for( it = lsCondPreGoals.begin(), itEnd = lsCondPreGoals.end(); it != itEnd; ++it ) {
+                auxRuleRoots.push_back( *it );
+            }
+        }
+        auxRuleRoots.push_back( pCondTerm );
+        {
+            std::list<vault::unify::AbstractTerm*>::const_iterator it, itEnd;
+            for( it = lsBodyTerms.begin(), itEnd = lsBodyTerms.end(); it != itEnd; ++it ) {
+                auxRuleRoots.push_back( *it );
+            }
+        }
+
+        // Free variables: pForVar is force-included FIRST (guaranteeing
+        // freeVars[0]==pForVar), then everything reachable from
+        // auxRuleRoots (cond+body) and from step's own pre-goals/value.
+        std::vector<const vault::unify::AbstractTerm*> varRoots;
+        varRoots.push_back( pForVar );
+        {
+            std::vector<const vault::unify::AbstractTerm*>::const_iterator it, itEnd = auxRuleRoots.end();
+            for( it = auxRuleRoots.begin(); it != itEnd; ++it ) {
+                varRoots.push_back( *it );
+            }
+        }
+        {
+            std::list<vault::unify::AbstractTerm*>::const_iterator it, itEnd;
+            for( it = lsStepPreGoals.begin(), itEnd = lsStepPreGoals.end(); it != itEnd; ++it ) {
+                varRoots.push_back( *it );
+            }
+        }
+        varRoots.push_back( pStepValueTerm );
+
+        std::vector<vault::unify::VarTerm*> freeVars; // freeVars[0] == pForVar, by construction.
+        {
+            std::set<const vault::unify::AbstractTerm*> visited;
+            std::vector<const vault::unify::AbstractTerm*>::const_iterator it, itEnd = varRoots.end();
+            for( it = varRoots.begin(); it != itEnd; ++it ) {
+                collectVarTermsOrdered( *it, visited, freeVars );
+            }
+        }
+        const int nVars = (int) freeVars.size(); // always >= 1 (pForVar itself)
+
+        vault::unify::Atom forAtom( m_clauseContext.nextAnonClauseName( "for" ) );
+        WorldPtr spWorld( m_clauseContext.m_context.getWorld() );
+
+        // e. Rule clause: its own fresh substitution.
+        std::map<const vault::unify::VarTerm*, vault::unify::VarTerm*> subMapRule;
+        vault::unify::AbstractTerm** ppHeadArgsRule = new vault::unify::AbstractTerm*[nVars];
+        for( int i = 0; i < nVars; ++i ) {
+            vault::unify::VarTerm* pFresh = new vault::unify::VarTerm();
+            pFresh->setOriginalVarName( freeVars[i]->getOriginalVarName() );
+            subMapRule[freeVars[i]] = pFresh;
+            ppHeadArgsRule[i] = pFresh;
+        }
+        vault::unify::ConsTerm* pHeadRule = new vault::unify::ConsTerm( forAtom, nVars, ppHeadArgsRule );
+        delete[] ppHeadArgsRule;
+
+        std::list<const vault::unify::AbstractTerm*> lsClonedRuleBody;
+        {
+            std::vector<const vault::unify::AbstractTerm*>::const_iterator it, itEnd = auxRuleRoots.end();
+            for( it = auxRuleRoots.begin(); it != itEnd; ++it ) {
+                lsClonedRuleBody.push_back( vault::unify::cloneTermTree( *it, subMapRule ) );
+            }
+        }
+
+        // Commit THIS iteration once cond+body have both succeeded --
+        // mirrors `foreach`'s own `__fe__N` cut placement exactly (right
+        // after the goals that must succeed for this iteration to
+        // "count", before the step+recursive call), and for the SAME two
+        // reasons: (a) WITHOUT it, after the loop eventually ends (however
+        // many iterations later) and the rest of the enclosing query runs
+        // to completion, this engine's exhaustive backtracking search would
+        // ALSO retry THIS call's own fallback fact as a sibling alternative
+        // -- once per iteration already passed through -- printing
+        // everything after the `for` loop once per iteration instead of
+        // once total (the exact "soft-if" duplicate-output bug section 8/10
+        // document for the pre-cut `if`); (b) it also commits `for` to
+        // cond/body's FIRST solution each iteration, matching `if`'s own
+        // commit-to-first-solution semantics, rather than letting a
+        // non-deterministic cond/body multiply the recursion. Crucially
+        // this does NOT weaken "body failure stops the loop": cut is only
+        // ever reached once cond+body have ALREADY succeeded for this
+        // call -- if body fails, execution never reaches this cut at all,
+        // and the whole rule-clause candidate fails exactly as before,
+        // falling back to the fallback fact and ending the loop.
+        lsClonedRuleBody.push_back( new vault::unify::ConsTerm( "__builtin_cut" ) );
+
+        // Step: clone pStepValueTerm using the SAME subMapRule (so any "$i"
+        // within it reads THIS iteration's fresh value), then assign the
+        // result to a BRAND NEW fresh local $i2 (see the file comment
+        // above for why this must not reuse subMapRule's mapping of
+        // freeVars[0]).
+        vault::unify::AbstractTerm* pClonedStep = vault::unify::cloneTermTree( pStepValueTerm, subMapRule );
+        vault::unify::VarTerm* pFreshI2 = new vault::unify::VarTerm();
+        pFreshI2->setOriginalVarName( m_clauseContext.nextAnonVarName() );
+        const vault::unify::ConsTerm* pClonedStepCons = dynamic_cast<const vault::unify::ConsTerm*>( pClonedStep );
+        bool stepIsArith = pClonedStepCons && 3==pClonedStepCons->getArity()
+            && pClonedStepCons->getName().value() == "__builtin_arith";
+        vault::unify::ConsTerm* pStepAssignGoal = new vault::unify::ConsTerm(
+            stepIsArith ? "__builtin_eval" : "unify", pClonedStep, pFreshI2 );
+        lsClonedRuleBody.push_back( pStepAssignGoal );
+
+        // Explicit rebinds for every OTHER captured var before the
+        // recursive call -- same reasoning as `foreach`'s own `$arr`/
+        // outerVar rebinds above: rather than pass subMapRule[freeVars[i]]
+        // (the SAME head-parameter object) unchanged into the recursive
+        // call -- which would rely on `VarTerm::unifyVarTerm`'s
+        // `this==pOther` identical-object fast path recording no
+        // `AssignmentId` binding at all (vault-unify-term-var.cpp) to
+        // still make the value visible several recursion levels down --
+        // force a genuine, ordinary variable-to-variable `unify(fresh,
+        // cur)` binding through `UnifyBuiltinClause` instead.
+        std::vector<vault::unify::VarTerm*> outerNext( nVars );
+        for( int i = 1; i < nVars; ++i ) {
+            outerNext[i] = new vault::unify::VarTerm();
+            lsClonedRuleBody.push_back( new vault::unify::ConsTerm(
+                "unify", outerNext[i], subMapRule[freeVars[i]] ) );
+        }
+
+        // Recursive call: $i2 in place of freeVars[0] (pForVar)'s fresh
+        // slot; every other captured var carried through via outerNext.
+        vault::unify::AbstractTerm** ppRecurseArgs = new vault::unify::AbstractTerm*[nVars];
+        ppRecurseArgs[0] = pFreshI2;
+        for( int i = 1; i < nVars; ++i ) {
+            ppRecurseArgs[i] = outerNext[i];
+        }
+        lsClonedRuleBody.push_back( new vault::unify::ConsTerm( forAtom, nVars, ppRecurseArgs ) );
+        delete[] ppRecurseArgs;
+
+        vault::unify::Goal* pRuleGoal = new vault::unify::Goal( lsClonedRuleBody.begin(), lsClonedRuleBody.end() );
+        Clause* pRuleClause = new vault::unify::StandardClause( pHeadRule, pRuleGoal );
+
+        // f. Fallback fact: its OWN, independent fresh substitution (must
+        // not alias the rule clause's head vars).
+        vault::unify::AbstractTerm** ppHeadArgsFact = new vault::unify::AbstractTerm*[nVars];
+        for( int i = 0; i < nVars; ++i ) {
+            vault::unify::VarTerm* pFresh = new vault::unify::VarTerm();
+            pFresh->setOriginalVarName( freeVars[i]->getOriginalVarName() );
+            ppHeadArgsFact[i] = pFresh;
+        }
+        vault::unify::ConsTerm* pHeadFact = new vault::unify::ConsTerm( forAtom, nVars, ppHeadArgsFact );
+        delete[] ppHeadArgsFact;
+        Clause* pFactClause = new vault::unify::StandardClause( pHeadFact, NULL );
+
+        spWorld->getRootState()->appendClause( spWorld, pRuleClause );
+        spWorld->getRootState()->appendClause( spWorld, pFactClause );
+
+        // g. Scratch trees (cond's/step's own pre-goals, cond, body, and
+        // the step-value expression) have now all been cloned; free their
+        // structural nodes (freeVars' VarTerms are reused directly at the
+        // call site below, left alone).
+        {
+            std::set<const vault::unify::AbstractTerm*> visited;
+            std::vector<const vault::unify::AbstractTerm*>::const_iterator it, itEnd = auxRuleRoots.end();
+            for( it = auxRuleRoots.begin(); it != itEnd; ++it ) {
+                deleteScratchTermTree( *it, visited );
+            }
+            std::list<vault::unify::AbstractTerm*>::const_iterator it2, it2End;
+            for( it2 = lsStepPreGoals.begin(), it2End = lsStepPreGoals.end(); it2 != it2End; ++it2 ) {
+                deleteScratchTermTree( *it2, visited );
+            }
+            deleteScratchTermTree( pStepValueTerm, visited );
+        }
+
+        // h. Call site: __for__N( origFreeVars... ) -- freeVars[0] is
+        // pForVar, already bound by the init pre-goal pushed above.
+        vault::unify::AbstractTerm** ppCallArgs = new vault::unify::AbstractTerm*[nVars];
+        for( int i = 0; i < nVars; ++i ) {
+            ppCallArgs[i] = freeVars[i];
+        }
+        vault::unify::ConsTerm* pCallTerm = new vault::unify::ConsTerm( forAtom, nVars, ppCallArgs );
+        delete[] ppCallArgs;
+
+        return pCallTerm;
+    }
+
+
+    vault::unify::AbstractTerm* operator()( const ConsTermInput& consTermInput ) const
     {
         vault::unify::AbstractTerm* out_pAbstractTerm = NULL;
         std::string consTermInputName = consTermInput.atom.name;

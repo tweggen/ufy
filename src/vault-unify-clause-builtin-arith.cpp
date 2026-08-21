@@ -405,5 +405,117 @@ CompareBuiltinClause::CompareBuiltinClause()
 }
 
 
+namespace {
+
+/**
+ * ROADMAP ("for"/"foreach" loops + ranges, language owner request
+ * 2026-08-21): cap on the number of elements a solve-time (variable-bounds)
+ * range may expand to -- mirrors the SAME cap the parser's eager,
+ * literal-bounds desugaring enforces (parseRangeLiteralInt64()/
+ * RANGE_MAX_ELEMENTS, vault-unify-parser.cpp), duplicated locally rather
+ * than shared across translation units (this module's established per-file
+ * local-constant style).
+ */
+const int64_t RANGE_BUILTIN_MAX_ELEMENTS = 100000;
+
+} // anonymous namespace
+
+
+/**
+ * `__builtin_range($a, $b, $out)` -- see vault-unify-clause-builtin.hpp's
+ * class comment. Reuses evaluateArith() (this file, above) for both bounds,
+ * so a bound may be a bare integer atom, a VarTerm bound to one, or a
+ * `__builtin_arith` expression -- exactly the same operand resolution
+ * `__builtin_eval`/`__builtin_compare` use.
+ */
+vault::unify::Clause::UnificationState RangeBuiltinClause::startUnification(
+        Engine* pEngine,
+        UnifyContext* pUCStackTop,
+        UnifyContext* pUCOriginal,
+        UnifyContext* /*pUCCand*/,
+        const Goal*& out_pGoal,
+        ClauseContinuationContext*& /*inout_pCCC*/ ) const
+{
+    out_pGoal = NULL;
+
+    const ConsTerm* pGoalTerm =
+        dynamic_cast<const ConsTerm*>(
+            pUCStackTop->m_csTermToUnify.getAbstractTerm() );
+    if( !pGoalTerm ) {
+        pUCStackTop->unificationDone( UnifyNot, NULL );
+        return UnificationOK;
+    }
+
+    if( 3 != pGoalTerm->getArity() || pGoalTerm->getName() != leftHandTerm()->getName() ) {
+        pUCStackTop->unificationDone( UnifyNot, NULL );
+        return UnificationOK;
+    }
+
+    int64_t a, b;
+    std::string strError;
+    if( !evaluateArith( pUCStackTop, pUCOriginal, pGoalTerm->getTermAt( 0 ), a, strError )
+     || !evaluateArith( pUCStackTop, pUCOriginal, pGoalTerm->getTermAt( 1 ), b, strError ) ) {
+        VAULT_UNIFY_DI( ALWAYS, "__builtin_range: %s\n", strError.c_str() );
+        pUCStackTop->unificationDone( UnifyError, NULL );
+        return UnificationError;
+    }
+
+    int64_t count = (b>=a) ? (b - a + 1) : 0;
+    if( count > RANGE_BUILTIN_MAX_ELEMENTS ) {
+        VAULT_UNIFY_DI( ALWAYS, "__builtin_range: %lld..%lld exceeds the %lld-element cap.\n",
+            (long long) a, (long long) b, (long long) RANGE_BUILTIN_MAX_ELEMENTS );
+        pUCStackTop->unificationDone( UnifyError, NULL );
+        return UnificationError;
+    }
+
+    // Fresh result array: a genuinely new allocation at solve time, adopted
+    // via UnifyContext::adoptTerm() exactly like ArithEvalBuiltinClause's
+    // evaluated result above (its whole tree, including every element atom,
+    // is swept via collectTermTree() in ~UnifyContext() -- see that
+    // destructor's comment, include/vault-unify.hpp).
+    ArrayTerm* pResultArray = new ArrayTerm();
+    for( int64_t i = 0; i < count; ++i ) {
+        char buf[32];
+        snprintf( buf, sizeof(buf), "%lld", (long long)(a + i) );
+        pResultArray->append( new vault::unify::ConsTerm( buf ) );
+    }
+    AbstractTerm* pAdoptedArray = pUCStackTop->adoptTerm( pResultArray );
+
+    const AbstractTerm* pOutTerm = pGoalTerm->getTermAt( 2 );
+    UnifyResult unifyResult = pAdoptedArray->unifyTerm(
+        pEngine,
+        pUCStackTop,
+        pUCOriginal,
+        pUCOriginal,
+        pOutTerm );
+
+    pUCStackTop->unificationDone( unifyResult, NULL );
+
+    if( (int) unifyResult < 0 ) {
+        return UnificationError;
+    } else {
+        return UnificationOK;
+    }
+}
+
+
+// See OutputBuiltinClause::~OutputBuiltinClause() (vault-unify-clause-builtin-output.cpp)
+// for why the head term is not freed here.
+RangeBuiltinClause::~RangeBuiltinClause()
+{
+}
+
+
+RangeBuiltinClause::RangeBuiltinClause()
+        : SimpleBuiltinClause(
+             new vault::unify::ConsTerm( "__builtin_range",
+                 new vault::unify::VarTerm(),
+                 new vault::unify::VarTerm(),
+                 new vault::unify::VarTerm() ) )
+{
+    setDebugLocation( "file://" __FILE__, __LINE__ );
+}
+
+
 };
 };

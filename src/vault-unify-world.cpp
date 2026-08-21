@@ -174,6 +174,11 @@ void World::init()
     // ROADMAP Phase 2: Arithmetic and comparison builtins (SPEC.md).
     m_rootState.appendClause( spWorld, new ArithEvalBuiltinClause() );
     m_rootState.appendClause( spWorld, new CompareBuiltinClause() );
+    // ROADMAP ("for"/"foreach" loops + ranges, language owner request
+    // 2026-08-21, SPEC.md): what `foreach`'s synthesized clause and a
+    // variable-bounds range desugar to, respectively.
+    m_rootState.appendClause( spWorld, new ArrayAtBuiltinClause() );
+    m_rootState.appendClause( spWorld, new RangeBuiltinClause() );
 }
 
 

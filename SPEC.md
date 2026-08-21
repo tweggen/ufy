@@ -169,6 +169,12 @@ compiles to (one of the most important **QUIRK**s here, section 9).
 **Prefix `!`**: `m_ruleSingleGoal %= -qi::char_('!') >> m_ruleInfixTerm;` —
 applies to whatever the rest of the statement evaluates to (sections 4, 7).
 
+**`for`/`foreach` statements** (language owner request, 2026-08-21; section
+12): `m_ruleForeachStatement`/`m_ruleForStatement`, tried before
+`m_ruleIfStatement`/`m_ruleSingleGoal` in `m_ruleAnyStatement` — the same
+kind of structural/positional reservation `if` already has (section 10),
+not by exact name+arity like `cut`/`query`.
+
 ---
 
 ## 3. Terms
@@ -771,7 +777,7 @@ solutions); (d) cut at query top level (`query { c($x); cut; print($x);
 
 ## 9. Builtins
 
-All six appended to the root state, in this order, before any user clause
+All eight appended to the root state, in this order, before any user clause
 (`World::init`, `src/vault-unify-world.cpp`).
 
 **`unify($a, $b)`** — `UnifyBuiltinClause`
@@ -843,6 +849,36 @@ numeric (int64) comparison if both resolved sides are integers,
 lexicographic string comparison otherwise. Unlike every builtin above, this
 one can genuinely fail *without* being a syntax/name/arity mismatch — a
 false comparison is `UnifyNot`, same as any other failed goal.
+
+**`__builtin_array_at($arr, $idx, $out)`** — `ArrayAtBuiltinClause`
+(`src/vault-unify-clause-builtin-array.cpp`, "for"/"foreach" loops, language
+owner request 2026-08-21). What `foreach`'s synthesized loop clause's own
+`__builtin_array_at($arr, $i, $x);` goal resolves (section 12) — never
+written directly in a user program. Head declared arity 3, checked
+manually. Argument 0 must resolve (`AbstractTerm::getBoundTerm`) to an
+`ArrayTerm` (anything else, including unbound, is a silent `UnifyNot` —
+mirroring `__builtin_member_deref`'s non-map left side); argument 1 must
+resolve to a bound, 0-arity, integer-parseable `ConsTerm` atom (otherwise a
+`UnifyError`); an out-of-range index (negative, or `>=` the array's length)
+is an ordinary `UnifyNot` — this is `foreach`'s own loop-termination signal.
+On a hit, unifies the element against argument 2.
+
+**`__builtin_range($a, $b, $out)`** — `RangeBuiltinClause`
+(`src/vault-unify-clause-builtin-arith.cpp`, "for"/"foreach" loops + ranges,
+language owner request 2026-08-21). What a range with a non-literal bound
+desugars to (section 12.3) — a range with both bounds literal is expanded
+eagerly at parse time instead and never reaches this builtin. Resolves both
+bounds via `evaluateArith()` (this file's own anonymous namespace, shared
+with `__builtin_eval`/`__builtin_compare`) — so a bound may be a bare
+integer atom, a variable bound to one, or itself a `__builtin_arith`
+expression; an unbound/non-numeric bound is a `UnifyError`. Builds a fresh
+`ArrayTerm` of one 0-arity `ConsTerm` atom per integer in `[a, b]`
+(inclusive; empty if `b < a`), capped at 100000 elements (a `UnifyError`
+beyond — unlike the parser's own eager literal-bounds path, which silently
+truncates instead, since there is no clean way to fail a parse-time
+desugaring the way a builtin can return `UnifyError`), adopted via
+`UnifyContext::adoptTerm()` exactly like `__builtin_eval`'s/`findall`'s own
+fresh solve-time results, and unified against argument 2.
 
 ---
 
@@ -916,6 +952,68 @@ All verified by direct code reading, collected here for quick reference.
   `UnifyLast` wherever it's read, but no `unify*Term` implementation ever
   returns it (section 6) — reserved for functionality that doesn't exist
   yet.
+- **`for`/`foreach` are reserved statement keywords** (section 12), the same
+  kind of reservation `if` already has (section 2): structural/positional,
+  by grammar ordering (`m_ruleForeachStatement`/`m_ruleForStatement` are
+  tried before `m_ruleSingleGoal` in `m_ruleAnyStatement`), **not** by exact
+  name+arity like `cut`/`query`. A goal statement that merely happens to
+  call a same-named predicate but does not match the full loop-header-plus-
+  `{ }`-body shape simply fails to match here and backtracks to
+  `m_ruleSingleGoal`, parsing as an ordinary call. A clause **head** named
+  `for(...)`/`foreach(...)` is entirely unaffected either way —
+  `m_ruleAnyStatement` is never reached from `m_ruleClause`, which parses a
+  clause head via `m_ruleConsTerm` directly, exactly as already documented
+  for `query`'s own reservation.
+- `foreach`'s loop-variable position and `for`'s init/step assignment LHS
+  are conventionally, but **not** grammatically enforced, a `$name`
+  variable (section 12) — `m_ruleConsTerm`/`m_ruleSingleGoal` accept
+  anything their own grammar does. If the actual parsed term is not a
+  `VarTerm`, `AnyTermFactory` logs and substitutes a fresh, unbound variable
+  instead of crashing; the original (now-orphaned) term is not further
+  leak-hardened — an unsupported shape, not exercised by any test.
+- A classic `for` loop's synthesized clause commits to `cond`+`body`'s
+  first solution each iteration via its own `cut` (section 12.2) — the
+  same commit-once-per-iteration discipline `if`/`foreach` use, and for the
+  same reason: without it, this engine's exhaustive all-solutions
+  backtracking would also retry the loop's fallback fact for every
+  already-completed iteration once the loop ends, printing everything
+  after the loop multiple times (the pre-`cut`-era "soft if" bug, directly
+  above). `for` deliberately still has **no** `foreach`-style `feb`
+  body-or-true wrapper, so a failing `cond`/`body` genuinely stops the loop
+  (section 12.2) — the `cut` commits a *successful* iteration; it does not
+  cushion a failing one.
+- **Significant, engine-level finding (not specific to loops) uncovered
+  while implementing section 12, verified independently by two separate
+  investigations**: reusing the exact same `VarTerm*` C++ object as both a
+  clause's head parameter and, *unchanged*, as an argument to that SAME
+  clause's own recursive self-call — the ordinary way any hand-written
+  recursive predicate threads an invariant argument through recursion,
+  e.g. `p(Arr, I) :- ..., J is I+1, p(Arr, J).` with `Arr` reused — does
+  **not** actually propagate that value past the *first* recursive call.
+  A second (or deeper) invocation sees the variable as **unbound**. The
+  mechanism: `VarTerm::unifyVarTerm`'s `if( this == pOther ) return
+  UnifyLast;` fast path (`src/vault-unify-term-var.cpp`) fires on raw
+  pointer identity alone (no scope comparison) and — unlike the ordinary
+  variable-unification path just below it — never calls `bindVarBinding`/
+  `bindVarBindingUsing`, so **no `AssignmentId` entry is ever written**.
+  Since every clause-try gets its own fresh `UnifyContext` (`pUCCand`,
+  `SolveJob::performSlice()`, `src/vault-unify-solvejob.cpp`) and a
+  variable's binding key is `AssignmentId(uidScope, varTermId)` with
+  `uidScope` tied to the ACTIVATION that introduced it (section 6) —
+  `UnifyContext::findVarBinding` (`src/vault-unify-unifycontext.cpp`) walks
+  the parent chain but searches for one fixed, exact `(uidScope, varId)`
+  key at every level; an entry recorded under an ANCESTOR invocation's own
+  `uidScope` can never satisfy a lookup keyed by a DESCENDANT invocation's
+  different `uidScope`, no matter how far the walk goes. `foreach`/`for`
+  (section 12) do **not** rely on this pattern precisely because of this —
+  every value threaded through either construct's recursive call (`$arr`,
+  every captured `V1..Vk`, even though they are genuinely invariant) is
+  rebound via an explicit `unify(freshVar, current)` goal each iteration
+  instead, forcing the ordinary (non-identity, scope-bridging) unification
+  path. This finding is not otherwise acted on here (fixing it generally is
+  out of scope for this task) but is recorded because it may affect
+  ordinary hand-written recursive predicates elsewhere in this module —
+  worth a dedicated look in a later ROADMAP phase.
 
 ---
 
@@ -1126,3 +1224,304 @@ printed as an array in solution (== clause definition) order; (e) findall
 over an undefined predicate — zero solutions, an empty array, not a
 failure; (f) a findall result unified against an equivalent array literal,
 element by element.
+
+---
+
+## 12. Loops and ranges (language owner request, 2026-08-21)
+
+The language owner requested a classic `for` loop, `foreach`, and — as
+stage 1 of a wider constraint-domain wish — range values as data. All three
+are desugars performed by `AnyTermFactory` (`src/vault-unify-parser.cpp`),
+following the exact same ownership discipline the `if` desugar established
+(section 4): any term tree spliced into a clause permanently appended to
+`World`'s root `ExecutionState` must not alias a `VarTerm` with the
+enclosing, per-query/-clause-lifetime term tree (`World::~World()`/
+`~SolveJob()`'s comments) — so every synthesized clause below gets its own
+fresh substitution via `cloneTermTree()`, exactly like `if`'s rule/fact
+pair.
+
+### 12.1 Ranges: `<a>..<b>`
+
+**Grammar**: `m_ruleRange %= (m_ruleAdditive >> -(qi::lit("..") >>
+m_ruleAdditive));`, inserted between `m_ruleAdditive` and `m_ruleComparison`
+(so `m_ruleComparison` now operates on `m_ruleRange`'s result instead of
+`m_ruleAdditive`'s directly) — a range's bounds are themselves
+additive-level expressions (may be arithmetic, e.g. `1+1..5`), and since
+this level sits below every other precedence level, a range is usable
+anywhere any other `AnyTerm` is, not only inside `foreach`'s header. `".."`
+is a plain two-character `qi::lit` token contributing no attribute of its
+own; nothing else in this grammar ever uses a bare `.`, so there is no
+longest-match ambiguity to resolve (unlike `==`/`!=`/`<=`/`>=` vs. `<`/`>`
+just above it).
+
+**Simplest honest rule (v1 design choice)**: a range is **not** a new
+persistent term kind. `AnyTermFactory::operator()(const RangeTermInput&)`
+builds both bounds first; if BOTH turn out to be literal, 0-arity `ConsTerm`
+atoms whose text parses fully as an int64, the range is expanded **eagerly,
+right here at parse time**, into a plain `ArrayTerm` literal —
+indistinguishable from writing the array out by hand (`1..3` **is**
+`[1, 2, 3]`, nothing more; the two now-redundant scratch bound terms are
+deleted directly, mirroring the orphaned-wrapper-`ConsTerm` deletion the
+`findall` desugar already does, section 11.2). This eager expansion is
+capped at 100000 elements (`RANGE_MAX_ELEMENTS`,
+`src/vault-unify-parser.cpp`), silently truncated (logged) beyond — there is
+no clean way to fail a parse-time desugaring the way a builtin can return
+`UnifyError`.
+
+Otherwise (either bound is a variable, or itself an arithmetic expression)
+the range is genuinely dynamic: a fresh anonymous var is substituted for it
+(mirroring `->`'s own pre-goal pattern, section 4) and a
+`__builtin_range(lhs, rhs, freshVar)` pre-goal is pushed onto the enclosing
+statement's own term list, resolved at **solve time** by `RangeBuiltinClause`
+(section 9) — which builds the same kind of `ArrayTerm`, capped at the same
+100000 elements, but as a genuine `UnifyError` beyond the cap (a builtin
+*can* fail the goal; the parser cannot). Consequence of "a range is usable
+anywhere any other AnyTerm is": `1..$n` works as a plain data expression
+too, not only inside `foreach ( $i : 1..$n )`.
+
+### 12.2 `for ( $i = init; cond; $i = step ) { body }`
+
+**Grammar**: all three header pieces reuse `m_ruleSingleGoal` (the very
+same production a bare goal statement, or `if`'s condition, already uses) —
+`m_ruleForStatement %= qi::lit("for") >> qi::lit("(") >> m_ruleSingleGoal >>
+';' >> m_ruleSingleGoal >> ';' >> m_ruleSingleGoal >> qi::lit(")") >>
+qi::lit("{") >> m_ruleGoal >> qi::lit("}");`. `initAssign`/`stepAssign` are
+conventionally, but **not** grammatically enforced, a `$var = expr`
+assignment (see section 10's quirk on this).
+
+**Desugaring** (`AnyTermFactory::operator()(const ForStatementInput&)`):
+only **one** synthesized auxiliary predicate is needed (unlike `foreach`,
+section 12.3) — a rule clause and a fallback fact, exactly the same
+two-clause shape `if` uses:
+
+```
+__for__3( $i, V1..Vk ) {
+    clonedCond;
+    clonedBody...;
+    cut;                         // commit THIS iteration
+    $i2 = clonedStep;           // fresh $i2, NOT one of V1..Vk
+    $v1Next = V1; ...; $vkNext = Vk;   // rebind, see below
+    __for__3( $i2, $v1Next..$vkNext );
+}
+__for__3( $i, V1..Vk );         // fallback: cond false -> loop ends
+                                 // (also reached, via ordinary goal
+                                 // failure+backtracking, if cond or
+                                 // body ever fails)
+```
+
+`V1..Vk` (every captured variable OTHER than `$i`) are genuinely invariant
+across the whole recursion, but are still **not** passed to the recursive
+call as the literal same head-parameter object again — doing so would rely
+on `VarTerm::unifyVarTerm`'s `this==pOther` identical-object fast path
+(`src/vault-unify-term-var.cpp`) — which returns `UnifyLast` immediately
+**without recording any `AssignmentId` binding at all**, since both sides
+are literally the same pointer — to still make the value visible several
+recursion levels down. `$v1Next = V1;` etc. (an ordinary `unify(...)` goal
+per captured variable, run once per iteration — ordinary `=` between two
+non-arithmetic terms, section 4) forces a genuine, ordinary variable-to-
+variable binding through `UnifyBuiltinClause` instead, for every iteration
+— see `foreach`'s identical treatment of `$arr`/its own `V1..Vm` below for
+the full reasoning (this task's session report has the investigation this
+design choice is based on: a fresh, never-before-referenced variable linked
+to an existing one via ordinary unification always succeeds and is
+resolvable from any descendant `UnifyContext`, sidestepping any question of
+whether same-object reuse alone would also have worked here).
+
+The `cut` right after `clonedCond`+`clonedBody` mirrors `foreach`'s own
+`__fe__3` cut placement exactly (section 12.3) — right after the goals
+that must succeed for this iteration to "count", before the step and
+recursive call — for the SAME two reasons: (a) **without it**, once the
+loop eventually ends and the rest of the enclosing query runs to
+completion, this engine's exhaustive all-solutions backtracking would
+**also** retry THIS call's own fallback fact as a sibling alternative —
+once per iteration already passed through — printing everything after the
+`for` loop once per iteration instead of once total (the exact "soft-if"
+duplicate-output bug sections 8/10 document for the pre-`cut` `if`); (b) it
+also commits `for` to cond/body's FIRST solution each iteration, matching
+`if`'s own commit-to-first-solution semantics, rather than letting a
+non-deterministic cond/body multiply the recursion. Crucially this does
+**not** weaken "body failure stops the loop": `cut` is only ever reached
+once cond+body have ALREADY succeeded for this call — a failing body never
+reaches it, and the whole rule-clause candidate fails exactly as it would
+without the `cut`, falling back to the fallback fact and ending the loop.
+
+`$i` is the header's own control variable (`initAssign`'s LHS), force-
+included as the FIRST var-collection root — `collectVarTermsOrdered`'s
+dedup guarantees `freeVars[0] == $i` regardless of whether cond/body also
+reference it — so it always has a head-parameter slot, and the recursive
+call can unambiguously replace exactly that ONE slot with `$i2` while
+carrying every other captured variable (`V1..Vk`, every other free `VarTerm`
+of cond+body+step) through via its own rebind (above). The init assignment
+(`$i = init`) is
+built and run **once**, as an ordinary goal in the enclosing scope, right
+before the call site (mirroring how `foreach`'s `arrExpr` is evaluated once
+up front, section 12.3) — the call site is `__for__3( origV1..origVk )`,
+spliced into the enclosing goal chain in place of the `for` statement.
+
+**Step handling (the one subtlety)**: `stepAssign` as WRITTEN (`"$i = $i +
+1"`) would, if cloned verbatim like cond/body, produce
+`__builtin_eval(__builtin_arith("+", freshI, "1"), freshI)` — binding
+`freshI` (already bound, from this call's own head-parameter unification,
+to THIS iteration's value `V`) to `V+1` **again**, which never unifies
+(`V+1 != V`). Instead, only the step's RHS **expression**
+(`stepAssign.rhs.rhs.second`, e.g. just `"$i + 1"`) is built and cloned via
+the SAME per-clause substitution cond/body use (so any `$i` within it
+correctly reads the CURRENT iteration's fresh value), and its result is
+assigned to a BRAND NEW fresh local `$i2` (never one of `V1..Vk`) — via
+`__builtin_eval` if the cloned step expression is a `__builtin_arith` tree,
+else a plain `unify`, exactly mirroring the `=` desugar's own arithmetic-
+vs-plain decision (section 4.1). This sidesteps the double-occurrence
+problem entirely, and is the same trick `foreach`'s own `$j = $i + 1` step
+uses (section 12.3), spelled out by hand here since `for`'s step is
+user-written source, not synthesized.
+
+**Semantics decision — body/cond/step failure STOPS the loop**: no
+`feb`-style wrapper (contrast `foreach`, section 12.3) — a failing cond,
+body, or step goal fails the rule-clause candidate outright, backtracking
+straight to the fallback fact, ending the loop. This is the plain,
+uncushioned goal-failure behavior a classic `for` loop is given here
+deliberately — C has no notion of a loop body "failing" and continuing to
+the next iteration regardless, so failure-stops is the more honest
+reading for this construct (contrast `foreach`'s per-element,
+silent-failure-tolerant design, matched to the language's overall
+"failure is silent and doesn't necessarily propagate" character for
+per-element work). A `for` whose `cond` is false from the very first
+check runs its body zero times and the loop still succeeds once, exactly
+like `if`'s fallback when its own condition is false. The per-iteration
+`cut` added right after cond+body (above) does not change any of this —
+it only ever runs once cond+body have already succeeded.
+
+**Conformance**: `test/conformance/loops.ufy`'s `for` queries pin this —
+counting `0..3`, a `cond`-false-from-the-start loop (zero iterations), and
+a body failure stopping the loop partway through.
+
+### 12.3 `foreach ( $x : arrExpr ) { body }`
+
+**Grammar**: `m_ruleForeachStatement %= qi::lit("foreach") >> qi::lit("(")
+>> m_ruleConsTerm >> qi::lit(":") >> m_ruleAnyTerm >> qi::lit(")") >>
+qi::lit("{") >> m_ruleGoal >> qi::lit("}");` — the loop variable is parsed
+via `m_ruleConsTerm` (the same production every other bare `$name` variable
+reference in this grammar goes through), conventionally but not
+grammatically a `$`-prefixed variable (section 10); `arrExpr` is anything
+`m_ruleAnyTerm` accepts, including a range (section 12.1) — so
+`foreach ( $i : 1..5 )` and `foreach ( $x : someArrayVar )` are both just
+`arrExpr` instantiations of the same rule.
+
+**Desugaring** (`AnyTermFactory::operator()(const ForeachStatementInput&)`):
+TWO mutually-recursive auxiliary predicates are synthesized (unique names
+via `ClauseContext::nextAnonClauseName()`, e.g. `"__fe__3"`/`"__feb__3"`):
+
+```
+__fe__3( $arr, $i, $xSlot, V1..Vm ) {   // main loop
+    __builtin_array_at( $arr, $i, $xSlot ); // fails -> index out of bounds
+    __feb__3( $xSlot, V1..Vm );              // body-or-true, see below
+    cut;                                     // commit THIS iteration
+    $j = $i + 1;
+    $arrNext = $arr; $v1Next = V1; ...; $vmNext = Vm;  // rebind, see below
+    __fe__3( $arrNext, $j, $freshSlot, $v1Next..$vmNext ); // next iteration
+}
+__fe__3( $arr, $i, $xSlot, V1..Vm );    // fallback: index OOB -> loop ends
+
+__feb__3( $x, V1..Vm ) { clonedBody...; cut; }  // body-or-true, rule
+__feb__3( $x, V1..Vm );                          // body-or-true, fallback
+```
+
+`freeVars` = the free `VarTerm`s of (`$x`, `body`), with the loop variable
+`$x` FORCE-INCLUDED as `freeVars[0]` even if `body` never mentions it (the
+same "force-include as the first collection root" trick section 12.2's
+`for` uses for its own control variable) — `V1..Vm` = `freeVars[1..]`,
+every OTHER free variable. `$arr`/`$i` are BRAND NEW synthesized parameters
+(never part of the enclosing scope); `$xSlot` occupies the loop variable's
+own position (position 2) so the call site can legitimately pass the
+ORIGINAL enclosing `$x` there, keeping it reachable/owned — an early draft
+excluded `$x` from `__fe__3`'s parameters entirely, on the theory that it
+never needs to be threaded through the recursion (true — see below), which
+left it referenced from nowhere in the final term tree and leaked it; this
+was caught alongside the recursion bug below (this task's session report
+has both).
+
+**Two things must never be threaded unchanged through the recursive
+call** (both caught by hand-tracing against `VarTerm` unification, section
+6, before this ever reached CI — see this task's session report):
+
+1. **`$xSlot` itself** — it is rebound to a DIFFERENT array element every
+   iteration by `__builtin_array_at`, so the recursive call passes a
+   BRAND NEW, never-bound `$freshSlot` for that position instead of
+   `$xSlot`'s own (by-then-bound) copy. An early draft reused `$xSlot`
+   directly there, which broke the loop after its first element: the next
+   invocation's own `$xSlot` would already be bound to THIS element, so
+   its own `__builtin_array_at` would then try to bind an already-bound
+   variable to the NEXT element and fail outright (exactly like `for`'s
+   own `$i -> $i2` step, section 12.2, avoids the identical problem for
+   its own per-iteration-changing value).
+2. **`$arr` and `V1..Vm`** — even though these genuinely ARE invariant
+   (the same value every iteration), they are still not passed as the
+   literal same head-parameter object again. Doing so would rely on
+   `VarTerm::unifyVarTerm`'s `this==pOther` identical-object fast path
+   (`src/vault-unify-term-var.cpp`) — which returns `UnifyLast`
+   immediately **without recording any `AssignmentId` binding at all**,
+   since both sides are literally the same pointer — to still make the
+   value visible several recursion levels down. Rather than rely on that,
+   `$arrNext = $arr;` etc. (an ordinary `unify(...)` goal per captured
+   variable, run once per iteration — plain `=` between two
+   non-arithmetic terms, section 4) forces a genuine, ordinary
+   variable-to-variable binding through `UnifyBuiltinClause` instead —
+   a fresh, never-before-referenced variable linked to an existing one via
+   ordinary unification always succeeds and is resolvable from any
+   descendant `UnifyContext`, sidestepping any question of whether
+   same-object reuse alone would also have worked here.
+
+`arrExpr` is evaluated exactly
+**once**, in the enclosing scope (any of its own pre-goals — e.g. a nested
+`->`, or a variable-bounds range's `__builtin_range` pre-goal — land in the
+enclosing goal chain exactly once, before the loop starts) — unlike `if`'s
+`cond`, which is deliberately rebuilt/cloned fresh into the synthesized
+clause since it must re-run every iteration; `arrExpr` is a single, fixed
+value for the whole loop, evaluated once up front, like a classic
+for-each's collection expression.
+
+**Semantics decision — a body failure does NOT stop the loop**: it fails
+that one iteration silently and the loop **continues** (the RECOMMENDED
+default per this task's brief, matching the language's overall
+silent-failure character — contrast `for`'s deliberately different choice,
+section 12.2). This is exactly what `__feb__3` buys: WITHOUT it (body
+inlined directly into `__fe__3`'s own rule-clause), a failing body would
+fail `__fe__3`'s rule-clause candidate outright — no continuation would
+ever reach the recursive call — backtracking straight past it to
+`__fe__3`'s OWN fallback fact, i.e. STOPPING the loop (indistinguishable
+from "index out of bounds"). `__feb__3`'s own fallback fact absorbs exactly
+that failure (always succeeds trivially when its rule-clause — i.e. body —
+has no solution at all), so `__fe__3`'s rule-clause always reaches `cut`
+and the recursive step regardless of whether body succeeded.
+
+**Cut-interaction analysis** (verified against `SolveJob::performSlice()`,
+section 8's cut mechanism): the `cut` right after the `__feb__3` call
+commits `__fe__3`'s OWN clause choice for THIS call (rule vs. fallback) and
+every choice point to its LEFT within this one activation — which includes
+pruning `body`'s own remaining alternatives (via `__feb__3`'s own choice,
+still on the stack at that point) down to its first solution, standard cut
+semantics. Crucially it does **not** reach the recursive `__fe__3(...)` call
+written a few lines later: that call has not been pushed onto the
+`SolveContext` stack yet when this cut runs (`performSlice()`'s cut handling
+only ever invalidates `m_itNextChildClause` on contexts ALREADY on the
+stack, walking from the top down to and including THIS activation's own
+entry context — the context whose `m_itNextChildClause` enumerates
+`__fe__3`'s own alternative clauses, i.e. the one that pushed the very first
+body term of THIS invocation) — so the recursive call, made after the cut
+returns control to the (unaffected) continuation, gets its own, entirely
+unaffected, fresh entry context and fresh choice points once its turn
+comes. This is why the recursion is not itself pruned/truncated by the
+per-iteration cut — see this task's session report for the full
+element-by-element hand-trace of `foreach ( $x : [a, b] ) { print($x); }`
+through `performSlice()`.
+
+**`__builtin_array_at($arr, $idx, $out)`**: see section 9. Out-of-bounds is
+an ordinary `UnifyNot`, not an error — this is what makes the fallback fact
+(loop end) and a body failure (section above) structurally indistinguishable
+at the `__fe__3` level, which is exactly the intended "loop just ends
+either way" behavior.
+
+**Conformance**: `test/conformance/loops.ufy`'s `foreach` queries pin this
+— iterating an array literal, iterating a literal range (`1..4`, expanded
+eagerly to `[1, 2, 3, 4]` per section 12.1), and a body failure on one
+element that does not stop the remaining iterations.

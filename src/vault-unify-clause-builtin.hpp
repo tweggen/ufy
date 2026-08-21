@@ -162,6 +162,73 @@ public:
 };
 
 
+/**
+ * ROADMAP ("for"/"foreach" loops, language owner request 2026-08-21): what
+ * `foreach`'s synthesized `__fe__N` clause's own `__builtin_array_at($arr,
+ * $idx, $out)` goal resolves (AnyTermFactory::operator()(const
+ * ForeachStatementInput&), vault-unify-parser.cpp) -- never written
+ * directly by a user program. Requires argument 0 to resolve (via
+ * `AbstractTerm::getBoundTerm`) to an `ArrayTerm` and argument 1 to resolve
+ * to a 0-arity `ConsTerm` atom whose text parses fully as an int64 (an
+ * unbound/non-integer index is a `UnifyError`, mirroring
+ * `ArithEvalBuiltinClause`); an out-of-range index (negative, or `>=` the
+ * array's length) is an ordinary `UnifyNot` -- this is the loop's own
+ * termination condition. On a hit, unifies the element against argument 2.
+ * Implemented in vault-unify-clause-builtin-array.cpp.
+ */
+class ArrayAtBuiltinClause
+        : public SimpleBuiltinClause
+{
+public:
+    ArrayAtBuiltinClause();
+    virtual ~ArrayAtBuiltinClause();
+
+    virtual vault::unify::Clause::UnificationState startUnification(
+        Engine* pEngine,
+        UnifyContext* pUCStackTop,
+        UnifyContext* pUCOriginal,
+        UnifyContext* pUCCand,
+        const Goal*& out_pGoal,
+        ClauseContinuationContext*& inout_pCCC ) const;
+};
+
+
+/**
+ * ROADMAP ("for"/"foreach" loops + ranges, language owner request
+ * 2026-08-21): what a range with a NON-literal bound (a variable, or itself
+ * an arithmetic expression) desugars to (AnyTermFactory::operator()(const
+ * RangeTermInput&), vault-unify-parser.cpp) -- a range with BOTH bounds
+ * literal is expanded eagerly at parse time instead and never reaches this
+ * builtin (SPEC.md). Resolves both bounds via the SAME `evaluateArith()`
+ * helper `__builtin_eval`/`__builtin_compare` use for their own operands
+ * (vault-unify-clause-builtin-arith.cpp's own anonymous namespace, where
+ * this class is also implemented) -- so a range bound may itself be a
+ * `__builtin_arith` expression, not just a bare variable or literal. Builds
+ * a fresh `ArrayTerm` of one 0-arity `ConsTerm` atom per integer in
+ * `[a, b]` (inclusive; empty if `b < a`), capped at
+ * `RANGE_BUILTIN_MAX_ELEMENTS` elements (a `UnifyError` beyond, unlike
+ * the eager literal-bounds path's silent truncation, since a builtin CAN
+ * genuinely fail the goal), adopts it via `UnifyContext::adoptTerm()`
+ * (mirroring `ArithEvalBuiltinClause`'s fresh-result ownership), and unifies
+ * it against argument 2.
+ */
+class RangeBuiltinClause
+        : public SimpleBuiltinClause
+{
+public:
+    RangeBuiltinClause();
+    virtual ~RangeBuiltinClause();
+
+    virtual vault::unify::Clause::UnificationState startUnification(
+        Engine* pEngine,
+        UnifyContext* pUCStackTop,
+        UnifyContext* pUCOriginal,
+        UnifyContext* pUCCand,
+        const Goal*& out_pGoal,
+        ClauseContinuationContext*& inout_pCCC ) const;
+};
+
+
 };
 };
 
