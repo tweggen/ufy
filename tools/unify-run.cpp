@@ -33,13 +33,19 @@
 #include <vault-unify.hpp>
 
 /*
- * Private header (lives in src/, not include/) for vault::unify::SolveJob.
- * It is reachable here the same way the module's own .cpp files reach it,
- * because vault-unify-core exposes src/ as a (documented, legacy-Jamfile-
- * matching) public include path -- see CMakeLists.txt. We need it only for
- * the "barrier job" trick explained below.
+ * Private headers (live in src/, not include/); reachable here the same way
+ * the module's own .cpp files reach them, because vault-unify-core exposes
+ * src/ as a (documented, legacy-Jamfile-matching) public include path --
+ * see CMakeLists.txt.
+ *   - vault-unify-solvejob.hpp: only for the "barrier job" trick explained
+ *     below.
+ *   - vault-unify-debug.hpp: vault-unify.hpp only forward-declares
+ *     `class FileDebugInfo;` (it is otherwise a src/-private type) -- the
+ *     full definition is needed here to construct one for argv[1] below
+ *     (ROADMAP Phase 2 "File imports / include").
  */
 #include <vault-unify-solvejob.hpp>
+#include <vault-unify-debug.hpp>
 
 
 namespace {
@@ -92,6 +98,30 @@ int main( int argc, char** argv )
     rt.setupDone();
 
     /*
+     * ROADMAP Phase 2 ("File imports / include"): argv[1] as-given (not
+     * resolved to an absolute path) seeds relative import resolution --
+     * RuntimeContext::parseExecuteSegment()'s import handling resolves a
+     * `import "...";` path against this FileDebugInfo's directory
+     * (boost::filesystem::path(...).parent_path()), and an as-given relative
+     * path already has the right directory component for that (or none, if
+     * argv[1] is a bare filename, which correctly falls back to resolving
+     * against the process CWD). It also makes parse-error diagnostics say
+     * the real filename instead of "<input>" (previously always passed NULL
+     * here).
+     *
+     * Ownership: registered with the World immediately below, which owns it
+     * exclusively from that point on -- see World::adoptFileDebugInfo()'s
+     * comment (include/vault-unify.hpp) for why this must NOT be deleted
+     * here (or anywhere in this function): ~World() (run via rt's
+     * destructor, at the end of this scope) frees it exactly once,
+     * regardless of whether the program went on to build any term
+     * referencing it via TermDebugInfo.
+     */
+    vault::unify::FileDebugInfo* pMainFileDebugInfo =
+        new vault::unify::FileDebugInfo( argv[1] );
+    rt.getWorld()->adoptFileDebugInfo( pMainFileDebugInfo );
+
+    /*
      * Parses the whole file; for every clause definition it finds, it
      * appends the clause to the root execution state, and for every
      * top-level query it creates and enqueues a SolveJob (see
@@ -106,7 +136,7 @@ int main( int argc, char** argv )
      */
     const int parseErrorCount = rt.parseExecuteSegment(
         content.begin(), content.end(),
-        onQueryFinished, NULL );
+        onQueryFinished, pMainFileDebugInfo );
 
     /*
      * Wait until every query job created above has actually finished

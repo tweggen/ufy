@@ -1,0 +1,21 @@
+// Conformance: file imports (SPEC.md section 15) -- LIBRARY file.
+//
+// Imported by imports.ufy (same directory, `import "imports-lib.ufy";`).
+// This file is NOT registered as its own golden test (see
+// test/CMakeLists.txt) -- it only exists to be imported. It defines a
+// fact set plus a rule built on top of them, and runs its own query, so
+// that imports.ufy's golden output proves an imported file's clauses AND
+// queries are processed inline, interleaved with the importing file's own
+// definitions, right at the point of the `import` statement.
+
+shape( circle );
+shape( square );
+
+is_shape( $x ) {
+    shape( $x );
+}
+
+query {
+    is_shape( $x );
+    print( $x );
+}

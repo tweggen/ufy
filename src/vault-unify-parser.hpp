@@ -340,12 +340,31 @@ struct QueryInput {
 };
 
 
+/**
+ * `import "relative/path.ufy";` (ROADMAP Phase 2 "File imports / include",
+ * SPEC.md section 15). `m_ruleImport` is tried BEFORE `m_ruleQuery`/
+ * `m_ruleClause` in `m_ruleEvent`, mirroring the exact-keyword-plus-required-
+ * shape reservation `query` already uses (SPEC.md section 2): after
+ * `qi::lit("import")`, the very next token must be a quoted string, so
+ * `import(...)` (a clause head literally named "import") fails this rule at
+ * that point and backtracks to `m_ruleClause` unaffected -- same trick as
+ * `query`'s own reservation trace.
+ */
+struct ImportInput {
+    ImportInput() {}
+    ImportInput( const std::string& p ) : path( p ) {}
+    std::string path;
+};
+
+
 struct EventInput {
     EventInput() {}
     EventInput( const QueryInput& qi ) : query( qi ) {}
     EventInput( const ClauseInput& qi ) : clause( qi ) {}
+    EventInput( const ImportInput& ii ) : import( ii ) {}
     QueryInput query;
     ClauseInput clause;
+    ImportInput import;
 };
 
 }; // namespace PrologParser
@@ -490,9 +509,15 @@ BOOST_FUSION_ADAPT_STRUCT(
 )
 
 BOOST_FUSION_ADAPT_STRUCT(
+    vault::unify::PrologParser::ImportInput,
+    (std::string, path)
+)
+
+BOOST_FUSION_ADAPT_STRUCT(
     vault::unify::PrologParser::EventInput,
     (vault::unify::PrologParser::QueryInput, query)
     (vault::unify::PrologParser::ClauseInput, clause)
+    (vault::unify::PrologParser::ImportInput, import)
 )
 
 namespace vault {
@@ -826,8 +851,20 @@ public:
                 qi::lit( "query" ) >> '{' >> m_ruleGoal >> '}'
             ;
 
+        // `import "relative/path.ufy";` (ROADMAP Phase 2 "File imports",
+        // SPEC.md section 15). Tried before m_ruleQuery/m_ruleClause below,
+        // the same reservation shape as m_ruleQuery itself (see ImportInput's
+        // comment, this header): the keyword must be followed immediately by
+        // a quoted string, so a clause head literally named "import" (e.g.
+        // `import(x);` or `import { ... }`) fails here and backtracks to
+        // m_ruleClause unaffected.
+        m_ruleImport %=
+                qi::lit( "import" ) >> m_unescapedString >> ';'
+            ;
+
         m_ruleEvent %=
-                (m_ruleQuery)
+                (m_ruleImport)
+            |   (m_ruleQuery)
             |   (m_ruleClause)
             ;
             
@@ -853,6 +890,7 @@ public:
         m_ruleGoal.name( "Goal" );
         m_ruleClause.name( "Clause" );
         m_ruleQuery.name( "Query" );
+        m_ruleImport.name( "Import" );
         m_ruleEvent.name( "Event" );
 
         {
@@ -940,6 +978,7 @@ public:
     qi::rule<Iterator, GoalInput(), Skipper> m_ruleGoal;
     qi::rule<Iterator, ClauseInput(), Skipper> m_ruleClause;
     qi::rule<Iterator, QueryInput(), Skipper> m_ruleQuery;
+    qi::rule<Iterator, ImportInput(), Skipper> m_ruleImport;
     qi::rule<Iterator, EventInput(), Skipper> m_ruleEvent;
 private:
 };

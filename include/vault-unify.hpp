@@ -79,6 +79,15 @@ static inline bool Unifies( UnifyResult unifyResult ) { return unifyResult==Unif
 typedef boost::unique_lock<boost::mutex> Guard;
 
 class TermDebugInfo;
+// ROADMAP Phase 2 ("File imports / include", SPEC.md section 15): forward
+// declared here (ahead of its previous sole forward declaration near
+// RuntimeContext further down, kept there too -- repeating a forward
+// declaration of an incomplete type is harmless) so World::
+// adoptFileDebugInfo()/m_lsOwnedFileDebugInfos below can name
+// `FileDebugInfo*` without needing its full definition (vault-unify-debug.hpp
+// is a src/-private header; only .cpp files that actually construct/inspect
+// one include it).
+class FileDebugInfo;
 
 class Atom
 {
@@ -1874,6 +1883,34 @@ public:
     TermDebugInfo* getTermDebugInfo( const AbstractTerm* );
 
     /**
+     * ROADMAP Phase 2 ("File imports / include", SPEC.md section 15):
+     * registers exclusive ownership of a `FileDebugInfo` created for a
+     * "current file" that `RuntimeContext::parseExecuteSegment()` is about
+     * to parse (the main program, via unify-run.cpp, or an imported file,
+     * via RuntimeContext itself) -- see vault-unify-world.cpp's `~World()`
+     * for why this registry exists alongside the pre-existing TermDebugInfo-
+     * reachable discovery: a segment that never successfully builds a
+     * single term (e.g. a file that only contains further `import`
+     * statements, or comments) would otherwise never be reached by that
+     * discovery sweep at all, and its FileDebugInfo would leak. Every
+     * `FileDebugInfo` a caller creates for this purpose MUST be registered
+     * here exactly once, right after construction; `~World()` deletes every
+     * registered pointer exactly once, de-duplicated against the same
+     * pointer if ALSO discovered via a TermDebugInfo (they are the same
+     * object either way -- registration does not change who a TermDebugInfo
+     * points at, only who is responsible for the final `delete`). Callers
+     * (RuntimeContext, unify-run.cpp) must NOT delete these themselves --
+     * see the ownership note on RuntimeContext::parseExecuteSegment()'s
+     * import handling and on unify-run.cpp's main() for why (destruction-
+     * order hazard: this World generally outlives the caller that created
+     * the FileDebugInfo, but even were that not so, a caller-side delete
+     * would race/duplicate this sweep).
+     */
+    void adoptFileDebugInfo( FileDebugInfo* pFileDebugInfo ) {
+        m_lsOwnedFileDebugInfos.push_back( pFileDebugInfo );
+    }
+
+    /**
      * ROADMAP Phase 2 (runtime assert/retract, SPEC.md -- "logical update
      * view"): the current clause-database mutation generation, for a
      * ClauseIterator to snapshot at construction (see
@@ -1937,6 +1974,13 @@ private:
     /// other map entries, so they cannot be deleted at replace time;
     /// ~World()'s de-duplicating sweep reclaims them exactly once.
     std::list<TermDebugInfo*> m_lsRetiredDebugInfos;
+
+    /// See adoptFileDebugInfo() above: FileDebugInfo objects explicitly
+    /// registered for ownership (currently: one per file parseExecuteSegment
+    /// is ever given -- the main program, and each distinct imported file),
+    /// freed exactly once by ~World()'s sweep alongside whatever it also
+    /// discovers via TermDebugInfo entries.
+    std::list<FileDebugInfo*> m_lsOwnedFileDebugInfos;
 
     /// See currentGeneration()/bumpGeneration() above.
     uint64_t m_mutationGeneration;
@@ -2210,6 +2254,30 @@ public:
     WorldPtr getWorld() const { return m_spWorld; }
 
 private:
+    /**
+     * ROADMAP Phase 2 ("File imports / include", SPEC.md section 15):
+     * resolves, canonicalizes and (once-per-RuntimeContext) parses one
+     * `import "path";` statement encountered by parseExecuteSegment() --
+     * see that method's body (vault-unify-runtime-context.cpp) for how the
+     * import event is recognized, and its own comment for the resolution/
+     * once-semantics/error-reporting rules. `strRawPath` is exactly the
+     * quoted string's unescaped contents; `pCurrentFileDebugInfo` is the
+     * FileDebugInfo of the file the import statement itself appears in (NULL
+     * if unknown, e.g. a REST-fed segment), used both to resolve the import
+     * path (relative to ITS directory) and to attribute the "cannot open"
+     * diagnostic to the right file/line. `line` is the best-effort source
+     * line of the import statement (same precision as the existing "line %d:
+     * Added clause" trace uses). Returns the number of NEW parse errors
+     * this import (and anything it recursively imports) produced, exactly
+     * like parseExecuteSegment() itself; an already-imported file
+     * contributes 0 and is otherwise a silent no-op.
+     */
+    int processImport(
+        const std::string& strRawPath,
+        int line,
+        const FileDebugInfo* pCurrentFileDebugInfo,
+        boost::function<void (boost::shared_ptr<vault::unify::Job>)> onFinished );
+
     vault::unify::WorldPtr m_spWorld;
 
     vault::unify::Engine* m_pEngine;
@@ -2217,6 +2285,20 @@ private:
     vault::unify::WorldChangeSink* m_pWorldChangeSink;
 
     vault::unify::ExecutionState* m_esRoot;
+
+    /**
+     * ROADMAP Phase 2 ("File imports / include"): once-semantics registry
+     * ("like #pragma once") -- canonicalized (boost::filesystem::canonical())
+     * absolute-path keys of every file successfully imported so far via THIS
+     * RuntimeContext, so a diamond/cycle of imports naturally terminates (a
+     * file already in this set is skipped silently, see processImport()).
+     * The main program itself is deliberately NOT added here: re-importing
+     * it is merely redundant (its clauses/queries would simply run again),
+     * not unsafe, and unify-run.cpp/vault-unify-rest-server.cpp both already
+     * pass the main program's content directly to parseExecuteSegment(),
+     * never through processImport().
+     */
+    std::set<std::string> m_importedFiles;
 };
 
 

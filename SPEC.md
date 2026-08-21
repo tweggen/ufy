@@ -73,14 +73,17 @@ so `"red"` and bareword `red` become the *same* atom name (section 9).
 
 ## 2. Program structure
 
-A file is a sequence of independently-parsed **events**, each a clause or a
-top-level query: `m_ruleEvent %= (m_ruleQuery) | (m_ruleClause);`.
-`RuntimeContext::parseExecuteSegment`
+A file is a sequence of independently-parsed **events**, each an import, a
+clause, or a top-level query: `m_ruleEvent %= (m_ruleImport) | (m_ruleQuery)
+| (m_ruleClause);` (`m_ruleImport` added ROADMAP Phase 2 "File imports /
+include", section 15 below). `RuntimeContext::parseExecuteSegment`
 (`src/vault-unify-runtime-context.cpp`) parses one event at a time; each
 clause is appended to the root execution state immediately, each query
-spawns a `SolveJob` immediately (section 5) — so later events only ever see
-earlier clauses (plus the six builtins, registered up front by
-`World::init`, `src/vault-unify-world.cpp`).
+spawns a `SolveJob` immediately (section 5), and each import is read and
+parsed inline, recursively, right at that point (section 15) — so later
+events only ever see earlier clauses (plus the six builtins, registered up
+front by `World::init`, `src/vault-unify-world.cpp`) and whatever an earlier
+import already contributed.
 
 **Facts/rules**: `m_ruleClause %= (m_ruleConsTerm >> '{' >> m_ruleGoal >>
 '}') | (m_ruleConsTerm >> ';');`. A fact is a bare cons term plus `;`
@@ -994,6 +997,21 @@ All verified by direct code reading, collected here for quick reference.
   `m_ruleAnyStatement` is never reached from `m_ruleClause`, which parses a
   clause head via `m_ruleConsTerm` directly, exactly as already documented
   for `query`'s own reservation.
+- **`import` is a reserved word for a top-level form starting with a quoted
+  string** (section 15), the same *exact-shape* kind of reservation `query`
+  already has (section 2), not the structural/positional kind `if`/`for`/
+  `foreach` use: `m_ruleImport %= qi::lit("import") >> m_unescapedString >>
+  ';';`, tried before `m_ruleQuery`/`m_ruleClause` in `m_ruleEvent`. Because
+  the keyword must be followed *immediately* by a quoted string, a clause
+  headed by the bareword atom `import` remains fully expressible in every
+  other shape — `import(x);`, `import(x) { ... }`, or a bare `import { ...
+  }` rule body all fail `m_ruleImport` at the token right after `import`
+  (`(` or `{ ` instead of `"`) and backtrack to `m_ruleClause` unaffected,
+  exactly mirroring `query`'s own backtracking trace (section 2). `import`
+  used as an ordinary atom anywhere *inside* a term or goal (e.g.
+  `foo( import );`) is entirely unaffected either way, since `m_ruleImport`
+  is only ever reached from `m_ruleEvent`, never from `m_ruleAnyTerm`/
+  `m_ruleConsTerm`/`m_ruleAtom`.
 - `foreach`'s loop-variable position and `for`'s init/step assignment LHS
   are conventionally, but **not** grammatically enforced, a `$name`
   variable (section 12) — `m_ruleConsTerm`/`m_ruleSingleGoal` accept
@@ -1926,3 +1944,189 @@ one success, one failure, same `if`-guarded style; (f) `endswith` — one
 success, one failure, same style; (g) a `concat` result unified directly
 against its expected literal atom (an equality proof, mirroring
 `findall-arrays.ufy`'s own findall-vs-literal proof, section 11.2).
+
+## 15. File imports (ROADMAP Phase 2)
+
+`import "relative/path.ufy";` lets a program be split across files. It is a
+top-level **event**, the same standing as a clause or a `query { ... }`
+block (section 2): `m_ruleEvent %= (m_ruleImport) | (m_ruleQuery) |
+(m_ruleClause);`, with `m_ruleImport %= qi::lit("import") >>
+m_unescapedString >> ';';` tried first. `m_unescapedString` is the same
+quoted-string rule string literals elsewhere in the grammar use (section 1),
+so escape sequences work identically. See the "Known deviations and
+quirks" entry (section 10) for the full `import`-as-reserved-word
+backtracking trace, mirroring `query`'s.
+
+### 15.1 Relative resolution
+
+An import path is resolved **relative to the importing file's own
+directory**, not the process's current working directory — so
+`test/conformance/imports.ufy` can `import "imports-lib.ufy";` and always
+find its sibling file regardless of where `unify-run` is invoked from.
+Concretely (`RuntimeContext::processImport`,
+`src/vault-unify-runtime-context.cpp`): the importing file's directory is
+`boost::filesystem::path( pCurrentFileDebugInfo->getFileUri() ).parent_path()`,
+where `pCurrentFileDebugInfo` is whatever `FileDebugInfo` `parseExecuteSegment`
+was itself given for the file currently being parsed (threaded through
+`PrologParser::Context::setFileDebugInfo`/`getFileDebugInfo`, the same
+object every term built while parsing that file is stamped with via
+`TermDebugInfo`, section 2). The import path is then appended to that
+directory (`baseDir / strRawPath`).
+
+**Fallback to the process CWD**: if the importing file is unknown
+(`pCurrentFileDebugInfo == NULL` — a REST-fed segment,
+`vault-unify-rest-server.cpp`, which always passes `NULL`) or its URI has no
+directory component of its own (e.g. a bare filename with no `/`),
+`parent_path()` is empty, and `boost::filesystem::path`'s `operator/`
+against an empty left-hand path is the identity — the resolved path is just
+`strRawPath` as written, which every downstream operation
+(`boost::filesystem::canonical`, `std::ifstream`) resolves against the
+process's current working directory by construction, with no special-case
+code needed for this fallback.
+
+`unify-run.cpp`'s `main()` seeds this for the main program itself: it now
+constructs a `FileDebugInfo` from `argv[1]` **as given** (not resolved to an
+absolute path first) and passes it into the top-level
+`parseExecuteSegment` call — an as-given relative `argv[1]` already carries
+the right directory component for this resolution (or none, correctly
+falling back to the CWD, which is exactly where a relative `argv[1]` would
+itself have been looked up from). This is also what makes `unify-run`'s own
+parse-error diagnostics say the real filename instead of the previous
+literal `"<input>"` (`pFileDebugInfo` was always passed as `NULL` before
+this feature).
+
+### 15.2 Canonicalization and once-semantics
+
+Each file is imported **at most once per `RuntimeContext`**, "like
+`#pragma once`": `RuntimeContext` keeps a `std::set<std::string>
+m_importedFiles` of canonicalized path keys (`include/vault-unify.hpp`), and
+`processImport` computes the key via `boost::filesystem::canonical()` on the
+resolved path — an absolute, symlink-resolved form, so two different-looking
+relative spellings of the same file (or the same file reached through two
+different import chains) collapse to one key. `boost::filesystem` is chosen
+over ad hoc string normalization because it is already linked into this
+module (`CMakeLists.txt`: `find_package(Boost ... filesystem)`,
+`target_link_libraries(vault-unify-core PUBLIC ... Boost::filesystem)`) yet
+was, before this feature, entirely unused by any `.cpp` in this module —
+and because correct canonicalization (resolving `..`/`.`/symlinks/relative-
+vs-absolute spelling) is exactly the kind of thing not worth re-deriving by
+hand.
+
+If the key is already in `m_importedFiles`, the import is a **silent
+no-op** — not an error, not a diagnostic, not a second run of the file's
+clauses/queries. Insertion happens before the recursive parse, so a file
+that (transitively) imports itself already finds its own key present on
+that recursive visit and does not recurse again — **import cycles are
+naturally broken** by the same once-semantics, with no separate cycle-
+detection pass needed.
+
+### 15.3 Inline processing / interleaving
+
+An imported file's clauses, queries, and further imports are **processed
+inline, at the point of the `import` statement**: `processImport` reads the
+target file's full contents and recursively calls the very same
+`parseExecuteSegment` that is already parsing the importing file, passing a
+new `FileDebugInfo` for the imported file. Recursion depth is bounded by the
+once-set (section 15.2) — a chain of imports can only ever recurse through
+each distinct file once. Because clauses are appended to the (shared)
+`ExecutionState` immediately and queries spawn a `SolveJob` immediately, in
+encounter order, exactly as for any other event (section 2), an imported
+file's own top-level `query { ... }` blocks run — and its clauses become
+visible to later clauses/queries — **before** anything textually following
+the `import` statement in the importing file is even parsed. This is
+demonstrated by `test/conformance/imports.ufy`'s golden output (section
+15.5): the imported file's own query's output lines appear first, ahead of
+the importing file's first query, even though that query is textually
+listed after the `import` line that pulls in the library it depends on.
+
+### 15.4 Error behavior
+
+A missing or unreadable import target is reported like a parse error: a
+one-line, gcc-style diagnostic to stderr —
+```
+<importing-file>:<line>: cannot open import "path"
+```
+— attributed to the *importing* file and the best-effort source line of the
+`import` statement itself (same line-tracking precision the existing
+"line %d: Added clause"/"line %d: Adding goal" trace uses, section 2), and
+increments the same `errorCount` `parseExecuteSegment` already returns for
+ordinary parse errors — so a missing import contributes to `unify-run`'s
+exit code exactly like a syntax error does. Unlike an ordinary grammar
+parse error (`reportParseError`), there is no source-line-plus-caret: the
+`import "path";` statement itself parsed fine; only opening its *target*
+failed, so there is no offending token position within the *current* file
+to point a caret at. Parsing of the importing file continues immediately
+after the failed `import` statement, exactly as it does after any other
+parse error.
+
+### 15.5 FileDebugInfo ownership
+
+Every `FileDebugInfo` `parseExecuteSegment` is ever given (the main
+program's, from `unify-run.cpp`, and each imported file's, from
+`RuntimeContext::processImport`) is registered with `World` immediately
+after construction, via `World::adoptFileDebugInfo()`
+(`include/vault-unify.hpp`), and is **never deleted by the code that
+created it**. `World` is the sole owner: `~World()`'s de-duplicating sweep
+(`src/vault-unify-world.cpp`) frees every registered `FileDebugInfo` exactly
+once, alongside whichever ones it separately discovers via `TermDebugInfo`
+entries (every `ConsTerm` built while parsing a file is stamped with that
+file's current `FileDebugInfo` — the very same pointer — via
+`AnyTermFactory::operator()(ConsTermInput)`,
+`src/vault-unify-parser.cpp`); both sources feed the same de-duplicating
+`std::set<const FileDebugInfo*>`, so a pointer discovered both ways (the
+common case: a file that built at least one term) is still freed exactly
+once, while a `FileDebugInfo` for a file that builds *zero* terms (e.g. one
+containing only further `import` statements or comments) — which the
+TermDebugInfo-reachable discovery alone would never find, leaking it — is
+still reclaimed via the explicit registry.
+
+This split-but-unified design was chosen over the alternative of
+`RuntimeContext` (or `unify-run.cpp`) owning and freeing these objects
+itself, which was ruled out for two reasons: (1) it would race the very
+sweep above whenever a `FileDebugInfo` *is* also reachable via a
+`TermDebugInfo` — `RuntimeContext`'s explicit destructor body would run
+*before* `~World()` (which only runs later, during `RuntimeContext`'s
+automatic member destruction, since `m_spWorld` is a `shared_ptr` destroyed
+in reverse declaration order after the destructor body returns), so
+`RuntimeContext` freeing it first would leave `~World()` to double-free (or
+use-after-free) a dangling pointer; and (2) `unify-run.cpp`'s `main()` has
+no comparably natural place to free the main program's own `FileDebugInfo`
+that is guaranteed to run after every `TermDebugInfo` that might reference
+it has stopped needing it. Routing ownership through `World` — which
+already owns every `TermDebugInfo` an imported/main file's terms are stamped
+with, and already outlives all of them — avoids both problems by
+construction.
+
+### 15.6 Conformance
+
+Two files, `test/conformance/imports.ufy` (registered as the
+`unify-golden-conformance-imports` test) and `test/conformance/imports-lib.ufy`
+(a library file, deliberately **not** given its own golden-test entry in
+`test/CMakeLists.txt` — it exists only to be imported):
+
+- `imports-lib.ufy` defines two `shape/1` facts, an `is_shape/1` rule over
+  them, and its own `query { is_shape($x); print($x); }` — proving (once
+  imported) that a library file's clauses AND queries both run.
+- `imports.ufy` imports it (`import "imports-lib.ufy";`, resolved relative
+  to `test/conformance/` per section 15.1), then runs its own
+  `is_shape/1` query (proving the imported clauses are visible), then
+  imports the same file again verbatim (proving once-semantics: no second
+  run of `imports-lib.ufy`'s query, no doubled output — section 15.2), then
+  defines its own `color/1` fact and a final query over it (proving the
+  importer's own definitions after the `import` still work normally).
+
+Predicted stdout (`test/golden/conformance-imports.expected`):
+```
+print: circle
+print: square
+print: circle
+print: square
+print: red
+```
+The first `circle`/`square` pair is `imports-lib.ufy`'s own query, running
+inline at the `import` point — before `imports.ufy`'s own query even
+begins parsing (section 15.3). The second pair is `imports.ufy`'s own query
+reusing the imported `is_shape/1`. There is no third `circle`/`square` pair
+from the duplicate `import` (section 15.2). The final `red` is `color/1`,
+defined only in `imports.ufy`, proving the importer's own subsequent
+definitions still work.

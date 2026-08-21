@@ -35,19 +35,28 @@ namespace unify {
  * term memory themselves (see their comments), relying on this pass having
  * already freed it.
  *
- * 1) TermDebugInfo/FileDebugInfo. Every entry actually created today is
- *    exclusively owned by World: ExecutionState::appendClause() and
- *    AnyTermFactory::operator()(ConsTermInput) (vault-unify-parser.cpp)
- *    both always construct a *fresh* TermDebugInfo/FileDebugInfo, and the
- *    one path that could alias a FileDebugInfo across many entries --
- *    parseExecuteSegment()'s pFileDebugInfo parameter, forwarded via
- *    PrologParser::Context::setFileDebugInfo() -- is always NULL at both
- *    call sites today (unify-run.cpp, vault-unify-rest-server.cpp). We
- *    still de-duplicate FileDebugInfo pointers defensively before deleting
- *    them, in case that ever changes. This is done first, while every
- *    AbstractTerm* map key (whatever it points at, or used to) is still
- *    exactly the value it was inserted with; nothing here dereferences a
- *    key, only the mapped TermDebugInfo / FileDebugInfo pointer values.
+ * 1) TermDebugInfo/FileDebugInfo. Every TermDebugInfo is exclusively owned
+ *    by World (ExecutionState::appendClause() and AnyTermFactory::
+ *    operator()(ConsTermInput), vault-unify-parser.cpp, both always
+ *    construct a fresh one). FileDebugInfo is different: since ROADMAP
+ *    Phase 2 ("File imports / include") gave parseExecuteSegment() a real,
+ *    non-NULL pFileDebugInfo (unify-run.cpp for the main program, and
+ *    RuntimeContext itself for each imported file -- forwarded via
+ *    PrologParser::Context::setFileDebugInfo()), the SAME FileDebugInfo
+ *    pointer is now genuinely aliased across every TermDebugInfo built while
+ *    parsing that one file (AnyTermFactory::operator()(ConsTermInput) reads
+ *    it back via Context::getFileDebugInfo() for each), so de-duplicating
+ *    before deleting is load-bearing here, not merely defensive. It is not
+ *    sufficient on its own, though: a file that never builds a single term
+ *    (e.g. one containing only further `import` statements or comments)
+ *    would never be reached by this discovery at all -- see
+ *    adoptFileDebugInfo()'s comment (include/vault-unify.hpp) for the
+ *    explicit registry that closes that gap, swept together with this one
+ *    below via the same de-duplicating set. This whole pass runs first,
+ *    while every AbstractTerm* map key (whatever it points at, or used to)
+ *    is still exactly the value it was inserted with; nothing here
+ *    dereferences a key, only the mapped TermDebugInfo / FileDebugInfo
+ *    pointer values.
  *
  * 2) Clause database term trees. Every clause's head term, and (for
  *    StandardClause) every term in its body Goal's list, across the WHOLE
@@ -107,6 +116,26 @@ World::~World()
     }
     m_mapDebugInfos.clear();
     m_lsRetiredDebugInfos.clear();
+
+    /*
+     * ROADMAP Phase 2 ("File imports / include", SPEC.md section 15):
+     * adoptFileDebugInfo()-registered FileDebugInfos (see that method's
+     * comment, include/vault-unify.hpp) -- one per file parseExecuteSegment
+     * is ever handed (the main program, each distinct imported file). Fed
+     * into the SAME visitedFileDebugInfos set as the TermDebugInfo-reachable
+     * ones above, so a FileDebugInfo discovered both ways (the common case:
+     * a file that built at least one term) is still deleted exactly once,
+     * while one discovered ONLY here (a file that built zero terms, e.g. an
+     * import-only or comment-only file) is no longer left leaked.
+     */
+    std::list<FileDebugInfo*>::const_iterator itOwnedFDI, itOwnedFDIEnd = m_lsOwnedFileDebugInfos.end();
+    for( itOwnedFDI = m_lsOwnedFileDebugInfos.begin(); itOwnedFDI != itOwnedFDIEnd; ++itOwnedFDI ) {
+        const FileDebugInfo* pFileDebugInfo = *itOwnedFDI;
+        if( pFileDebugInfo && visitedFileDebugInfos.insert( pFileDebugInfo ).second ) {
+            delete pFileDebugInfo;
+        }
+    }
+    m_lsOwnedFileDebugInfos.clear();
 
     std::set<const AbstractTerm*> visitedTerms;
     m_rootState.collectAllTermTrees( visitedTerms );

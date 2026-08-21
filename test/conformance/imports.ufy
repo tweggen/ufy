@@ -1,0 +1,42 @@
+// Conformance: file imports (SPEC.md section 15).
+//
+// `import "imports-lib.ufy";` resolves relative to THIS file's own
+// directory (test/conformance/), so it finds the sibling file right next
+// to it regardless of the process's current working directory.
+//
+// Expected stdout, in order:
+//   print: circle
+//   print: square
+//   print: circle
+//   print: square
+//   print: red
+//
+// - The first "circle"/"square" pair comes from imports-lib.ufy's OWN
+//   query, running at the point of the import below -- BEFORE anything
+//   that follows in this file, proving imports are processed inline/
+//   interleaved, not deferred to the end.
+// - The second "circle"/"square" pair is this file's own query, reusing
+//   is_shape/1 (defined only in imports-lib.ufy) -- proving the imported
+//   clauses are visible here.
+// - The duplicate `import` below is a silent no-op (once-semantics, like
+//   #pragma once): imports-lib.ufy's facts/rule/query are NOT registered
+//   or run a second time, so there is no second "circle"/"square" pair
+//   from it.
+// - The final "red" comes from color/1, defined only in this file, proving
+//   the importer's own definitions after the import still work normally.
+
+import "imports-lib.ufy";
+
+query {
+    is_shape( $x );
+    print( $x );
+}
+
+import "imports-lib.ufy";
+
+color( red );
+
+query {
+    color( $x );
+    print( $x );
+}

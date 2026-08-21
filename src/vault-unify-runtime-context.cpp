@@ -8,6 +8,11 @@
 
 #include <string>
 #include <vector>
+#include <fstream>
+#include <sstream>
+
+#include <boost/filesystem.hpp>
+#include <boost/system/error_code.hpp>
 
 /*
  * Workaround for a but in boost 1.58: It does not support
@@ -97,6 +102,27 @@ void reportParseError(
     fprintf( stderr, "%s^\n", strCaret.c_str() );
 }
 
+
+/**
+ * ROADMAP Phase 2 ("File imports / include", SPEC.md section 15): reports a
+ * missing/unreadable `import "path";` target, gcc-style but on one line (no
+ * source-line/caret -- unlike reportParseError() above, this is not a
+ * grammar failure; the statement parsed fine, opening its target just
+ * failed), attributed to the IMPORTING file/line, as specified in the
+ * design ("<importing-file>:<line>: cannot open import \"path\"").
+ */
+void reportImportError(
+        const vault::unify::FileDebugInfo* pImportingFileDebugInfo,
+        int line,
+        const std::string& strRawPath )
+{
+    std::string strFile = pImportingFileDebugInfo
+        ? pImportingFileDebugInfo->getFileUri()
+        : std::string( "<input>" );
+    fprintf( stderr, "%s:%d: cannot open import \"%s\"\n",
+        strFile.c_str(), line, strRawPath.c_str() );
+}
+
 } // anonymous namespace
 
 
@@ -135,8 +161,20 @@ int RuntimeContext::parseExecuteSegment(
             parserEvent, ufySkipper, inputEvent );
         bool advanced = ( itPosLine != itPosLineOld );
         if( r && advanced ) {
-            // What did we parse?
-            if( inputEvent.query.queryGoal.consTerms.empty() ) {
+            // What did we parse? Import is checked first: a successfully
+            // matched import event leaves inputEvent.query/inputEvent.clause
+            // at their default-empty state too (see EventInput's converting
+            // constructors, src/vault-unify-parser.hpp), exactly the same
+            // way a clause match leaves inputEvent.query empty below -- so
+            // whichever alternative actually matched must be distinguished
+            // in the same order m_ruleEvent tries them (import, then query,
+            // then clause).
+            if( !inputEvent.import.path.empty() ) {
+                errorCount += processImport(
+                    inputEvent.import.path, lastStartLine,
+                    pFileDebugInfo, onFinished );
+                clauseContext.reset();
+            } else if( inputEvent.query.queryGoal.consTerms.empty() ) {
                 vault::unify::Clause* pClause = NULL;
                 (void) prologContext.createClause(
                     clauseContext, 
@@ -186,6 +224,97 @@ int RuntimeContext::parseExecuteSegment(
 
     return errorCount;
 }
+
+
+/**
+ * ROADMAP Phase 2 ("File imports / include", SPEC.md section 15): see the
+ * declaration's comment (include/vault-unify.hpp) for the parameters and
+ * overall contract (resolution, once-semantics, error reporting). The
+ * FileDebugInfo ownership rule for the object constructed here is documented
+ * on World::adoptFileDebugInfo() (include/vault-unify.hpp) and on
+ * ~World()'s sweep (vault-unify-world.cpp) -- in short: this function
+ * registers it with World immediately and then MUST NOT ever delete it
+ * itself, whether or not the imported file goes on to build any term that
+ * references it via TermDebugInfo (the case that registration exists to
+ * cover).
+ */
+int RuntimeContext::processImport(
+        const std::string& strRawPath,
+        int line,
+        const vault::unify::FileDebugInfo* pCurrentFileDebugInfo,
+        boost::function<void (boost::shared_ptr<vault::unify::Job>)> onFinished )
+{
+    namespace bfs = boost::filesystem;
+
+    // Resolve relative to the importing file's directory; if that file is
+    // unknown (pCurrentFileDebugInfo == NULL, e.g. a REST-fed segment) or
+    // its URI has no directory component of its own, baseDir stays empty
+    // and resolvedPath is just strRawPath as-is, which boost::filesystem
+    // (both ifstream-via-.c_str() below and canonical()) resolves against
+    // the process CWD -- exactly the documented fallback.
+    bfs::path baseDir;
+    if( pCurrentFileDebugInfo ) {
+        baseDir = bfs::path( pCurrentFileDebugInfo->getFileUri() ).parent_path();
+    }
+    bfs::path resolvedPath = baseDir.empty() ? bfs::path( strRawPath ) : baseDir / strRawPath;
+
+    // canonical() both resolves the file (proving it exists and is
+    // readable-as-a-path) and gives us an absolute, symlink-free key for the
+    // once-semantics set below; a nonexistent/inaccessible target reports
+    // via the error_code overload rather than an exception.
+    boost::system::error_code ec;
+    bfs::path canonicalPath = bfs::canonical( resolvedPath, ec );
+    if( ec ) {
+        reportImportError( pCurrentFileDebugInfo, line, strRawPath );
+        return 1;
+    }
+
+    // Once-semantics ("like #pragma once"): the canonicalized absolute path
+    // string is the dedup key, so two different-looking relative spellings
+    // of the same file are recognized as one. A duplicate import is a
+    // silent no-op, not an error, and this is also what breaks import
+    // cycles -- a file that (transitively) imports itself finds its own
+    // canonical path already in the set on the recursive visit and simply
+    // does not recurse again.
+    std::string strCanonicalKey = canonicalPath.string();
+    if( !m_importedFiles.insert( strCanonicalKey ).second ) {
+        return 0;
+    }
+
+    std::ifstream in( canonicalPath.string().c_str(), std::ios::binary );
+    if( !in ) {
+        // Extremely unlikely race/permission issue between canonical()
+        // succeeding above and this open -- handled the same way a missing
+        // file is; the once-set entry is left in place regardless (retrying
+        // the same import later in this file would just fail again the
+        // same way, which is fine).
+        reportImportError( pCurrentFileDebugInfo, line, strRawPath );
+        return 1;
+    }
+    std::ostringstream buf;
+    buf << in.rdbuf();
+    // Owned locally: only the imported file's *content* string needs to
+    // outlive its own parse (the recursive parseExecuteSegment() call
+    // below) -- nothing keeps a reference to it once that call returns
+    // (unlike the FileDebugInfo just below, which terms parsed from this
+    // content DO keep referencing, via TermDebugInfo, for the lifetime of
+    // the World).
+    std::string strContent = buf.str();
+
+    // See this function's own header comment above for the ownership rule.
+    // Using resolvedPath (not the canonical, absolute form) for the
+    // FileDebugInfo's URI keeps diagnostics readable (it looks like the
+    // path actually written/reachable from the importing file) and keeps
+    // nested imports resolving relative to a sensible directory.
+    vault::unify::FileDebugInfo* pImportedFileDebugInfo =
+        new vault::unify::FileDebugInfo( resolvedPath.string() );
+    getWorld()->adoptFileDebugInfo( pImportedFileDebugInfo );
+
+    return parseExecuteSegment(
+        strContent.begin(), strContent.end(),
+        onFinished, pImportedFileDebugInfo );
+}
+
 
 /**
  * ROADMAP Phase 1 (Ownership model), pass 2: frees the WorldChangeSink
