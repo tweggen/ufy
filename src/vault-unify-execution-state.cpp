@@ -29,10 +29,28 @@ namespace unify {
  * See the declaration (include/vault-unify.hpp) for the full contract; this
  * body lives here, out-of-line, rather than inline in the class definition
  * (unlike the rest of ClauseIterator) specifically because it calls
- * Clause::isRetired() -- Clause is still only forward-declared at
+ * World::currentGeneration() -- World is still only forward-declared at
  * ClauseIterator's point in the header, so this file (which, via
- * vault-unification.hpp, has already seen Clause's complete definition by
+ * vault-unification.hpp, has already seen World's complete definition by
  * the time this function body is compiled) is where it has to live.
+ */
+ExecutionState::ClauseIterator::ClauseIterator( ExecutionState* es )
+        : m_invalidated( false )
+        , m_snapshotGen( es->m_pWorld ? es->m_pWorld->currentGeneration() : 0 )
+{
+    enterState( es );
+}
+
+
+/**
+ * See the declaration (include/vault-unify.hpp) for the full contract; this
+ * body lives here, out-of-line, rather than inline in the class definition
+ * (unlike the rest of ClauseIterator) specifically because it calls
+ * Clause::isRetired()/getAppendGeneration()/getRetireGeneration() -- Clause
+ * is still only forward-declared at ClauseIterator's point in the header,
+ * so this file (which, via vault-unification.hpp, has already seen Clause's
+ * complete definition by the time this function body is compiled) is where
+ * it has to live.
  */
 bool ExecutionState::ClauseIterator::isValid()
 {
@@ -40,8 +58,30 @@ bool ExecutionState::ClauseIterator::isValid()
         return false;
     }
     while(1) {
-        while( m_itClause != m_itClauseEnd && (*m_itClause)->isRetired() ) {
-            ++m_itClause;
+        while( m_itClause != m_itClauseEnd ) {
+            const Clause* pClause = *m_itClause;
+            // ROADMAP Phase 2 (runtime assert/retract, SPEC.md -- "logical
+            // update view"): a clause appended AFTER this iterator's
+            // snapshotGen was captured did not exist yet, from this
+            // iteration's point of view -- skip it, regardless of how far
+            // this scan has advanced. A clause retired BEFORE snapshotGen
+            // is likewise permanently invisible to this iteration; one
+            // retired AT OR AFTER snapshotGen remains visible to THIS
+            // iteration for its whole lifetime (that retract() had not
+            // "happened yet", from this snapshot's point of view, even
+            // though the tombstone is already in place by the time we walk
+            // past it -- see Clause::retire()'s comment on why tombstoning
+            // rather than erasing keeps that check simply a flag/generation
+            // comparison instead of a structural one).
+            if( pClause->getAppendGeneration() > m_snapshotGen ) {
+                ++m_itClause;
+                continue;
+            }
+            if( pClause->isRetired() && pClause->getRetireGeneration() <= m_snapshotGen ) {
+                ++m_itClause;
+                continue;
+            }
+            break;
         }
         if( m_itClause != m_itClauseEnd ) {
             return true;
@@ -56,18 +96,26 @@ bool ExecutionState::ClauseIterator::isValid()
 
 int ExecutionState::appendClause( WorldPtr spWorld, Clause* clause )
 {
-    // LOCK( this )
+    Guard g( spWorld->clauseDbMutex() );
+    // ROADMAP Phase 2 (runtime assert/retract, SPEC.md -- "logical update
+    // view"): stamp the clause with the generation this append itself
+    // creates, BEFORE it becomes visible to any reader (push_back below) --
+    // every append (parse-time or a runtime assert()) goes through this one
+    // function, so this is the one place that needs to do it. See
+    // World::clauseDbMutex()'s comment for why this lock is now load
+    // -bearing (assert() makes the worker thread a clause-list writer too,
+    // alongside the parser thread).
+    clause->setAppendGeneration( spWorld->bumpGeneration() );
     m_listClauses.push_back( clause );
     DebugLocation debugLocation = clause->getDebugLocation();
     if( debugLocation.uriFile.length() ) {
         const AbstractTerm* pTerm = clause->leftHandTerm();
         spWorld->setTermDebugInfo(
-            pTerm, new TermDebugInfo( 
-                pTerm, 
+            pTerm, new TermDebugInfo(
+                pTerm,
                 new FileDebugInfo( debugLocation.uriFile ),
                 debugLocation.line ) );
     }
-    // UNLOCK( this )
     return 0;
 }
 
@@ -75,7 +123,7 @@ int ExecutionState::appendClause( WorldPtr spWorld, Clause* clause )
 ExecutionState* ExecutionState::fork()
 {
     // LOCK( this )
-    ExecutionState* child = new ExecutionState( this );
+    ExecutionState* child = new ExecutionState( this, m_pWorld );
     m_listChildStates.push_back( child );
     // UNLOCK( this )
     return child;
@@ -141,10 +189,11 @@ ExecutionState::~ExecutionState()
 
 /**
  * Create a new client state from a parent state.
- * The parent state must be locked at the time of calling. 
+ * The parent state must be locked at the time of calling.
  */
-ExecutionState::ExecutionState( ExecutionState* parent )
+ExecutionState::ExecutionState( ExecutionState* parent, World* pWorld )
         : m_pParent( parent )
+        , m_pWorld( pWorld )
 {
     // ASSERT_LOCK( parent )
 #if 0 

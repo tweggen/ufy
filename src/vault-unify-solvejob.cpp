@@ -1096,7 +1096,16 @@ int SolveJob::performSlice()
                             pCandHead );
 
                         if( Unifies( trialResult ) ) {
-                            pCand->retire();
+                            // ROADMAP Phase 2 (runtime assert/retract,
+                            // SPEC.md -- "logical update view"): stamp the
+                            // generation this retire() itself creates,
+                            // under the same lock appendClause() uses (see
+                            // World::clauseDbMutex()'s comment) -- this is
+                            // the other of the two call sites that mutate
+                            // the shared generation counter/clause
+                            // liveness state.
+                            Guard g( m_spWorld->clauseDbMutex() );
+                            pCand->retire( m_spWorld->bumpGeneration() );
                             foundMatch = true;
                         } else if( UnifyError==trialResult ) {
                             // Defensive: no plain ConsTerm/VarTerm/MapTerm/

@@ -258,9 +258,9 @@ typedef boost::shared_ptr<World> WorldPtr;
  */
 struct ExecutionState {
 public:
-    ExecutionState( ExecutionState* parent );
+    ExecutionState( ExecutionState* parent, World* pWorld );
     ~ExecutionState();
-    
+
     class ClauseIterator {
     private:
         void enterState( ExecutionState* es )
@@ -271,14 +271,23 @@ public:
         }
 
     public:
-        ClauseIterator() : m_currentState( NULL ), m_invalidated( false ) {}
+        ClauseIterator() : m_currentState( NULL ), m_invalidated( false ), m_snapshotGen( 0 ) {}
 
-        ClauseIterator( ExecutionState* es )
-                // : m_currentState( NULL ) is in enterState
-                : m_invalidated( false )
-        {
-            enterState( es );
-        }
+        /**
+         * ROADMAP Phase 2 (runtime assert/retract, SPEC.md -- "logical
+         * update view"): captures `es`'s World's CURRENT mutation
+         * generation as this iterator's snapshotGen -- this is the whole
+         * mechanism that makes the iteration see the clause database
+         * exactly as it stood at THIS moment, regardless of what asserts/
+         * retracts happen later while it is still in progress (see
+         * isValid() below). Body lives out-of-line
+         * (vault-unify-execution-state.cpp), like isValid(), because it
+         * needs World's complete definition (only forward-declared at this
+         * point in the header) to call currentGeneration(). This read is
+         * deliberately UNLOCKED -- see World::clauseDbMutex()'s comment for
+         * why that is a currently-benign, ROADMAP-5.1-scoped race.
+         */
+        ClauseIterator( ExecutionState* es );
         ~ClauseIterator() {}
 
         /**
@@ -287,26 +296,27 @@ public:
          * parent-fallback walk so a cut takes effect regardless of how many
          * candidates (in this or any parent ExecutionState) remain.
          *
-         * ROADMAP Phase 2 (runtime assert/retract, SPEC.md): otherwise,
-         * skips forward over any clause retract() has tombstoned
-         * (Clause::isRetired(), defined further down in this same header --
-         * this is exactly why this method's BODY lives out-of-line in
+         * ROADMAP Phase 2 (runtime assert/retract, SPEC.md -- "logical
+         * update view"): otherwise, skips forward over any clause not
+         * VISIBLE to this iterator's snapshotGen (captured at construction,
+         * see above): a clause is visible iff its
+         * `getAppendGeneration() <= snapshotGen` (an assert()/parse-time
+         * append that happened AFTER this iteration started is invisible --
+         * it never existed yet, from this iteration's point of view) AND
+         * (`!isRetired()` OR `getRetireGeneration() > snapshotGen`) (a
+         * retract() that happened BEFORE this iteration started makes the
+         * clause invisible the whole time; one that happens DURING/AFTER
+         * this iteration started leaves the clause visible to THIS
+         * iteration regardless of when in its own scan it reaches that
+         * clause's position -- this iteration's view of the database is
+         * frozen at snapshotGen). This is checked freshly on every call
+         * (never cached), but the comparison itself, not the freshness, is
+         * what implements the "one fixed view for the iteration's whole
+         * lifetime" contract -- this method's BODY lives out-of-line in
          * vault-unify-execution-state.cpp rather than inline here like the
-         * rest of this class: Clause is still only forward-declared at this
-         * point in the header, and isRetired() needs it complete). Checked
-         * freshly on every call, not cached, so a clause retired by a
-         * NESTED goal after this iterator was constructed (but before it
-         * reaches that clause's position) is excluded too. This is the
-         * "logical update view" conformance point documented in SPEC.md: an
-         * in-progress iteration is never disturbed by memory unsafety (the
-         * node stays a valid list element -- see Clause::retire()'s
-         * comment), but it DOES stop offering a just-retracted clause the
-         * moment it is tombstoned, even for a scan already under way. A
-         * clause APPENDED mid-scan, by contrast, is naturally still visible
-         * if this iterator has not yet advanced past it
-         * (std::list::push_back() does not invalidate a previously captured
-         * end() iterator, and the new node becomes reachable before it) --
-         * also documented in SPEC.md rather than suppressed.
+         * rest of this class because Clause is still only forward-declared
+         * at this point in the header, and the generation accessors need it
+         * complete.
          */
         bool isValid();
 
@@ -340,6 +350,14 @@ public:
 
         /// See invalidate()/isValid() above.
         bool m_invalidated;
+
+        /// See the constructor's and isValid()'s comments above -- the
+        /// mutation generation this iterator's whole traversal is pinned
+        /// to. 0 for a default-constructed (no ExecutionState) iterator,
+        /// which is never walked for real candidates (see the callers that
+        /// use the default constructor purely to satisfy a UnifyContext
+        /// parameter for a throwaway trial unification).
+        uint64_t m_snapshotGen;
     };
     const ClauseIterator clauseIterator() {
         return ClauseIterator( this );
@@ -371,12 +389,21 @@ public:
     void collectAllTermTrees( std::set<const AbstractTerm*>& out_visited );
 
     Engine* m_pEngine;
-    
+
     ExecutionState* m_pParent;
-    
+
+    /// ROADMAP Phase 2 (runtime assert/retract, SPEC.md): the World this
+    /// state belongs to -- needed by ClauseIterator's constructor to read
+    /// the current mutation generation (World::currentGeneration()) as its
+    /// snapshotGen. Only the root ExecutionState (World::getRootState()) is
+    /// actually used anywhere today (fork()/m_listChildStates are unused,
+    /// dead code), but every ExecutionState -- root or forked child --
+    /// shares the one World it was created in or under.
+    World* m_pWorld;
+
     /// Clauses as added by this execution state.
     std::list<Clause*> m_listClauses;
-    
+
     /// Child execution states spawned by this execution state.
     std::list<ExecutionState*> m_listChildStates;
 };
@@ -1332,11 +1359,18 @@ public:
      * std::list NODE elsewhere in the same search (or a concurrently
      * running nested job), since std::list::erase() only guarantees OTHER
      * iterators stay valid, not ones pointing at the erased element itself.
-     * Instead the clause is tombstoned in place -- retire() flips this flag,
-     * and ClauseIterator::isValid() below skips any clause for which
-     * isRetired() is true while walking m_listClauses -- so the node (and
-     * every list iterator referencing it) remains perfectly valid, just
-     * permanently excluded from future candidate consideration.
+     * Instead the clause is tombstoned in place -- retire() flips this flag
+     * (and stamps a retirement generation, see below), and
+     * ClauseIterator::isValid() skips any clause not VISIBLE to that
+     * iterator's own generation snapshot while walking m_listClauses -- so
+     * the node (and every list iterator referencing it) remains perfectly
+     * valid. "Permanently excluded from future candidate consideration" is
+     * true for any iterator constructed AFTER this retire() -- but, per
+     * SPEC.md's logical update view, NOT for one already in flight when it
+     * happens (see the generation comparison on isRetired()/retire()
+     * below): that already-in-progress iteration keeps seeing the clause
+     * for the rest of its own lifetime, exactly as if the retract had not
+     * happened yet from its point of view.
      *
      * Because the tombstoned Clause stays a normal member of its
      * ExecutionState's m_listClauses, it needs no separate "retired list"
@@ -1350,7 +1384,34 @@ public:
      * removed from the map that would otherwise reach it again).
      */
     bool isRetired() const { return m_isRetired; }
-    void retire() { m_isRetired = true; }
+
+    /**
+     * ROADMAP Phase 2 (runtime assert/retract, SPEC.md -- "logical update
+     * view"): tombstone this clause AND stamp the World mutation generation
+     * (see World::bumpGeneration()) it was retired in, so a ClauseIterator
+     * whose snapshotGen predates `gen` still offers this clause (it hasn't
+     * "seen" the retract yet) while one whose snapshotGen is >= `gen`
+     * (constructed at or after this retire()) does not. The caller
+     * (SolveJob::performSlice()'s `__builtin_retract` special form) must
+     * hold World::clauseDbMutex() while calling this, exactly like
+     * ExecutionState::appendClause() -- both mutate state guarded by that
+     * one lock.
+     */
+    void retire( uint64_t gen ) { m_isRetired = true; m_retireGeneration = gen; }
+
+    /// See ExecutionState::appendClause() -- stamped with the World
+    /// mutation generation (World::bumpGeneration()) this clause was
+    /// appended in. A ClauseIterator whose snapshotGen is < this value
+    /// never offers this clause -- it did not exist yet, from that
+    /// iteration's point of view (see ClauseIterator::isValid()).
+    uint64_t getAppendGeneration() const { return m_appendGeneration; }
+    void setAppendGeneration( uint64_t gen ) { m_appendGeneration = gen; }
+
+    /// See retire() above. 0 (never stamped) for a clause that has never
+    /// been retired; isRetired() is the authoritative "is this clause
+    /// retired at all" check -- this value only matters once isRetired()
+    /// is true.
+    uint64_t getRetireGeneration() const { return m_retireGeneration; }
 
 private:
     ConsTerm* m_pLeftHandTerm;
@@ -1364,6 +1425,12 @@ private:
 
     /// See isRetired()/retire() above.
     bool m_isRetired;
+
+    /// See getAppendGeneration()/setAppendGeneration() above.
+    uint64_t m_appendGeneration;
+
+    /// See getRetireGeneration()/retire() above.
+    uint64_t m_retireGeneration;
 };
 
 
@@ -1791,11 +1858,60 @@ public:
 
     void setTermDebugInfo( const AbstractTerm*, TermDebugInfo* );
     TermDebugInfo* getTermDebugInfo( const AbstractTerm* );
-    
+
+    /**
+     * ROADMAP Phase 2 (runtime assert/retract, SPEC.md -- "logical update
+     * view"): the current clause-database mutation generation, for a
+     * ClauseIterator to snapshot at construction (see
+     * ExecutionState::ClauseIterator's constructor). Deliberately UNLOCKED
+     * -- see clauseDbMutex()'s comment below for why that is fine today.
+     */
+    uint64_t currentGeneration() const { return m_mutationGeneration; }
+
+    /**
+     * Advance and return the new clause-database mutation generation.
+     * Called exactly once per mutation -- once per ExecutionState::
+     * appendClause() (a parse-time clause or a runtime assert()) and once
+     * per retract()'s Clause::retire() -- each such call site stamps the
+     * mutating/retiring Clause with the returned value
+     * (Clause::setAppendGeneration()/retire()). The caller MUST hold
+     * clauseDbMutex() while calling this (see below); it is not
+     * synchronized on its own.
+     */
+    uint64_t bumpGeneration() { return ++m_mutationGeneration; }
+
+    /**
+     * ROADMAP Phase 5.1 (pulled forward): guards m_mutationGeneration
+     * together with whichever ExecutionState::m_listClauses is being
+     * mutated. appendClause() (called from BOTH the parser/main thread --
+     * for parse-time clauses, see RuntimeContext::parseExecuteSegment() --
+     * AND the worker thread -- for a runtime assert(), SolveJob::
+     * performSlice()) and retract()'s Clause::retire() call (worker thread
+     * only) both lock this for their list-mutation-plus-generation-bump
+     * critical section, replacing the commented-out `// LOCK( this )` /
+     * `// UNLOCK( this )` placeholders that used to bracket
+     * ExecutionState::appendClause()'s body -- what was once merely a
+     * theoretical race (nothing else ever mutated the clause list
+     * concurrently) is a real one now that assert() makes the WORKER
+     * thread a clause-list writer too, alongside the parser thread.
+     *
+     * Reader side (a ClauseIterator snapshotting currentGeneration() at
+     * construction, or walking m_listClauses/checking isRetired() while
+     * traversing) is deliberately left UNLOCKED here -- this engine has
+     * exactly one reader today, the single worker thread (SPEC.md's
+     * FIFO-single-worker-thread guarantee), so two READS never race each
+     * other, and a read racing the parser thread's WRITE is a pre-existing,
+     * benign (ASan/UBSan-silent -- ordinary word-sized reads/writes, no
+     * heap corruption) condition, not a new one this change introduces.
+     * Making the reader side race-free too (e.g. so TSan would also be
+     * silent) is ROADMAP 5.1 scope, not this task's.
+     */
+    boost::mutex& clauseDbMutex() { return m_mutexClauseDb; }
+
 private:
     /// The single root execution state.
     ExecutionState m_rootState;
-    
+
     /// Constant root clauses, built-ins etc.
     /// These are non-modifyable builtin clauses.
     std::list<const Clause*> m_rootClauses;
@@ -1807,6 +1923,12 @@ private:
     /// other map entries, so they cannot be deleted at replace time;
     /// ~World()'s de-duplicating sweep reclaims them exactly once.
     std::list<TermDebugInfo*> m_lsRetiredDebugInfos;
+
+    /// See currentGeneration()/bumpGeneration() above.
+    uint64_t m_mutationGeneration;
+
+    /// See clauseDbMutex() above.
+    boost::mutex m_mutexClauseDb;
 };
 
 

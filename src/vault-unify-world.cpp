@@ -183,7 +183,8 @@ void World::init()
 
 
 World::World()
-        : m_rootState( NULL )
+        : m_rootState( NULL, this )
+        , m_mutationGeneration( 0 )
 {
 }
 

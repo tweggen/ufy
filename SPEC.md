@@ -1637,31 +1637,86 @@ out from under a still-live copy would be a dangling-iterator bug; tombstoning
 the `Clause` in place — the node stays a completely ordinary, valid
 `m_listClauses` member — sidesteps the question entirely: nothing is ever
 invalidated, because nothing is ever removed. `ClauseIterator::isValid()`
-skips a retired clause when walking forward (checked freshly on every call,
-not cached), so it is simply never offered as a candidate again from the
-moment it is tombstoned. This also means a tombstoned clause needs **no**
-separate "retired list" for its own memory the way
-`World::m_lsRetiredDebugInfos` (`src/vault-unify-world.cpp`) needs one for a
-*replaced* `TermDebugInfo*` (which is actually removed from the map that
-would otherwise reach it again): staying an ordinary `m_listClauses` member
-means the existing whole-database sweep
-(`ExecutionState::collectAllTermTrees()`/`~ExecutionState()`) already frees
-its term tree and the `Clause` object itself exactly once, tombstoned or
-not.
+checks every candidate against this iterator's fixed generation snapshot
+(next paragraph), freshly on every call (never cached), so a clause's
+visibility can only ever appear to CHANGE relative to what an already-
+constructed iterator sees if that iterator's own snapshot says so — see
+below. This also means a tombstoned clause needs **no** separate "retired
+list" for its own memory the way `World::m_lsRetiredDebugInfos`
+(`src/vault-unify-world.cpp`) needs one for a *replaced* `TermDebugInfo*`
+(which is actually removed from the map that would otherwise reach it
+again): staying an ordinary `m_listClauses` member means the existing
+whole-database sweep (`ExecutionState::collectAllTermTrees()`/
+`~ExecutionState()`) already frees its term tree and the `Clause` object
+itself exactly once, tombstoned or not.
 
-**Logical update view**: an iteration already under way when a clause is
-retracted stops offering that clause **from the moment it is tombstoned
-onward**, even mid-scan — `ClauseIterator::isValid()`'s freshness (previous
-paragraph) means it is checked live, not snapshotted at the iteration's
-start. This is a documented, deliberate simplification rather than strict
-ISO-Prolog logical-update-view semantics (a call is traditionally guaranteed
-to see the exact clause set as it stood at call time, unaffected by any
-assert/retract during its own execution) — real Prolog implementations vary
-on this point too. A clause **appended** mid-scan (by contrast) IS seen by
-an iterator that has not yet advanced past it: `std::list::push_back()`
-never invalidates a previously captured `end()` iterator, and the new node
-becomes part of the reachable range before that sentinel — ordinary
-`std::list` behavior, not special-cased.
+**Logical update view**: every clause iteration sees the clause database
+exactly as it stood at the moment the iteration **started** — a clause
+asserted (or parsed) LATER is invisible to it, and a clause retracted LATER
+remains visible to it, for that iteration's entire lifetime, no matter how
+many asserts/retracts happen while it is still in progress or how far it has
+already advanced. This is implemented with a World-wide, monotonically
+increasing `uint64_t` mutation generation counter
+(`World::currentGeneration()`/`World::bumpGeneration()`,
+`include/vault-unify.hpp`): every clause-database mutation — an
+`ExecutionState::appendClause()` (a parse-time clause or a runtime
+`assert()`) or a `retract()`'s `Clause::retire()` — advances the counter by
+exactly one and stamps the mutating/retiring `Clause` with the resulting
+value (`Clause::m_appendGeneration` / `m_retireGeneration`, set via
+`Clause::setAppendGeneration()`/`retire( gen )`). An
+`ExecutionState::ClauseIterator` captures the counter's CURRENT value as its
+own `snapshotGen` the moment it is constructed (every real construction goes
+through `ExecutionState::clauseIterator()`, called exactly once per
+`SolveContext`, from its constructor — `src/vault-unify-solvejob.cpp` — so a
+goal's candidate-clause search gets one fixed view for its whole lifetime,
+including a `findall`'s or a rule body's own NESTED goals, which each get
+their own snapshot, taken at the moment THEY start). A clause is visible to
+a given iterator iff `getAppendGeneration() <= snapshotGen` **and**
+(`!isRetired()` **or** `getRetireGeneration() > snapshotGen`) —
+`ClauseIterator::isValid()` (`src/vault-unify-execution-state.cpp`) skips
+forward over any clause failing this test while walking `m_listClauses`,
+checked freshly on every call rather than cached. "Freshly, not cached" is
+about mechanism, not meaning, though: because `snapshotGen` never changes
+once an iterator is constructed, and generations only ever increase, the
+visibility verdict for any given clause/iterator pair is fixed for that
+iterator's whole lifetime the moment both values exist — re-checking on
+every call costs nothing but a comparison, it does not let a LATER mutation
+change an EARLIER iterator's view. Concretely for the toggle-sensor idiom
+this feature targets, `sensor($dev,$old); retract(sensor($dev,$old));
+assert(sensor($dev,$new));`: the outer query's backtracking re-scan of
+`sensor($dev,$old)` (its `ClauseIterator` constructed once, at that goal's
+first visit) has a `snapshotGen` from BEFORE the rule body's own
+retract/assert ever run — so the fact the rule just tombstoned still counts
+as "not yet retracted" to that scan (its `getRetireGeneration()` is `>
+snapshotGen`, satisfying the visibility test's second clause) while the fact
+the rule just asserted counts as "not yet appended" (its
+`getAppendGeneration()` is `> snapshotGen`, failing the test's first
+clause) — so backtracking correctly finds no further alternative and never
+re-visits with the new value. This replaces (and corrects) an earlier
+concession in this section that a `retract()` took effect immediately for
+an in-progress scan while an `assert()`/append was "naturally" visible
+mid-scan by ordinary `std::list::push_back()` semantics: that description
+under-specified the append side (a later append became visible to an
+EARLIER iteration purely by accident of iterator position, not by design) —
+exactly the bug the example above traces, which in general does not merely
+produce one spurious extra solution but can loop forever (nothing bounds how
+many times backtracking can re-reach a fact the very same rule invocation
+keeps re-asserting); the generation check above is what actually prevents
+both, by construction rather than by iterator-position luck.
+
+**Locking**: `ExecutionState::appendClause()` and `retract()`'s
+`Clause::retire()` call both lock `World::clauseDbMutex()`
+(`include/vault-unify.hpp`) around their list-mutation-plus-generation-bump
+critical section — this replaces the `appendClause()`'s formerly
+commented-out `// LOCK( this )` placeholder, which is now load-bearing:
+`assert()` makes the single WORKER thread a clause-list writer too,
+alongside the parser/main thread's parse-time appends
+(`RuntimeContext::parseExecuteSegment()`), so the two can now genuinely race
+on the same `m_listClauses`/mutation counter. Reader-side locking (a
+`ClauseIterator` snapshotting the generation, or traversing `m_listClauses`)
+is deliberately OUT of scope — this engine has exactly one reader today (the
+single worker thread) — leaving a benign, ASan/UBSan-silent parser-thread-
+write-vs-worker-thread-read race as a ROADMAP 5.1 item, not this one's.
 
 **Conformance**: `test/conformance/assert-retract.ufy` — (a) `assert()`
 adds a fact absent beforehand; a separate, later query sees it; (b) the

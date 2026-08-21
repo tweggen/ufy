@@ -46,6 +46,8 @@ Clause::Clause( ConsTerm* pLeftHandTerm )
         : m_pLeftHandTerm( pLeftHandTerm )
         , m_uid( m_nextUid++ )
         , m_isRetired( false )
+        , m_appendGeneration( 0 )
+        , m_retireGeneration( 0 )
 {
 }
 
