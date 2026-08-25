@@ -72,9 +72,18 @@ int XDebugTCPClient::connect()
         return -ENOENT;
     }
 
+    /*
+     * ip::address::from_string() was deprecated in Boost 1.66 in favour of
+     * ip::make_address() and removed in 1.87; the legacy Boost.Jam build
+     * still compiles against a pre-1.66 Boost, so pick by version.
+     */
     boost::asio::ip::tcp::endpoint *endpoint =
          new boost::asio::ip::tcp::endpoint(
+#if BOOST_VERSION >= 106600
+             boost::asio::ip::make_address( m_urlDebugger ),
+#else
              boost::asio::ip::address::from_string( m_urlDebugger ),
+#endif
              9000 );
     try {
         m_spTcpSocket->async_connect( *endpoint,

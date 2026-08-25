@@ -6,7 +6,6 @@
 #include <boost/asio.hpp>
 #include <boost/thread.hpp>
 #include <boost/scoped_array.hpp>
-#include <boost/asio/io_service.hpp>
 
 namespace vault {
 namespace unify {
