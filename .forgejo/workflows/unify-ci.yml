@@ -1,0 +1,201 @@
+name: Unify CI
+
+# Forgejo Actions twin of .github/workflows/unify-ci.yml -- KEEP IN SYNC.
+#
+# Why two files: Forgejo reads .github/workflows only as a fallback and
+# ignores it completely once a .forgejo directory exists, while GitHub never
+# reads .forgejo -- so each platform picks up exactly one copy and nothing
+# runs twice. The only intended differences from the GitHub twin are:
+#   - upload-artifact: the stock actions/upload-artifact@v4 does not work on
+#     Forgejo (it targets GitHub's artifact backend); the patched fork at
+#     code.forgejo.org/forgejo/upload-artifact@v4 is used instead.
+#   - runs-on: "ubuntu-latest" here is just a runner label -- map it in your
+#     forgejo-runner config to a Debian/Ubuntu-based docker image that has
+#     node.js (needed to execute actions), e.g. the documented default
+#     "ubuntu-latest:docker://node:20-bookworm". git must be present in the
+#     image for checkout to work.
+#
+# Scoped to only the Unify module (and the workflow files) so unrelated
+# changes elsewhere in the repo don't trigger it.
+on:
+  push:
+    paths:
+      - "unify/**"
+      - ".forgejo/workflows/unify-ci.yml"
+  pull_request:
+    paths:
+      - "unify/**"
+      - ".forgejo/workflows/unify-ci.yml"
+  # Manual trigger; with update_golden=true the build-and-test job also
+  # regenerates all golden files and uploads them as the
+  # unify-generated-goldens artifact (review + commit them by hand -- the
+  # dev machine has no local toolchain to run UNIFY_UPDATE_GOLDEN itself).
+  workflow_dispatch:
+    inputs:
+      update_golden:
+        description: "Regenerate golden files and upload as artifact"
+        type: boolean
+        default: false
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Container images used by Forgejo runners are usually minimal, so
+      # install the toolchain explicitly (a no-op where preinstalled). sudo
+      # may not exist when the job runs as root inside a container.
+      - name: Install build dependencies
+        run: |
+          if command -v sudo >/dev/null 2>&1; then SUDO=sudo; else SUDO=; fi
+          $SUDO apt-get update
+          $SUDO apt-get install -y --no-install-recommends \
+            build-essential cmake libboost-all-dev
+      - name: Configure
+        run: |
+          cmake -S unify -B build/unify \
+                -DCMAKE_BUILD_TYPE=RelWithDebInfo
+      - name: Build
+        run: |
+          cmake --build build/unify --parallel
+      - name: Run golden-output tests (ctest)
+        run: |
+          ctest --output-on-failure
+        working-directory: build/unify
+
+      # Only on manual dispatch with update_golden=true (see `on:` above).
+      # `always()` so it still runs when the ctest step above failed --
+      # regenerating goldens is exactly what you want on an outdated-golden
+      # failure. github.event.inputs is used (not the inputs context) for
+      # Forgejo compatibility; its values are strings.
+      - name: Regenerate golden files (manual dispatch only)
+        if: always() && github.event_name == 'workflow_dispatch' && github.event.inputs.update_golden == 'true'
+        run: |
+          UNIFY_UPDATE_GOLDEN=1 ctest --output-on-failure
+        working-directory: build/unify
+      - name: Upload regenerated golden files
+        if: always() && github.event_name == 'workflow_dispatch' && github.event.inputs.update_golden == 'true'
+        uses: https://code.forgejo.org/forgejo/upload-artifact@v4
+        with:
+          name: unify-generated-goldens
+          path: unify/test/golden/
+          if-no-files-found: warn
+
+      # Runs each sample program directly and uploads its combined
+      # stdout+stderr as a build artifact -- useful raw material when
+      # updating golden files or debugging a red run (the golden tests
+      # themselves compare stdout only; see test/run-golden-test.sh).
+      - name: Run sample programs (for bootstrapping golden files)
+        if: always()
+        continue-on-error: true
+        run: |
+          mkdir -p sample-outputs
+          for program in test-engine test2 pathfinder mediaplayer; do
+            echo "=== $program.ufy ===" | tee "sample-outputs/${program}.out"
+            timeout 120 ./build/unify/unify-run "unify/${program}.ufy" \
+              >> "sample-outputs/${program}.out" 2>&1 || true
+          done
+          echo "=== mapsyntax.ufy ===" | tee "sample-outputs/mapsyntax.out"
+          timeout 120 ./build/unify/unify-run "unify/test/mapsyntax.ufy" \
+            >> "sample-outputs/mapsyntax.out" 2>&1 || true
+          # mediaplayer.ufy is currently empty (ROADMAP.md) -- skipped.
+      - name: Upload sample outputs
+        # Patched fork; the stock actions/upload-artifact@v4 does not work
+        # outside GitHub. Fully-qualified so it resolves regardless of the
+        # instance's DEFAULT_ACTIONS_URL setting.
+        uses: https://code.forgejo.org/forgejo/upload-artifact@v4
+        if: always()
+        with:
+          name: unify-sample-outputs
+          path: sample-outputs/
+          if-no-files-found: warn
+
+  # ROADMAP.md Phase 1 ("Run the test suite under ASan/LeakSanitizer"). The
+  # engine is KNOWN to leak (raw `new` throughout -- see ROADMAP.md Phase 1
+  # "Ownership model"), so leak detection cannot gate CI yet; this job gates
+  # on memory *errors* (use-after-free, overflow, UB) via ASan+UBSan
+  # immediately, and only reports leaks informationally via an uploaded
+  # artifact, until the ownership-model work lands and leaks can be zeroed.
+  sanitize:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          if command -v sudo >/dev/null 2>&1; then SUDO=sudo; else SUDO=; fi
+          $SUDO apt-get update
+          $SUDO apt-get install -y --no-install-recommends \
+            build-essential cmake libboost-all-dev
+      - name: Configure (ASan+UBSan)
+        run: |
+          cmake -S unify -B build/unify-asan \
+                -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+                -DUNIFY_SANITIZE=address,undefined
+      - name: Build (ASan+UBSan)
+        run: |
+          cmake --build build/unify-asan --parallel
+
+      # Gates the job: memory errors (use-after-free, overflow, UB) must not
+      # happen. Leak detection is off here (ASAN_OPTIONS=detect_leaks=0) --
+      # the engine is known to leak (ROADMAP.md Phase 1) and that is tracked
+      # separately by the informational step below, not by this gate.
+      - name: Memory errors (must pass)
+        env:
+          ASAN_OPTIONS: detect_leaks=0
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: |
+          ctest --output-on-failure
+        working-directory: build/unify-asan
+
+      # GATES the job since 2026-08-20: every sample and conformance program
+      # runs leak-free (ROADMAP.md Phase 1 ownership model complete), so any
+      # LeakSanitizer finding is a regression and fails CI.
+      - name: Leak check (must stay at zero)
+        if: always()
+        env:
+          ASAN_OPTIONS: detect_leaks=1
+          LSAN_OPTIONS: report_objects=0
+        run: |
+          mkdir -p leak-report
+          for program in test-engine test2 pathfinder mediaplayer; do
+            echo "=== $program.ufy ===" | tee "leak-report/${program}.txt"
+            timeout 120 ./build/unify-asan/unify-run "unify/${program}.ufy" \
+              >> "leak-report/${program}.txt" 2>&1 || true
+          done
+          echo "=== mapsyntax.ufy ===" | tee "leak-report/mapsyntax.txt"
+          timeout 120 ./build/unify-asan/unify-run "unify/test/mapsyntax.ufy" \
+            >> "leak-report/mapsyntax.txt" 2>&1 || true
+          # Query-exercising conformance programs (ROADMAP.md Phase 1: the
+          # SolveJob arena and query Goal ownership only free memory for
+          # jobs that actually run a "goal ?" query).
+          for program in clause-order strings-numbers unification-basics arithmetic comparison cut if-statement findall-arrays loops assert-retract strings imports recursion; do
+            echo "=== ${program}.ufy ===" | tee "leak-report/${program}.txt"
+            timeout 120 ./build/unify-asan/unify-run "unify/test/conformance/${program}.ufy" \
+              >> "leak-report/${program}.txt" 2>&1 || true
+          done
+
+          echo "--- Leak summary ---"
+          FAIL=0
+          for f in leak-report/*.txt; do
+            echo "$f:"
+            if grep -E 'SUMMARY: AddressSanitizer|leaked in' "$f"; then
+              FAIL=1
+            else
+              echo "  clean"
+            fi
+          done
+          exit $FAIL
+      - name: Upload leak report
+        # Patched fork; the stock actions/upload-artifact@v4 does not work
+        # outside GitHub. Fully-qualified so it resolves regardless of the
+        # instance's DEFAULT_ACTIONS_URL setting.
+        uses: https://code.forgejo.org/forgejo/upload-artifact@v4
+        if: always()
+        with:
+          name: unify-leak-report
+          path: leak-report/
+          if-no-files-found: warn

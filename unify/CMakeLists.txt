@@ -1,5 +1,5 @@
 #
-# CMake build for combine/modules/unify ("Unify" logic-language engine).
+# CMake build for unify/ ("Unify" logic-language engine).
 #
 # This is the Phase 0 ("Reproducible baseline") CMake port called for by
 # ROADMAP.md. It is meant to build cleanly on Linux (the historical/only
@@ -15,7 +15,7 @@
 #                       with no dependency on cpprest / rest-server.
 #   vault-unify-rest    static library: adds the REST server frontend.
 #                       Only built if UNIFY_BUILD_REST is ON *and* cpprestsdk
-#                       plus a CMake-buildable combine/modules/rest-server can
+#                       plus a CMake-buildable ../rest-server module can
 #                       actually be found; otherwise this is a guarded no-op
 #                       (see the UNIFY_BUILD_REST block below).
 #   unify-run           executable: minimal CLI runner used by the (future)
@@ -73,7 +73,7 @@ find_package(Threads REQUIRED)
 # Source partitioning.
 #
 # src/vault-unify-rest-server.cpp{,.hpp} are the only files in this module
-# that touch cpprest / combine/modules/rest-server (verified by grepping all
+# that touch cpprest / the rest-server module (verified by grepping all
 # of src/ for cpprest, rest-server and http includes); everything else here
 # is the pure engine core and only needs Boost + Threads.
 #
@@ -117,11 +117,12 @@ target_include_directories(vault-unify-core
         # a later phase, not this CMake port.
         "${CMAKE_CURRENT_SOURCE_DIR}/src"
     PRIVATE
-        # combine/include: the repo-wide shared headers. Only
-        # vault-unify-xdebug-tcp.cpp uses it (vault::BoostAsioIoService from
-        # vault/vault.hpp); VAULT_NO_PPLX below keeps that header from
+        # ../include: the repo-wide shared headers, vendored from the vault
+        # repository's combine/include/. Only vault-unify-xdebug-tcp.cpp uses
+        # it (vault::BoostAsioIoService from vault/vault.hpp); the
+        # VAULT_NO_PPLX definition below keeps that header from
         # dragging cpprest's pplx into this cpprest-free core build.
-        "${CMAKE_CURRENT_SOURCE_DIR}/../../include"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../include"
 )
 
 target_compile_definitions(vault-unify-core PRIVATE VAULT_NO_PPLX)
@@ -150,10 +151,10 @@ endif()
 # Optional REST server frontend.
 #
 # Sketched/guarded per ROADMAP.md Phase 0: cpprest may simply not be present,
-# and combine/modules/rest-server (its Jamfile-only sibling module) has no
-# CMake port of its own yet either -- that is out of scope here. If both
-# preconditions happen to be met, build it; otherwise warn and skip instead
-# of failing the whole configure.
+# and the rest-server module (a Jamfile-only sibling in the vault repository,
+# not vendored here) has no CMake port of its own either -- that is out of
+# scope here. If both preconditions happen to be met, build it; otherwise
+# warn and skip instead of failing the whole configure.
 # ---------------------------------------------------------------------------
 if(UNIFY_BUILD_REST)
     find_package(cpprestsdk CONFIG QUIET)
@@ -165,7 +166,7 @@ if(UNIFY_BUILD_REST)
             "(e.g. via vcpkg: 'vcpkg install cpprestsdk'). Skipping vault-unify-rest.")
     elseif(NOT EXISTS "${UNIFY_REST_SERVER_DIR}/CMakeLists.txt")
         message(WARNING
-            "UNIFY_BUILD_REST is ON but combine/modules/rest-server has no "
+            "UNIFY_BUILD_REST is ON but ../rest-server has no "
             "CMakeLists.txt yet (only its Jamfile) -- it needs its own CMake "
             "port before vault-unify-rest can be built. Skipping.")
     else()

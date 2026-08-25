@@ -1,6 +1,7 @@
 # Unify Engine — Roadmap to a Stable Language PoC
 
-Status: draft, created 2026-08-20 from a code review of `combine/modules/unify`.
+Status: draft, created 2026-08-20 from a code review of the Unify engine
+(then living at `combine/modules/unify` in the vault repository).
 
 Unify is a Prolog-family logic language with C-like surface syntax (`.ufy`),
 embedded as the rule engine of the vault home-automation system. This document
@@ -316,10 +317,10 @@ workers running N independent queries:
       concurrent add/remove.
 - [ ] Engine shutdown and job cancellation: `executionLoop` must be able to
       exit; jobs must be stoppable.
-- [ ] Fix `vault::BoostAsioIoService` (repo-wide `combine/include/vault/`
-      `vault.hpp`): its constructor lets a joinable `boost::thread` local go
-      out of scope — the same `std::terminate()` bug fixed in
-      `Engine::addWorkerThread()`. Only reached from
+- [ ] Fix `vault::BoostAsioIoService` (the vendored `include/vault/vault.hpp`,
+      shared with the vault repository): its constructor lets a joinable
+      `boost::thread` local go out of scope — the same `std::terminate()`
+      bug fixed in `Engine::addWorkerThread()`. Only reached from
       `XDebugTCPClient::connect()` within unify, but every module using the
       singleton is affected under modern Boost.
 - [ ] Run the full test suite under TSan with 2+ workers.

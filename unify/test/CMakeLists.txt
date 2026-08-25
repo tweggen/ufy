@@ -1,5 +1,5 @@
 #
-# Golden-output tests for combine/modules/unify (ROADMAP.md Phase 0).
+# Golden-output tests for the Unify engine (ROADMAP.md Phase 0).
 #
 # Each sample .ufy program listed below is run through the `unify-run`
 # executable and its stdout is diffed against test/golden/<name>.expected

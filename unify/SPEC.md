@@ -1,7 +1,7 @@
 # Unify Language Specification
 
 This describes the Unify language (`.ufy`) and its engine's run-time
-semantics as implemented in `combine/modules/unify` today. It is derived by
+semantics as implemented in this repository's `unify/` engine today. It is derived by
 reading the parser (`src/vault-unify-parser.hpp`,
 `src/vault-unify-parser.cpp`), the solver (`src/vault-unify-solvejob.cpp`),
 the binding model (`src/vault-unify-unifycontext.cpp`,
