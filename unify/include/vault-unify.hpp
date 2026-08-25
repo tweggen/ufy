@@ -2294,9 +2294,9 @@ private:
      * file already in this set is skipped silently, see processImport()).
      * The main program itself is deliberately NOT added here: re-importing
      * it is merely redundant (its clauses/queries would simply run again),
-     * not unsafe, and unify-run.cpp/vault-unify-rest-server.cpp both already
-     * pass the main program's content directly to parseExecuteSegment(),
-     * never through processImport().
+     * not unsafe, and unify-run.cpp already passes the main program's
+     * content directly to parseExecuteSegment(), never through
+     * processImport().
      */
     std::set<std::string> m_importedFiles;
 };

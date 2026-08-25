@@ -14,8 +14,8 @@
  * combine/applications/stuart-app); this is a standalone one built just for
  * that purpose.
  *
- * It drives the same public API the REST server frontend uses
- * (vault-unify-rest-server.cpp): vault::unify::RuntimeContext::setupDone()
+ * It drives the engine's public API the same way an embedding application
+ * would: vault::unify::RuntimeContext::setupDone()
  * to stand up a World + Engine + one worker thread, then
  * parseExecuteSegment() to parse and run the file. `print`/`emit` builtins
  * already write their output straight to stdout as a side effect of

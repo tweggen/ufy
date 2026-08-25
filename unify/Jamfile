@@ -9,7 +9,6 @@ lib boost_system : : <name>boost_system ;
 lib boost_thread : : <name>boost_thread ;
 lib pthread : : <name>pthread ;
 lib readline : : <name>readline ;
-lib cpprest : : <name>cpprest ;
 
 project
     : requirements 
@@ -19,8 +18,7 @@ project
 
 
 lib vault-unify : [ glob src/*.cpp ] 
-	/combine/modules/rest-server
-	cpprest boost_filesystem boost_system boost_thread readline pthread ;
+	boost_filesystem boost_system boost_thread readline pthread ;
 
 
 install install-bin : vault-unify : <location>"/${BOBINSTALLDIR}/lib" ; 

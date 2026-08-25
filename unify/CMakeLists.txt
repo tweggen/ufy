@@ -11,18 +11,12 @@
 #
 # Targets:
 #   vault-unify-core   static library: the engine core (parser, terms,
-#                       unification, solver, engine, world, runtime context),
-#                       with no dependency on cpprest / rest-server.
-#   vault-unify-rest    static library: adds the REST server frontend.
-#                       Only built if UNIFY_BUILD_REST is ON *and* cpprestsdk
-#                       plus a CMake-buildable ../rest-server module can
-#                       actually be found; otherwise this is a guarded no-op
-#                       (see the UNIFY_BUILD_REST block below).
+#                       unification, solver, engine, world, runtime context).
+#                       Boost and Threads are its only dependencies.
 #   unify-run           executable: minimal CLI runner used by the (future)
 #                       golden-output test harness; see tools/unify-run.cpp.
 #
 # Options:
-#   UNIFY_BUILD_REST    (default OFF)  build the REST server frontend.
 #   UNIFY_BUILD_XDEBUG  (default ON on UNIX, OFF elsewhere) build the xdebug
 #                       TCP debugger backend. It is pure Boost.Asio except for
 #                       one POSIX ::access() call in vault-unify-xdebug.cpp,
@@ -59,7 +53,6 @@ if(NOT MSVC AND UNIFY_SANITIZE)
     add_link_options(-fsanitize=${UNIFY_SANITIZE})
 endif()
 
-option(UNIFY_BUILD_REST "Build the REST server frontend (needs cpprestsdk + rest-server)" OFF)
 if(UNIX)
     option(UNIFY_BUILD_XDEBUG "Build the xdebug TCP debugger backend" ON)
 else()
@@ -72,10 +65,8 @@ find_package(Threads REQUIRED)
 # ---------------------------------------------------------------------------
 # Source partitioning.
 #
-# src/vault-unify-rest-server.cpp{,.hpp} are the only files in this module
-# that touch cpprest / the rest-server module (verified by grepping all
-# of src/ for cpprest, rest-server and http includes); everything else here
-# is the pure engine core and only needs Boost + Threads.
+# Everything in src/ is the pure engine core and needs only Boost +
+# Threads.
 #
 # The xdebug-* files are pure Boost.Asio/Boost.Thread except for one POSIX
 # ::access() call in vault-unify-xdebug.cpp, so they are split out behind
@@ -84,10 +75,6 @@ find_package(Threads REQUIRED)
 
 file(GLOB UNIFY_ALL_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp")
 
-set(UNIFY_REST_SOURCES
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/vault-unify-rest-server.cpp"
-)
-
 set(UNIFY_XDEBUG_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/src/vault-unify-xdebug.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/vault-unify-xdebug-context.cpp"
@@ -95,7 +82,6 @@ set(UNIFY_XDEBUG_SOURCES
 )
 
 set(UNIFY_CORE_SOURCES ${UNIFY_ALL_SOURCES})
-list(REMOVE_ITEM UNIFY_CORE_SOURCES ${UNIFY_REST_SOURCES})
 if(NOT UNIFY_BUILD_XDEBUG)
     list(REMOVE_ITEM UNIFY_CORE_SOURCES ${UNIFY_XDEBUG_SOURCES})
 endif()
@@ -120,8 +106,8 @@ target_include_directories(vault-unify-core
         # ../include: the repo-wide shared headers, vendored from the vault
         # repository's combine/include/. Only vault-unify-xdebug-tcp.cpp uses
         # it (vault::BoostAsioIoService from vault/vault.hpp); the
-        # VAULT_NO_PPLX definition below keeps that header from
-        # dragging cpprest's pplx into this cpprest-free core build.
+        # VAULT_NO_PPLX definition below keeps that header from dragging
+        # cpprest's pplx in, which nothing here needs.
         "${CMAKE_CURRENT_SOURCE_DIR}/../include"
 )
 
@@ -145,44 +131,6 @@ if(MSVC)
     target_compile_definitions(vault-unify-core PUBLIC _CRT_SECURE_NO_WARNINGS)
 else()
     target_compile_options(vault-unify-core PRIVATE -Wall -Wextra)
-endif()
-
-# ---------------------------------------------------------------------------
-# Optional REST server frontend.
-#
-# Sketched/guarded per ROADMAP.md Phase 0: cpprest may simply not be present,
-# and the rest-server module (a Jamfile-only sibling in the vault repository,
-# not vendored here) has no CMake port of its own either -- that is out of
-# scope here. If both preconditions happen to be met, build it; otherwise
-# warn and skip instead of failing the whole configure.
-# ---------------------------------------------------------------------------
-if(UNIFY_BUILD_REST)
-    find_package(cpprestsdk CONFIG QUIET)
-    set(UNIFY_REST_SERVER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../rest-server")
-
-    if(NOT cpprestsdk_FOUND)
-        message(WARNING
-            "UNIFY_BUILD_REST is ON but find_package(cpprestsdk) did not find it "
-            "(e.g. via vcpkg: 'vcpkg install cpprestsdk'). Skipping vault-unify-rest.")
-    elseif(NOT EXISTS "${UNIFY_REST_SERVER_DIR}/CMakeLists.txt")
-        message(WARNING
-            "UNIFY_BUILD_REST is ON but ../rest-server has no "
-            "CMakeLists.txt yet (only its Jamfile) -- it needs its own CMake "
-            "port before vault-unify-rest can be built. Skipping.")
-    else()
-        add_subdirectory("${UNIFY_REST_SERVER_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/rest-server")
-
-        add_library(vault-unify-rest STATIC "${UNIFY_REST_SOURCES}")
-        target_link_libraries(vault-unify-rest
-            PUBLIC
-                vault-unify-core
-                vault-rest-server
-                cpprestsdk::cpprest
-        )
-        if(NOT MSVC)
-            target_compile_options(vault-unify-rest PRIVATE -Wall -Wextra)
-        endif()
-    endif()
 endif()
 
 # ---------------------------------------------------------------------------

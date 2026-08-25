@@ -814,8 +814,8 @@ prefix/format is what `test/golden/*.expected` diffs against
 `print` (same variadic-in-practice, always-succeeds behavior), but converts
 arguments via `toJSON(true, ...)` and writes `"emit: " + outputString`,
 then also forwards that string to `pEngine->emitEvent(...)` for any
-registered `UserEventListener` — used by the REST frontend, not exercised
-by stdout-only conformance tests here.
+registered `UserEventListener` — used by embedding applications, not
+exercised by the stdout-only conformance tests here.
 
 **`__builtin_member_deref($map, $key, $out)`** — `MemberBuiltinClause`
 (`src/vault-unify-clause-builtin-member.cpp`). What `lhs -> rhs` desugars
@@ -2074,9 +2074,9 @@ object every term built while parsing that file is stamped with via
 directory (`baseDir / strRawPath`).
 
 **Fallback to the process CWD**: if the importing file is unknown
-(`pCurrentFileDebugInfo == NULL` — a REST-fed segment,
-`vault-unify-rest-server.cpp`, which always passes `NULL`) or its URI has no
-directory component of its own (e.g. a bare filename with no `/`),
+(`pCurrentFileDebugInfo == NULL` — any segment fed to the engine without a
+source URI, e.g. one assembled in memory by an embedding application) or its
+URI has no directory component of its own (e.g. a bare filename with no `/`),
 `parent_path()` is empty, and `boost::filesystem::path`'s `operator/`
 against an empty left-hand path is the identity — the resolved path is just
 `strRawPath` as written, which every downstream operation

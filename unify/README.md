@@ -29,9 +29,7 @@ the tests and for trying programs out by hand.
 - **bash** — only for the golden-test harness (`test/run-golden-test.sh`);
   CMake skips the tests with a warning if it is missing.
 
-The core engine needs **nothing else**. cpprest and a `rest-server` sibling
-module are only for the optional REST frontend, which is off by default and
-has no rest-server to build against in this repository.
+The core engine needs **nothing else**.
 
 Installing the dependencies:
 
@@ -56,7 +54,7 @@ cmake --build build/unify --parallel
 
 This produces:
 
-- `build/unify/libvault-unify-core.a` — the engine (no cpprest dependency)
+- `build/unify/libvault-unify-core.a` — the engine
 - `build/unify/unify-run` — the CLI runner
 
 `build/` is gitignored, so parallel build directories (a sanitizer build, a
@@ -67,7 +65,6 @@ Debug build) cost nothing.
 | Option | Default | Effect |
 | --- | --- | --- |
 | `UNIFY_BUILD_XDEBUG` | `ON` on UNIX, `OFF` elsewhere | The xdebug-style TCP debugger backend. Pure Boost.Asio apart from one POSIX `::access()`. Not needed by the engine or the tests. |
-| `UNIFY_BUILD_REST` | `OFF` | The cpprest REST frontend. Needs both cpprestsdk and a CMake-buildable `../rest-server` (not present in this repository); if either is missing, configure warns and skips instead of failing. |
 | `UNIFY_SANITIZE` | *(empty)* | Comma-separated `-fsanitize=` values, e.g. `address,undefined`. Applied directory-wide, so the tests run instrumented too. Not supported under MSVC. |
 
 ```bash

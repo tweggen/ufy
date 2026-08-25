@@ -26,7 +26,7 @@ Architecture that exists and works:
 - Explicit-stack depth-first solver (`SolveJob` / `SolveContext` / `GoalPart`
   continuation chains).
 - Engine with job queues (ready/blocked/zombie), worker loop, debugger
-  (xdebug-style TCP), REST server (cpprest).
+  (xdebug-style TCP).
 
 Sketched but not functional (these drive the roadmap):
 
@@ -57,7 +57,7 @@ refactoring. Nothing else starts before the test harness exists.
 - [x] Port the build to CMake (or pin the exact boost version for Boot.Jam);
       dependencies via vcpkg or Conan.
       *(2026-08-20: `CMakeLists.txt` with `vault-unify-core` static lib,
-      `UNIFY_BUILD_XDEBUG` / `UNIFY_BUILD_REST` options, and a new
+      the `UNIFY_BUILD_XDEBUG` option, and a new
       `tools/unify-run.cpp` CLI runner. Boost comes from the system package
       in CI for now; compile validation happens on the Linux CI job below —
       the Windows dev machine has no Boost toolchain.)*
