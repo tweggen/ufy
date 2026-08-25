@@ -17,6 +17,28 @@
 namespace vault {
 namespace unify {
 
+namespace {
+
+/// See isDebugTraceEnabled()/setDebugTraceEnabled() (include/vault-unify.hpp).
+/// Written once, before any worker thread is started, by whoever wants the
+/// engine quiet; read from every thread afterwards.
+bool s_isDebugTraceEnabled = true;
+
+} // anonymous namespace
+
+
+bool isDebugTraceEnabled()
+{
+    return s_isDebugTraceEnabled;
+}
+
+
+void setDebugTraceEnabled( bool enabled )
+{
+    s_isDebugTraceEnabled = enabled;
+}
+
+
 GoalPart::GoalPart(
         const Goal* pGoal, 
         GoalPart* pParentGoalPart,

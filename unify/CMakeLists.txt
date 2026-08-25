@@ -13,10 +13,15 @@
 #   vault-unify-core   static library: the engine core (parser, terms,
 #                       unification, solver, engine, world, runtime context).
 #                       Boost and Threads are its only dependencies.
-#   unify-run           executable: minimal CLI runner used by the (future)
-#                       golden-output test harness; see tools/unify-run.cpp.
+#   unify-run           executable: the CLI front end -- batch mode (used by
+#                       the golden-output test harness) plus the interactive
+#                       REPL; see tools/unify-run.cpp and tools/unify-repl.cpp.
 #
 # Options:
+#   UNIFY_USE_READLINE  (default ON) link GNU readline into unify-run, if it
+#                       can be found, so the REPL gets line editing and
+#                       history. Purely optional: without it the REPL reads
+#                       plain lines from stdin.
 #   UNIFY_BUILD_XDEBUG  (default ON on UNIX, OFF elsewhere) build the xdebug
 #                       TCP debugger backend. It is pure Boost.Asio except for
 #                       one POSIX ::access() call in vault-unify-xdebug.cpp,
@@ -134,14 +139,63 @@ else()
 endif()
 
 # ---------------------------------------------------------------------------
-# unify-run: minimal CLI runner (see tools/unify-run.cpp for how it drives
-# RuntimeContext / SolveJob). Used by the golden-output test harness that is
-# the rest of Phase 0.
+# unify-run: the CLI front end (see tools/unify-run.cpp for how it drives
+# RuntimeContext / SolveJob). Batch mode is what the golden-output test
+# harness -- the rest of Phase 0 -- invokes; tools/unify-repl.cpp adds the
+# interactive REPL of ROADMAP.md Phase 4 on top of the same RuntimeContext.
 # ---------------------------------------------------------------------------
-add_executable(unify-run tools/unify-run.cpp)
+add_executable(unify-run
+    tools/unify-run.cpp
+    tools/unify-repl.cpp
+    tools/unify-tool-support.cpp
+)
 target_link_libraries(unify-run PRIVATE vault-unify-core)
 if(NOT MSVC)
     target_compile_options(unify-run PRIVATE -Wall -Wextra)
+endif()
+
+# UNIFY_USE_READLINE: give the REPL line editing, history and a persistent
+# ~/.unify_history via GNU readline. Strictly optional and auto-detected --
+# when readline is not installed the REPL falls back to plain std::getline
+# (see readInputLine() in tools/unify-repl.cpp), so no build, and no CI job,
+# ever gains a hard dependency on it. Set to OFF to force the fallback.
+#
+# HINTS cover Homebrew's readline, which is keg-only (macOS ships an
+# libedit-based libreadline with no header of its own, so plain
+# find_path()/find_library() would either find nothing or find the wrong
+# thing there).
+option(UNIFY_USE_READLINE "Use GNU readline for the unify-run REPL, if available" ON)
+
+if(UNIFY_USE_READLINE)
+    find_path(UNIFY_READLINE_INCLUDE_DIR
+        NAMES readline/readline.h
+        HINTS /opt/homebrew/opt/readline /usr/local/opt/readline
+        PATH_SUFFIXES include
+    )
+    find_library(UNIFY_READLINE_LIBRARY
+        NAMES readline
+        HINTS /opt/homebrew/opt/readline /usr/local/opt/readline
+        PATH_SUFFIXES lib
+    )
+    # Only some readline builds keep the history functions in a library of
+    # their own; where they do not, libreadline already carries them.
+    find_library(UNIFY_READLINE_HISTORY_LIBRARY
+        NAMES history
+        HINTS /opt/homebrew/opt/readline /usr/local/opt/readline
+        PATH_SUFFIXES lib
+    )
+
+    if(UNIFY_READLINE_INCLUDE_DIR AND UNIFY_READLINE_LIBRARY)
+        message(STATUS "Unify REPL: using GNU readline (${UNIFY_READLINE_LIBRARY})")
+        target_compile_definitions(unify-run PRIVATE UNIFY_HAVE_READLINE)
+        target_include_directories(unify-run PRIVATE "${UNIFY_READLINE_INCLUDE_DIR}")
+        target_link_libraries(unify-run PRIVATE "${UNIFY_READLINE_LIBRARY}")
+        if(UNIFY_READLINE_HISTORY_LIBRARY)
+            target_link_libraries(unify-run PRIVATE "${UNIFY_READLINE_HISTORY_LIBRARY}")
+        endif()
+    else()
+        message(STATUS "Unify REPL: GNU readline not found, using plain stdin")
+    endif()
 endif()
 
 # ---------------------------------------------------------------------------

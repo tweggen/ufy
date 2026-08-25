@@ -53,7 +53,29 @@
 #if !defined( VAULT_UNIFY_PARSER )
 #define VAULT_UNIFY_PARSER 0
 #endif
-#define VAULT_UNIFY_DI( X, ... ) do { if( VAULT_UNIFY_ ## X ) { fprintf( stderr, __FILE__ ":%s():%d:", __func__, __LINE__ ); fprintf( stderr, __VA_ARGS__ ); } } while(0)
+/*
+ * Runtime master switch for every trace category above, ANDed with the
+ * compile-time flag so it can only ever silence output, never add any.
+ * Enabled by default, i.e. a build that does not touch it behaves exactly
+ * as it always did.
+ *
+ * It exists for the interactive REPL (tools/unify-repl.cpp): a prompt
+ * whose every keystroke is answered by a page of engine trace on stderr is
+ * not usable, and the alternative -- telling the user to run it with
+ * `2>/dev/null`, as README.md quite reasonably does for a batch run --
+ * would throw away parse-error diagnostics along with the trace, since
+ * both go to stderr. Nothing else in the engine calls the setter.
+ *
+ * Declared here, ahead of `namespace vault`, because VAULT_UNIFY_DI is
+ * expanded at call sites both inside and outside that namespace; the
+ * definition lives in vault-unify-misc.cpp.
+ */
+namespace vault { namespace unify {
+bool isDebugTraceEnabled();
+void setDebugTraceEnabled( bool enabled );
+} }
+
+#define VAULT_UNIFY_DI( X, ... ) do { if( VAULT_UNIFY_ ## X && ::vault::unify::isDebugTraceEnabled() ) { fprintf( stderr, __FILE__ ":%s():%d:", __func__, __LINE__ ); fprintf( stderr, __VA_ARGS__ ); } } while(0)
 
 
 // This is an experimental feature.

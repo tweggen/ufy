@@ -3,7 +3,8 @@
 Unify is the rule-engine language of the vault home-automation system: a
 Prolog-family logic language with a C-like surface syntax, in files ending
 `.ufy`. This module holds the engine — parser, term/unification core, solver,
-job engine — plus a small CLI runner and a golden-output test suite.
+job engine — plus a small CLI runner with an interactive REPL, and a
+golden-output test suite.
 
 | Document | What it is |
 | --- | --- |
@@ -15,7 +16,8 @@ job engine — plus a small CLI runner and a golden-output test suite.
 The engine is embedded in an application in production (`combine/applications/`
 `stuart-app` in the vault repository, which this directory was factored out of);
 this module's only `main()` is `tools/unify-run.cpp`, the CLI runner used by
-the tests and for trying programs out by hand.
+the tests and — through its REPL (`tools/unify-repl.cpp`) — for trying
+programs out by hand.
 
 ---
 
@@ -28,6 +30,10 @@ the tests and for trying programs out by hand.
   parser is Boost.Spirit Qi, so the headers do most of the work.
 - **bash** — only for the golden-test harness (`test/run-golden-test.sh`);
   CMake skips the tests with a warning if it is missing.
+- **GNU readline** — *optional*, and only for the REPL, which gains line
+  editing, history and `~/.unify_history` when it is found at configure
+  time. Without it the REPL reads plain lines from stdin and everything
+  else is unchanged.
 
 The core engine needs **nothing else**.
 
@@ -36,9 +42,11 @@ Installing the dependencies:
 ```bash
 # macOS
 brew install cmake boost
+brew install readline            # optional, for the REPL
 
 # Debian / Ubuntu
 sudo apt-get install -y build-essential cmake libboost-all-dev
+sudo apt-get install -y libreadline-dev                # optional, for the REPL
 ```
 
 ---
@@ -66,6 +74,7 @@ Debug build) cost nothing.
 | --- | --- | --- |
 | `UNIFY_BUILD_XDEBUG` | `ON` on UNIX, `OFF` elsewhere | The xdebug-style TCP debugger backend. Pure Boost.Asio apart from one POSIX `::access()`. Not needed by the engine or the tests. |
 | `UNIFY_SANITIZE` | *(empty)* | Comma-separated `-fsanitize=` values, e.g. `address,undefined`. Applied directory-wide, so the tests run instrumented too. Not supported under MSVC. |
+| `UNIFY_USE_READLINE` | `ON` | Link GNU readline into `unify-run`, *if it can be found* (Homebrew's keg-only install included), giving the REPL line editing and history. Configure prints which way it went. `OFF` forces the plain-stdin fallback. |
 
 ```bash
 # sanitizer build in its own directory
@@ -121,8 +130,12 @@ CI runs exactly these three commands on Ubuntu — see the repository root's
 ## Run
 
 ```bash
-./build/unify/unify-run <program.ufy>
+./build/unify/unify-run <program.ufy>          # run a program and exit
+./build/unify/unify-run                        # interactive REPL
+./build/unify/unify-run -i <program.ufy>       # run it, then stay in the REPL
 ```
+
+### Batch mode
 
 Program output (the `print` and `emit` builtins) goes to **stdout**; the
 engine's clause/goal trace and any diagnostics go to **stderr**, so
@@ -150,6 +163,51 @@ Programs worth running:
   its expected output derived by hand in its own header comment.
 - `pathfinder.ufy` — calls home-automation driver builtins that do not exist
   in `vault-unify-core`, so it parses but does not fully solve.
+
+### The REPL
+
+Given no program (or `-i`), `unify-run` starts an interactive session
+(`tools/unify-repl.cpp`). The prompt takes anything a `.ufy` file takes —
+facts, rules, `query { ... }` blocks, `import` — against one engine that
+keeps everything for the whole session, so definitions accumulate and later
+queries see them. Multi-line input continues on a `...>` prompt until the
+item is closed; an empty line abandons a half-typed one.
+
+Two things exist only at the prompt: `? <goals>` as shorthand for
+`query { <goals> }`, and a finished query reporting its **variable
+bindings**, one line per solution, followed by a count — so a query is
+useful without having to litter it with `print(...)`.
+
+```console
+$ ./build/unify/unify-run
+Unify REPL. :help for help, :quit to leave.
+ufy> color( red );
+ufy> color( green );
+ufy> warm( $x ) {
+...>     color( $x );
+...> }
+ufy> ? warm( $w );
+$w = red
+$w = green
+-- 2 solutions
+ufy> :list warm
+warm( $x (VT30) ) :- color( $x (VT30) ).
+ufy> :quit
+```
+
+Commands, all `:`-prefixed: `:help`, `:list [name]` (the clauses defined so
+far, builtins and desugaring artefacts filtered out), `:load <file>` (like
+`import`, but it re-reads a file already loaded), `:quit`. Ctrl-D also
+leaves.
+
+An interactive session turns the engine's stderr trace **off** — a prompt
+buried under a page of trace is not a prompt, and silencing it with
+`2>/dev/null` instead would throw away parse-error diagnostics too.
+`--trace` puts it back. Batch mode is untouched either way.
+
+The REPL also works on a pipe (`unify-run < session.ufy`), where it prints
+no banner and no prompts, and exits `1` if anything in the session failed to
+parse or hit a unification error.
 
 ---
 

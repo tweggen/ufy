@@ -7,7 +7,7 @@ preserved here.
 
 | Path | What it is |
 | --- | --- |
-| [`unify/`](unify/) | The engine: parser, term/unification core, solver, job engine, CLI runner, golden-output test suite. **Start at [`unify/README.md`](unify/README.md).** |
+| [`unify/`](unify/) | The engine: parser, term/unification core, solver, job engine, CLI runner + REPL, golden-output test suite. **Start at [`unify/README.md`](unify/README.md).** |
 | `include/vault/` | Shared headers vendored from the vault repository's `combine/include/`. Only `vault.hpp` is here — `vault-unify-xdebug-tcp.cpp` needs `vault::BoostAsioIoService` from it. Keep it in sync with vault by hand. |
 | `.github/`, `.forgejo/` | CI: build + golden tests + an ASan/UBSan job, on Ubuntu. The two workflow files are twins and **must be kept in sync**. |
 
@@ -18,10 +18,12 @@ cmake -S unify -B build/unify -DCMAKE_BUILD_TYPE=RelWithDebInfo
 cmake --build build/unify --parallel
 ctest --test-dir build/unify --output-on-failure
 ./build/unify/unify-run unify/mediaplayer.ufy 2>/dev/null
+./build/unify/unify-run                    # interactive REPL
 ```
 
 Requires CMake ≥ 3.16, a C++17 compiler and Boost (headers plus `thread`,
-`system`, `filesystem`). See [`unify/README.md`](unify/README.md) for build
+`system`, `filesystem`); GNU readline is optional and only gives the REPL
+line editing and history. See [`unify/README.md`](unify/README.md) for build
 options, the test workflow and platform notes,
 [`unify/LANGUAGE.md`](unify/LANGUAGE.md) for the tutorial,
 [`unify/SPEC.md`](unify/SPEC.md) for the semantics and

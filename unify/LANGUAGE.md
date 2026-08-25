@@ -82,6 +82,26 @@ unify-run program.ufy
 finds, and lets `print`/`emit` write output to stdout as a side effect of
 the search — one invocation parses and runs one file top to bottom.
 
+Run with **no file**, it starts an interactive REPL instead, which is the
+quickest way to try anything in this tutorial:
+
+```console
+$ unify-run
+Unify REPL. :help for help, :quit to leave.
+ufy> color( red );
+ufy> ? color( $x );
+$x = red
+-- 1 solution
+```
+
+Everything typed at the prompt is ordinary `.ufy` source and accumulates for
+the session, exactly as if it were being appended to one file. The REPL adds
+just two things of its own: `? <goals>` as shorthand for
+`query { <goals> }`, and a report of each query's variable bindings (see
+`README.md` for the full prompt reference). Neither is part of the language,
+and neither works in a `.ufy` file. `unify-run -i program.ufy` runs a file
+first and then hands you the prompt with everything it defined loaded.
+
 **Output format**: every reached `print(...)` writes exactly one line:
 
 ```
@@ -100,8 +120,9 @@ against, and what every example in this document shows.
 - **1** — a parse error, or at least one internal runtime error
   (`UnifyError` — division by zero, an unbound variable used in
   arithmetic, asserting a non-ground fact, ...). Diagnostics go to stderr.
-- **2** — a usage error (wrong arguments, file can't be opened) — checked
-  before any parsing begins.
+- **2** — a usage error (wrong arguments, more than one program, file can't
+  be opened) — checked before any parsing begins. Note that *no* arguments
+  is not a usage error: it starts the REPL.
 
 A parse error is reported gcc-style to stderr:
 

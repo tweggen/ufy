@@ -3,31 +3,35 @@
  *
  * @author Timo Weggen
  *
- * Minimal CLI runner for .ufy programs.
+ * CLI front end for the Unify engine.
  *
- * Usage: unify-run <program.ufy>
+ * Usage: unify-run [-i|--interactive] [program.ufy]
  *
- * This exists for ROADMAP.md Phase 0 ("Reproducible baseline"): the
- * upcoming golden-output test harness needs something that runs a .ufy
- * file and lets query output be diffed against an expected file. There is
- * no other main() anywhere in this module (the real entry point is
- * combine/applications/stuart-app); this is a standalone one built just for
- * that purpose.
+ *   unify-run program.ufy      run the program and exit (batch mode)
+ *   unify-run                  start the interactive REPL
+ *   unify-run -i program.ufy   run the program, then stay in the REPL with
+ *                              everything it defined still loaded
  *
- * It drives the engine's public API the same way an embedding application
- * would: vault::unify::RuntimeContext::setupDone()
- * to stand up a World + Engine + one worker thread, then
- * parseExecuteSegment() to parse and run the file. `print`/`emit` builtins
- * already write their output straight to stdout as a side effect of
- * unification (see vault-unify-clause-builtin-{print,emit}.cpp), so simply
- * running the program to completion is enough to produce output a golden
- * test can compare.
+ * Batch mode exists for ROADMAP.md Phase 0 ("Reproducible baseline"): the
+ * golden-output test harness needs something that runs a .ufy file and
+ * lets query output be diffed against an expected file. Its behaviour is
+ * unchanged and must stay that way -- every golden test invokes exactly
+ * `unify-run <program.ufy>`.
+ *
+ * The REPL is ROADMAP.md Phase 4; it lives in unify-repl.cpp.
+ *
+ * Either way this drives the engine's public API the same way an embedding
+ * application would: vault::unify::RuntimeContext::setupDone() to stand up
+ * a World + Engine + one worker thread, then parseExecuteSegment() to parse
+ * and run source. `print`/`emit` builtins already write their output
+ * straight to stdout as a side effect of unification (see
+ * vault-unify-clause-builtin-{print,emit}.cpp), so simply running a program
+ * to completion is enough to produce output a golden test can compare.
  */
 
 #include <cstdio>
 #include <cstdlib>
-#include <fstream>
-#include <sstream>
+#include <cstring>
 #include <string>
 
 #include <vault-unify.hpp>
@@ -37,15 +41,17 @@
  * the module's own .cpp files reach them, because vault-unify-core exposes
  * src/ as a (documented, legacy-Jamfile-matching) public include path --
  * see CMakeLists.txt.
- *   - vault-unify-solvejob.hpp: only for the "barrier job" trick explained
- *     below.
+ *   - vault-unify-solvejob.hpp: SolveJob::getErrorCount(), below.
  *   - vault-unify-debug.hpp: vault-unify.hpp only forward-declares
  *     `class FileDebugInfo;` (it is otherwise a src/-private type) -- the
- *     full definition is needed here to construct one for argv[1] below
+ *     full definition is needed here to construct one for the program file
  *     (ROADMAP Phase 2 "File imports / include").
  */
 #include <vault-unify-solvejob.hpp>
 #include <vault-unify-debug.hpp>
+
+#include "unify-repl.hpp"
+#include "unify-tool-support.hpp"
 
 
 namespace {
@@ -60,10 +66,14 @@ int s_runtimeErrorCount = 0;
 
 
 /**
- * Called once per top-level query ("goal ?") job when it finishes.
- * print/emit builtins already wrote their output to stdout while the job
- * ran; here we only collect internal unification errors the job recorded
- * (SolveJob::getErrorCount()) so they can drive the exit code.
+ * Called once per top-level query ("query { ... }") job in batch mode when
+ * it finishes. print/emit builtins already wrote their output to stdout
+ * while the job ran; here we only collect internal unification errors the
+ * job recorded (SolveJob::getErrorCount()) so they can drive the exit code.
+ *
+ * Note the REPL deliberately does NOT reuse this: at the prompt a finished
+ * query also reports its variable bindings (see unify-repl.cpp), which is
+ * exactly the extra output a golden test must never see.
  */
 void onQueryFinished( boost::shared_ptr<vault::unify::Job> spJob )
 {
@@ -75,50 +85,51 @@ void onQueryFinished( boost::shared_ptr<vault::unify::Job> spJob )
 }
 
 
-} // anonymous namespace
-
-
-int main( int argc, char** argv )
+void printUsage( const char* pProgram, FILE* pOut )
 {
-    if( argc < 2 ) {
-        fprintf( stderr, "usage: %s <program.ufy>\n", argc ? argv[0] : "unify-run" );
-        return 2;
-    }
+    fprintf( pOut, "usage: %s [-i|--interactive] [--trace] [program.ufy]\n", pProgram );
+    fprintf( pOut, "  program.ufy            run the program and exit\n" );
+    fprintf( pOut, "  (no arguments)         start the interactive REPL\n" );
+    fprintf( pOut, "  -i, --interactive      after running the program, stay in the REPL\n" );
+    fprintf( pOut, "      --trace            keep the engine's stderr trace on in the REPL\n" );
+    fprintf( pOut, "  -h, --help             show this text\n" );
+}
 
-    std::ifstream in( argv[1], std::ios::binary );
-    if( !in ) {
-        fprintf( stderr, "unify-run: cannot open '%s'.\n", argv[1] );
-        return 2;
-    }
-    std::ostringstream buf;
-    buf << in.rdbuf();
-    std::string content = buf.str();
 
-    vault::unify::RuntimeContext rt;
-    rt.setupDone();
+/**
+ * Parse and run one .ufy file into `rt`, and wait until every query it
+ * started has finished. Returns the number of parse errors; internal
+ * unification errors land in s_runtimeErrorCount via onQueryFinished().
+ */
+int runProgramFile( vault::unify::RuntimeContext& rt, const char* pPath )
+{
+    std::string content;
+    if( !unifytool::readWholeFile( pPath, content ) ) {
+        fprintf( stderr, "unify-run: cannot open '%s'.\n", pPath );
+        return -1;
+    }
 
     /*
-     * ROADMAP Phase 2 ("File imports / include"): argv[1] as-given (not
+     * ROADMAP Phase 2 ("File imports / include"): the path as-given (not
      * resolved to an absolute path) seeds relative import resolution --
      * RuntimeContext::parseExecuteSegment()'s import handling resolves a
      * `import "...";` path against this FileDebugInfo's directory
      * (boost::filesystem::path(...).parent_path()), and an as-given relative
      * path already has the right directory component for that (or none, if
-     * argv[1] is a bare filename, which correctly falls back to resolving
+     * it is a bare filename, which correctly falls back to resolving
      * against the process CWD). It also makes parse-error diagnostics say
-     * the real filename instead of "<input>" (previously always passed NULL
-     * here).
+     * the real filename instead of "<input>".
      *
      * Ownership: registered with the World immediately below, which owns it
      * exclusively from that point on -- see World::adoptFileDebugInfo()'s
      * comment (include/vault-unify.hpp) for why this must NOT be deleted
      * here (or anywhere in this function): ~World() (run via rt's
-     * destructor, at the end of this scope) frees it exactly once,
-     * regardless of whether the program went on to build any term
-     * referencing it via TermDebugInfo.
+     * destructor, back in main()) frees it exactly once, regardless of
+     * whether the program went on to build any term referencing it via
+     * TermDebugInfo.
      */
     vault::unify::FileDebugInfo* pMainFileDebugInfo =
-        new vault::unify::FileDebugInfo( argv[1] );
+        new vault::unify::FileDebugInfo( pPath );
     rt.getWorld()->adoptFileDebugInfo( pMainFileDebugInfo );
 
     /*
@@ -127,7 +138,7 @@ int main( int argc, char** argv )
      * top-level query it creates and enqueues a SolveJob (see
      * vault-unify-runtime-context.cpp). Job *creation* happens synchronously
      * on this thread; the actual solving happens asynchronously on the
-     * single worker thread setupDone() started above.
+     * single worker thread setupDone() started.
      *
      * The return value is the number of parse errors encountered (each one
      * already reported to stderr as a gcc-style "<file>:<line>:<column>:
@@ -138,63 +149,106 @@ int main( int argc, char** argv )
         content.begin(), content.end(),
         onQueryFinished, pMainFileDebugInfo );
 
-    /*
-     * Wait until every query job created above has actually finished
-     * running. There is no "wait until idle" call on Engine (ROADMAP.md
-     * notes there is no engine shutdown path yet either), so instead we
-     * exploit two properties of the current scheduler:
-     *
-     *  - Engine::executionLoop() drains m_lsReadyJobs strictly FIFO from a
-     *    single worker thread (there is exactly one; setupDone() adds only
-     *    one).
-     *  - Under the default (non-debugging) REGULAR target state, a SolveJob
-     *    runs its performSlice() to completion in a single call -- it never
-     *    re-queues itself as READY (see SolveJob::performSlice() in
-     *    vault-unify-solvejob.cpp; only debugger-halt states do that).
-     *
-     * So one more, trivial SolveJob -- an empty Goal, which "solves"
-     * immediately -- queued *after* parseExecuteSegment() returns is
-     * guaranteed to run only once every job queued above it has already run
-     * to completion. We wait for that barrier job instead of the real ones.
-     */
-    boost::mutex waitMutex;
-    boost::condition_variable waitCond;
-    bool barrierDone = false;
+    // The engine has no "wait until idle" call; see waitForEngineIdle()
+    // (unify-tool-support.hpp) for the barrier-job trick that stands in
+    // for one.
+    unifytool::waitForEngineIdle( rt );
 
-    vault::unify::SolveJob* pBarrier = new vault::unify::SolveJob();
-    pBarrier->setWorld( rt.getWorld() );
-    {
-        vault::unify::Goal* pBarrierGoal = new vault::unify::Goal();
-        pBarrier->setGoal( pBarrierGoal );
-        // Adopt the empty barrier Goal so it is freed along with pBarrier
-        // itself (see ROADMAP Phase 1: SolveJob arena) instead of leaking.
-        pBarrier->adoptGoal( pBarrierGoal );
-    }
-    pBarrier->onFinished(
-        [&waitMutex, &waitCond, &barrierDone]( boost::shared_ptr<vault::unify::Job> ) {
-            vault::unify::Guard g( waitMutex );
-            barrierDone = true;
-            waitCond.notify_one();
-        } );
-    pBarrier->startJob( rt.getEngine() );
-    rt.getEngine()->addJob( boost::shared_ptr<vault::unify::Job>( pBarrier ) );
+    return parseErrorCount;
+}
 
-    {
-        vault::unify::Guard g( waitMutex );
-        while( !barrierDone ) {
-            waitCond.wait( g );
+
+} // anonymous namespace
+
+
+int main( int argc, char** argv )
+{
+    const char* pProgram = argc ? argv[0] : "unify-run";
+
+    bool interactive = false;
+    bool trace = false;
+    const char* pPath = NULL;
+
+    for( int i = 1; i < argc; ++i ) {
+        const char* pArg = argv[i];
+        if( 0 == strcmp( pArg, "-i" ) || 0 == strcmp( pArg, "--interactive" ) ) {
+            interactive = true;
+        } else if( 0 == strcmp( pArg, "--trace" ) ) {
+            trace = true;
+        } else if( 0 == strcmp( pArg, "-h" ) || 0 == strcmp( pArg, "--help" ) ) {
+            printUsage( pProgram, stdout );
+            return 0;
+        } else if( '-' == pArg[0] && pArg[1] ) {
+            fprintf( stderr, "%s: unknown option '%s'.\n", pProgram, pArg );
+            printUsage( pProgram, stderr );
+            return 2;
+        } else if( pPath ) {
+            fprintf( stderr, "%s: more than one program given ('%s' and '%s').\n",
+                pProgram, pPath, pArg );
+            printUsage( pProgram, stderr );
+            return 2;
+        } else {
+            pPath = pArg;
         }
+    }
+
+    // No program to run means there is nothing to do but talk to the user.
+    if( !pPath ) {
+        interactive = true;
+    }
+
+    /*
+     * Batch mode keeps the engine's stderr trace exactly as it has always
+     * been (README.md's `2>/dev/null` still applies, and the golden tests
+     * depend on nothing here). An interactive session turns it off,
+     * because a prompt buried under a page of trace per keystroke is not a
+     * prompt -- and because silencing it wholesale with a shell redirect
+     * would take parse-error diagnostics with it. `--trace` puts it back,
+     * which is the only way to watch the engine work from the REPL.
+     *
+     * This is set before the program file runs, not just before the REPL
+     * starts, so `-i program.ufy` gives one consistently quiet session
+     * rather than a loud load followed by a quiet prompt.
+     */
+    if( interactive && !trace ) {
+        vault::unify::setDebugTraceEnabled( false );
+    }
+
+    vault::unify::RuntimeContext rt;
+    rt.setupDone();
+
+    int parseErrorCount = 0;
+    if( pPath ) {
+        parseErrorCount = runProgramFile( rt, pPath );
+        if( parseErrorCount < 0 ) {
+            // Could not be opened at all -- a usage error, checked before
+            // any parsing began, so nothing has run and the REPL (if it
+            // was asked for) would start from a state the user did not
+            // ask for. Bail out instead.
+            return 2;
+        }
+    }
+
+    int replErrorCount = 0;
+    if( interactive ) {
+        replErrorCount = unifytool::runRepl( rt );
     }
 
     int result = 0;
     if( parseErrorCount > 0 ) {
         fprintf( stderr, "unify-run: %d parse error(s) while reading '%s'.\n",
-            parseErrorCount, argv[1] );
+            parseErrorCount, pPath );
         result = 1;
     }
     if( s_runtimeErrorCount > 0 ) {
         fprintf( stderr, "unify-run: %d internal unification error(s) while running '%s'.\n",
-            s_runtimeErrorCount, argv[1] );
+            s_runtimeErrorCount, pPath );
+        result = 1;
+    }
+    // Errors typed at the prompt were each reported as they happened; they
+    // only need to reach the exit code, which matters for a piped session
+    // (`unify-run < script.ufy`) far more than for an interactive one.
+    if( replErrorCount > 0 ) {
         result = 1;
     }
 

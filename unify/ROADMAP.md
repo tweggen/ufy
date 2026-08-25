@@ -279,7 +279,24 @@ the reference workload).
 
 ## Phase 4 — Tooling and polish
 
-- [ ] REPL (readline is already linked) with query, assert, and inspection.
+- [x] REPL (readline is already linked) with query, assert, and inspection.
+      *(2026-08-25: `unify-run` with no program -- or with `-i` -- drops into
+      an interactive session, `tools/unify-repl.cpp`, driving the same
+      RuntimeContext a batch run does, so definitions accumulate across the
+      session and `assert`/`retract` need nothing REPL-specific. Query: the
+      language's own `query { ... }` plus a `?` shorthand, and every finished
+      query reports its variable bindings from `SolveJob::getSolutionList()`
+      -- the one thing a batch run cannot show. Inspection: `:list [name]`
+      over the root execution state, filtering out builtins and
+      loop-desugaring artefacts. Readline is now genuinely optional and
+      auto-detected (`UNIFY_USE_READLINE`), with a plain-stdin fallback, so
+      CI gains no dependency. One engine-side change was needed to make the
+      prompt usable at all: `setDebugTraceEnabled()`, a runtime master switch
+      ANDed with the existing compile-time `VAULT_UNIFY_*` categories, which
+      the REPL turns off (`--trace` puts it back) -- silencing the trace with
+      a shell redirect would have taken parse-error diagnostics with it.
+      Batch mode, and therefore every golden test, is byte-for-byte
+      unchanged.)*
 - [ ] Finish the xdebug debugger front-to-back (breakpoints, stepping,
       variable inspection are scaffolded — make one editor integration work).
 - [x] User documentation: tutorial + the Phase 1 spec.
