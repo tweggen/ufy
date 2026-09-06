@@ -364,28 +364,43 @@ not be filed under Phase 4 tooling.
       `setTermDebugInfo`, reader-safe catalogue reads — and the plan's own
       warning that "E14's scope may be larger" turned out to be right: see
       E16.)*
-- [ ] **E16 — Race-free clause-list traversal.** *(New, 2026-09-06.)* The
-      last thing TSan reports, and the one E14 did not cover.
-      `ExecutionState::ClauseIterator` walks `std::list<Clause*>
-      m_listClauses` unlocked while `appendClause()` does `push_back` on
-      another thread: 13 reports over the corpus, every one of them a list
-      node's `_M_next` being read as it is written. The clause fields the
-      iterator reads (`m_isRetired`, `m_appendGeneration`,
-      `m_retireGeneration`) are atomic as of E14; the container is not.
-      This is NOT introduced by the lens work — it is the documented
-      "reader side deliberately left UNLOCKED" decision in
-      `World::clauseDbMutex()`, whose justification ("exactly one reader
-      today, the single worker thread") is already false, because
+- [x] **E16 — Race-free clause-list traversal.** *(Added and closed
+      2026-09-06.)* The last thing TSan reported, and the one E14 did not
+      cover: `ExecutionState::ClauseIterator` walked
+      `std::list<Clause*> m_listClauses` unlocked while `appendClause()`
+      pushed onto it. Not introduced by the lens work — the same
+      measurement at `39023de` reports it — but the documented "reader side
+      deliberately left UNLOCKED" justification ("exactly one reader today,
+      the single worker thread") was already false, because
       `parseExecuteSegment()` launches queries mid-parse and keeps parsing.
-      Locking the reader is the obvious fix and the wrong one: `isValid()`
-      is the hottest path in the engine, called once per candidate clause
-      per goal. The shape that fits is an append-only segmented store with
-      an atomic published count — readers take a count snapshot and index
-      `[0, n)`, writers publish with a release store — which removes the
-      race with no lock on the read path and gives ROADMAP Phase 3's
-      first-argument indexing a better substrate than a linked list. Five
-      call sites touch the container. Gate G0.9 cannot close until this
-      lands.
+
+      Fixed by replacing the list with `ClauseStore`: append-only,
+      segmented, with readers taking a snapshot of an atomic count and the
+      writer publishing with a release store. No lock on the read path,
+      which matters because `isValid()` runs once per candidate clause per
+      goal and lookup is already a full linear scan. Segments are allocated
+      once and never move, so `ClauseIterator` became a bare index and
+      copies of one (`UnifyContext::m_itClause`) are trivially safe.
+
+      Not a behaviour change: snapshotting the count is equivalent to the
+      old end-sentinel walk, because a clause appended afterwards has an
+      `appendGeneration` above the iterator's `snapshotGen` and was already
+      being skipped — the difference is that the slot is no longer READ in
+      order to decide to ignore it. `:list` output is byte-identical and
+      the golden corpus is unchanged.
+
+      **Result: TSan-clean.** 164 race reports at `39023de`, 13 after E14,
+      0 after E16, over `ctest` plus every `.ufy` in the corpus. Measured
+      cost: none — a scan-heavy benchmark (400 facts, 601 lookups) runs in
+      4.83–4.88 s against 4.87–4.88 s for the `std::list` version.
+
+      Two limits stated rather than left to be found: the directory is
+      fixed at 8192 segments of 1024, so one `World` holds 8,388,608
+      clauses and `appendClause()` reports and refuses beyond that; and
+      contiguous segments are a better substrate for Phase 3's
+      first-argument indexing than a linked list was, which is the next
+      thing that should touch this structure.
+
 - [ ] **E3, E5, E6, E7, E9, E11, E12, E13, E15** — not started. E9 (world
       reset) and E12 (staged parse and commit) are the two the lens plan
       calls out as larger than they look; `RuntimeContext` binds one Engine
@@ -423,12 +438,10 @@ workers running N independent queries:
       13 after.)*
 - [ ] Lock (or make atomic) the `Job` state machine (`state()`,
       `setDebugTargetState()` — the `TXWTODO: Mutex` items).
-- [ ] Implement the commented-out locking in `ExecutionState::appendClause` /
+- [x] Implement the commented-out locking in `ExecutionState::appendClause` /
       `fork`, or make the clause database append-only + snapshot-read.
-      *(2026-09-06: `appendClause`'s own locking was already done; what
-      remains is the READER side, and it is now the only thing TSan still
-      reports. See E16 below — this is the item the lens plan's E14
-      under-scoped.)*
+      *(2026-09-06, as engine item E16 — the second of the two options, and
+      the reader side is what needed it. See E16 below.)*
 - [x] Protect or freeze `World`'s debug-info map (`setTermDebugInfo`).
       *(2026-09-06, engine item E14. The two `TXWTODO: Lock begin/end`
       comments now have a real mutex, and `getTermDebugInfo()` takes it too
@@ -448,6 +461,13 @@ workers running N independent queries:
       `XDebugTCPClient::connect()` within unify, but every module using the
       singleton is affected under modern Boost.
 - [ ] Run the full test suite under TSan with 2+ workers.
+      *(2026-09-06: done for ONE worker, which is what the engine creates
+      today — `ctest` and the whole `.ufy` corpus are TSan-clean as of E16,
+      down from 164 race reports at `39023de`. The "2+ workers" half is
+      still open and is not just a matter of calling `addWorkerThread()`
+      twice: `executionLoop()` holds `m_mutex` across the whole loop and
+      blocks forever when idle, and `waitForEngineIdle()`'s barrier-job
+      trick assumes a single FIFO worker.)*
 
 ### 5.2 Immutable program, versioned world
 

@@ -9,9 +9,10 @@ by gates whose criteria are executable.
 > (E1, E2, E4, E10, E14) are in, `vault-unify-session.hpp` and the contract
 > suite exist, and the suite passes against `FakeSession` under two
 > policies. **G0 is NOT closed**: `LocalSession` does not exist yet, so
-> every criterion is currently discharged against the fake only, and G0.9's
-> TSan requirement is blocked on a race the plan did not scope (engine item
-> E16, recorded in `unify/ROADMAP.md`). The baseline the gates are measured
+> every criterion is currently discharged against the fake only. (G0.9's
+> TSan requirement was blocked on a race the plan did not scope — engine item
+> E16 — since fixed, and the engine is now TSan-clean). The baseline the
+> gates are measured
 > against is in [BASELINE.md](BASELINE.md).
 >
 > One deviation from G0.4, with reasons. The gate says the same unmodified
@@ -87,7 +88,7 @@ Three harnesses, all in the repo's established golden style
 | G0.6 **[done, vs. the fake]** | `solve(goal, initialDemand=3)` on a 10-solution goal delivers exactly 3, then stops until `demand`. |
 | G0.7 **[engine half done; boundary half blocked]** | Engine items E1 (provenance), E2 (catalogue), E4 (output redirection), E10 (structured diagnostics) are in place: `listing` returns correct kinds with no `__` name-prefix heuristic; `print` arrives as an `Output` event with nothing on the process's stdout; a parse error arrives as a `Diagnostic` with structured file/line/column, not as text on stderr. |
 | G0.8 **[done, vs. the fake]** | **Query attribution.** Two queries run concurrently against `FakeSession`; every `Output` and `Diagnostic` they cause carries the right `QueryId`, and each query's `querySeq` is gapless. |
-| G0.9 **[blocked: engine item E16]** | **Request during query.** `define`, `listing` and `source` issued while a query is running are answered in bounded time and the catalogue stays correct — the obligation of [ARCHITECTURE.md](ARCHITECTURE.md) §3.1. Engine item E14 (the ROADMAP 5.1 subset) is in place; the suite runs under TSan for this case. *(2026-09-06: the behavioural half passes against the fake. E14 is done and took TSan reports over the corpus from 164 to 13 — but the residual 13 are the unlocked clause-list reader racing `appendClause`'s `push_back`, which E14 as written did not cover. It is pre-existing, not introduced here: the same measurement at `39023de` reports 164. Recorded as engine item E16; this criterion stays open until it lands, because "runs under TSan" cannot honestly be ticked while TSan reports a race on the path this criterion exercises.)* |
+| G0.9 **[engine half done; boundary half blocked on LocalSession]** | **Request during query.** `define`, `listing` and `source` issued while a query is running are answered in bounded time and the catalogue stays correct — the obligation of [ARCHITECTURE.md](ARCHITECTURE.md) §3.1. Engine item E14 (the ROADMAP 5.1 subset) is in place; the suite runs under TSan for this case. *(2026-09-06: the behavioural half passes against the fake. E14 is done and took TSan reports over the corpus from 164 to 13 — but the residual 13 are the unlocked clause-list reader racing `appendClause`'s `push_back`, which E14 as written did not cover. It is pre-existing, not introduced here: the same measurement at `39023de` reports 164. Recorded as engine item E16 and now FIXED: the clause list is an append-only segmented store with a snapshot-count read, and TSan reports 0 races over ctest plus the whole .ufy corpus, at no measurable cost. So the TSan half of this criterion is discharged; what remains is running the criterion's own case against a real LocalSession rather than the fake.)* |
 | G0.10 **[done, vs. the fake]** | **Query lifetime.** After a terminal `QueryStatus`, `inspect` works while `retained`; `release` frees it; a subsequent `inspect` answers `Failed`; the core's retained-query count returns to zero. A suite that runs 1,000 queries and releases them ends with the same retained count it started with. |
 | G0.11 **[done, vs. the fake]** | **Debug is closed over its events.** `debug(SetTrace)` produces `TraceEvent`s; `demand(q, Stream::Trace, n)` bounds them; a core reporting `debug: false` answers `Failed` and never crashes. |
 | **H** | `describe()` reports the core's builtin list; the help extraction step (UI §5.3) consumes it. |

@@ -1105,11 +1105,13 @@ int SolveJob::performSlice()
                 bool foundMatch = false;
                 {
                     ExecutionState* pRootState = m_spWorld->getRootState();
-                    std::list<Clause*>::const_iterator
-                        itCand = pRootState->m_listClauses.begin(),
-                        itCandEnd = pRootState->m_listClauses.end();
-                    for( ; !foundMatch && itCand != itCandEnd; ++itCand ) {
-                        Clause* pCand = *itCand;
+                    // Engine item E16: an index walk over the append-only
+                    // store, bounded by one snapshot of its size.
+                    const size_t nCand = pRootState->m_clauseStore.size();
+                    for( size_t idxCand = 0;
+                         !foundMatch && idxCand < nCand;
+                         ++idxCand ) {
+                        Clause* pCand = pRootState->m_clauseStore.at( idxCand );
                         if( pCand->isRetired() ) {
                             continue;
                         }

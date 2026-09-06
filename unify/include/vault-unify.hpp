@@ -463,6 +463,109 @@ typedef boost::shared_ptr<World> WorldPtr;
  * Goals can be attributed parallel: In that case, their terms can
  * be evaluated in any order.
  */
+/**
+ * The clause database's storage -- engine item E16.
+ *
+ * Append-only, segmented, and safe for one writer and any number of
+ * concurrent readers with NO LOCK ON THE READ PATH.
+ *
+ * Why this exists. The clause list used to be a std::list<Clause*>, walked
+ * unlocked by ExecutionState::ClauseIterator on the worker thread while
+ * appendClause() pushed onto it from whichever thread was parsing.
+ * World::clauseDbMutex()'s comment justified the unlocked reader with
+ * "this engine has exactly one reader today, the single worker thread" --
+ * but parseExecuteSegment() launches queries mid-parse and keeps parsing,
+ * so the parser and the worker really are concurrent, and ThreadSanitizer
+ * reported the race on every non-trivial program in the corpus.
+ *
+ * Why not simply lock the reader. ClauseIterator::isValid() runs once per
+ * candidate clause per goal -- it is the hottest path in the engine, and
+ * lookup is already a linear scan of the entire database (ROADMAP Phase 3's
+ * first-argument indexing is what fixes that). Putting a mutex acquire
+ * inside it would tax every resolution step in the system to fix a race
+ * that only exists at the tail of the structure.
+ *
+ * How this avoids it instead. Clauses are never removed -- retract
+ * tombstones in place (see Clause::isRetired()) -- so the store only ever
+ * grows, and readers only ever walk forward. A reader takes a snapshot of
+ * `size()` when it starts and looks only at indices below it; the writer
+ * fills a slot and only then publishes the new count with a release store.
+ * So a reader never reads a slot that is being written, and the two threads
+ * synchronise through one atomic counter rather than a mutex.
+ *
+ * Segmented rather than a plain vector because a vector reallocates, which
+ * would move elements out from under a reader mid-walk. Segments are
+ * allocated once and never moved, so a Clause* stays at a fixed address for
+ * the life of the World -- which is also what lets ClauseIterator be a bare
+ * index, and copies of one (UnifyContext::m_itClause,
+ * SolveContext::m_itNextChildClause) stay valid with no bookkeeping.
+ *
+ * A pleasant side effect: indices into contiguous segments are a better
+ * substrate for ROADMAP Phase 3's indexing than a linked list was.
+ */
+class ClauseStore {
+public:
+    ClauseStore();
+    ~ClauseStore();
+
+    /**
+     * Append one clause. The caller must hold World::clauseDbMutex(); this
+     * is the single-writer half of the contract.
+     *
+     * @return 0, or -ENOMEM if the segment directory is exhausted (see
+     *     kMaxSegments). Not silently ignored: the caller reports it.
+     */
+    int append( Clause* pClause );
+
+    /**
+     * How many clauses are published. Safe from any thread; this is the
+     * acquire that pairs with append()'s release, so every clause below the
+     * returned index is fully visible to the caller afterwards.
+     */
+    size_t size() const { return m_count.load( std::memory_order_acquire ); }
+
+    /**
+     * The clause at `idx`, which must be below a size() this thread has
+     * already observed. Relaxed loads are correct here precisely because
+     * that size() was an acquire.
+     */
+    Clause* at( size_t idx ) const
+    {
+        return m_lsSegments[ idx >> kSegmentShift ]
+                   .load( std::memory_order_relaxed )[ idx & kSegmentMask ];
+    }
+
+    /**
+     * Drop every clause pointer and free the segments. Does NOT delete the
+     * clauses -- ~ExecutionState() does that, and needs to walk them first.
+     * Not safe against a concurrent reader; only ~ExecutionState() calls it.
+     */
+    void clear();
+
+private:
+    ClauseStore( const ClauseStore& );
+    ClauseStore& operator = ( const ClauseStore& );
+
+    static const size_t kSegmentShift = 10;
+    static const size_t kSegmentSize  = ( (size_t) 1 ) << kSegmentShift;
+    static const size_t kSegmentMask  = kSegmentSize - 1;
+
+    /**
+     * 8192 segments of 1024 clauses -- 8,388,608 in one World, for a 64 KiB
+     * directory allocated once. The directory is fixed rather than grown
+     * because growing it would mean either moving it (unsafe under a
+     * reader) or keeping every old copy alive; at this size the limit is
+     * far past the point where the linear scan makes the engine unusable
+     * anyway, so the simpler structure is the right trade until Phase 3
+     * indexing changes that calculus.
+     */
+    static const size_t kMaxSegments = 8192;
+
+    std::atomic<Clause**>* m_lsSegments;
+    std::atomic<size_t>    m_count;
+};
+
+
 struct ExecutionState {
 public:
     ExecutionState( ExecutionState* parent, World* pWorld );
@@ -473,12 +576,21 @@ public:
         void enterState( ExecutionState* es )
         {
             m_currentState = es;
-            m_itClause = es->m_listClauses.begin();
-            m_itClauseEnd = es->m_listClauses.end();
+            m_idxClause = 0;
+            // Engine item E16: snapshot the published count, and never look
+            // past it. This is what makes the walk race-free, and it is not
+            // a change of behaviour: a clause appended after this point has
+            // an appendGeneration greater than this iterator's snapshotGen
+            // and was already being skipped by isValid()'s generation test.
+            // Snapshotting simply means we no longer READ the slot in order
+            // to decide to ignore it.
+            m_idxClauseEnd = es->m_clauseStore.size();
         }
 
     public:
-        ClauseIterator() : m_currentState( NULL ), m_invalidated( false ), m_snapshotGen( 0 ) {}
+        ClauseIterator()
+            : m_currentState( NULL ), m_idxClause( 0 ), m_idxClauseEnd( 0 )
+            , m_invalidated( false ), m_snapshotGen( 0 ) {}
 
         /**
          * ROADMAP Phase 2 (runtime assert/retract, SPEC.md -- "logical
@@ -542,11 +654,11 @@ public:
         bool isValid();
 
         const Clause* getClause() const {
-            return *m_itClause;
+            return m_currentState->m_clauseStore.at( m_idxClause );
         }
 
         void next() {
-            ++m_itClause;
+            ++m_idxClause;
         }
 
         /**
@@ -566,8 +678,15 @@ public:
 
     private:
         ExecutionState* m_currentState;
-        std::list<Clause*>::const_iterator m_itClause;
-        std::list<Clause*>::const_iterator m_itClauseEnd;
+
+        /// Engine item E16: a bare index into m_currentState's ClauseStore,
+        /// and a snapshot of the store's size taken when this iterator
+        /// entered that state. Indices rather than container iterators
+        /// because segments never move, so an index stays valid however
+        /// much the database grows underneath it -- and because copying one
+        /// (UnifyContext::m_itClause) is then trivially safe.
+        size_t m_idxClause;
+        size_t m_idxClauseEnd;
 
         /// See invalidate()/isValid() above.
         bool m_invalidated;
@@ -641,8 +760,10 @@ public:
     /// shares the one World it was created in or under.
     World* m_pWorld;
 
-    /// Clauses as added by this execution state.
-    std::list<Clause*> m_listClauses;
+    /// Clauses as added by this execution state. Engine item E16: an
+    /// append-only segmented store rather than a std::list, so the walk in
+    /// ClauseIterator needs no lock. See ClauseStore.
+    ClauseStore m_clauseStore;
 
     /// Child execution states spawned by this execution state.
     std::list<ExecutionState*> m_listChildStates;

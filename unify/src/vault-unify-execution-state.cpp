@@ -58,8 +58,8 @@ bool ExecutionState::ClauseIterator::isValid()
         return false;
     }
     while(1) {
-        while( m_itClause != m_itClauseEnd ) {
-            const Clause* pClause = *m_itClause;
+        while( m_idxClause < m_idxClauseEnd ) {
+            const Clause* pClause = m_currentState->m_clauseStore.at( m_idxClause );
             // ROADMAP Phase 2 (runtime assert/retract, SPEC.md -- "logical
             // update view"): a clause appended AFTER this iterator's
             // snapshotGen was captured did not exist yet, from this
@@ -74,16 +74,16 @@ bool ExecutionState::ClauseIterator::isValid()
             // rather than erasing keeps that check simply a flag/generation
             // comparison instead of a structural one).
             if( pClause->getAppendGeneration() > m_snapshotGen ) {
-                ++m_itClause;
+                ++m_idxClause;
                 continue;
             }
             if( pClause->isRetired() && pClause->getRetireGeneration() <= m_snapshotGen ) {
-                ++m_itClause;
+                ++m_idxClause;
                 continue;
             }
             break;
         }
-        if( m_itClause != m_itClauseEnd ) {
+        if( m_idxClause < m_idxClauseEnd ) {
             return true;
         }
         if( NULL==m_currentState->m_pParent ) {
@@ -91,6 +91,70 @@ bool ExecutionState::ClauseIterator::isValid()
         }
         enterState( m_currentState->m_pParent );
     }
+}
+
+
+/*
+ * Engine item E16: the append-only clause store. See ClauseStore's
+ * declaration for why it exists and why the read path takes no lock.
+ */
+ClauseStore::ClauseStore()
+    : m_lsSegments( new std::atomic<Clause**>[ kMaxSegments ] )
+    , m_count( 0 )
+{
+    for( size_t i = 0; i < kMaxSegments; ++i ) {
+        m_lsSegments[i].store( NULL, std::memory_order_relaxed );
+    }
+}
+
+
+ClauseStore::~ClauseStore()
+{
+    clear();
+    delete[] m_lsSegments;
+}
+
+
+int ClauseStore::append( Clause* pClause )
+{
+    const size_t idx = m_count.load( std::memory_order_relaxed );
+    const size_t seg = idx >> kSegmentShift;
+
+    if( seg >= kMaxSegments ) {
+        return -ENOMEM;
+    }
+
+    if( NULL == m_lsSegments[seg].load( std::memory_order_relaxed ) ) {
+        Clause** pSegment = new Clause*[ kSegmentSize ];
+        for( size_t i = 0; i < kSegmentSize; ++i ) {
+            pSegment[i] = NULL;
+        }
+        // Released before the count below, so a reader that sees the new
+        // count is guaranteed to see this pointer too.
+        m_lsSegments[seg].store( pSegment, std::memory_order_release );
+    }
+
+    m_lsSegments[seg].load( std::memory_order_relaxed )[ idx & kSegmentMask ]
+        = pClause;
+
+    // THE publication. Everything written above -- the clause's fields, the
+    // slot, the segment pointer -- becomes visible to any thread that
+    // observes this count, and no reader ever looks at an index at or above
+    // the count it observed. That pairing is the whole synchronisation.
+    m_count.store( idx + 1, std::memory_order_release );
+    return 0;
+}
+
+
+void ClauseStore::clear()
+{
+    const size_t n = m_count.load( std::memory_order_relaxed );
+    const size_t used = ( n + kSegmentSize - 1 ) >> kSegmentShift;
+    for( size_t i = 0; i < used && i < kMaxSegments; ++i ) {
+        delete[] m_lsSegments[i].load( std::memory_order_relaxed );
+        m_lsSegments[i].store( NULL, std::memory_order_relaxed );
+    }
+    m_count.store( 0, std::memory_order_relaxed );
 }
 
 
@@ -131,7 +195,18 @@ int ExecutionState::appendClause( WorldPtr spWorld, Clause* clause,
     // above -- so it cannot drift from the clause list it describes.
     spWorld->catalogueAppend( clause );
 
-    m_listClauses.push_back( clause );
+    const int rcAppend = m_clauseStore.append( clause );
+    if( 0 != rcAppend ) {
+        // Engine item E16: the segment directory is full (8.4M clauses in
+        // one World). Reported rather than swallowed -- a clause that
+        // silently failed to be added would look exactly like a program
+        // that never defined it.
+        fprintf( stderr,
+            "unify: clause database full (%zu clauses); '%s' was not added.\n",
+            m_clauseStore.size(),
+            clause->toString().c_str() );
+        return rcAppend;
+    }
     DebugLocation debugLocation = clause->getDebugLocation();
     if( debugLocation.uriFile.length() ) {
         const AbstractTerm* pTerm = clause->leftHandTerm();
@@ -174,9 +249,9 @@ ExecutionState* ExecutionState::fork()
  */
 void ExecutionState::collectAllTermTrees( std::set<const AbstractTerm*>& out_visited )
 {
-    std::list<Clause*>::const_iterator itClause, itClauseEnd = m_listClauses.end();
-    for( itClause = m_listClauses.begin(); itClause != itClauseEnd; ++itClause ) {
-        const Clause* pClause = *itClause;
+    const size_t nClauses = m_clauseStore.size();
+    for( size_t idx = 0; idx < nClauses; ++idx ) {
+        const Clause* pClause = m_clauseStore.at( idx );
         collectTermTree( pClause->leftHandTerm(), out_visited );
 
         const StandardClause* pStandardClause = dynamic_cast<const StandardClause*>( pClause );
@@ -204,11 +279,11 @@ ExecutionState::~ExecutionState()
     }
     m_listChildStates.clear();
 
-    std::list<Clause*>::const_iterator itClause, itClauseEnd = m_listClauses.end();
-    for( itClause = m_listClauses.begin(); itClause != itClauseEnd; ++itClause ) {
-        delete *itClause;
+    const size_t nClauses = m_clauseStore.size();
+    for( size_t idx = 0; idx < nClauses; ++idx ) {
+        delete m_clauseStore.at( idx );
     }
-    m_listClauses.clear();
+    m_clauseStore.clear();
 }
 
 
