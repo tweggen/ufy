@@ -17,7 +17,7 @@
 namespace vault {
 namespace unify {
     
-InstanceId UnifyContext::m_iidLast = 1;
+std::atomic<InstanceId> UnifyContext::m_iidLast( 1 );
 
 
 void SingleVarInstance::setValue(
@@ -407,7 +407,10 @@ UnifyContext::UnifyContext(
     , m_isNegated( false )
     , m_foundClause( false )
 {
-    static UnifyContextId uidNextUnifyContext = 1;
+    // Engine item E14. C++11 guarantees the INITIALISATION of a
+    // function-local static is thread-safe; it says nothing about the
+    // increment, which is what this actually does on every call.
+    static std::atomic<UnifyContextId> uidNextUnifyContext( 1 );
     m_uidUnifyContext = ++uidNextUnifyContext;
 }
 

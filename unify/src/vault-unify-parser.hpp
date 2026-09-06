@@ -10,6 +10,7 @@
 
 #include <vault-unification.hpp>
 
+#include <atomic>
 #include <string>
 #include <vector>
 #include <iomanip>
@@ -546,7 +547,23 @@ struct ClauseContext {
             +boost::lexical_cast<std::string>( m_anonClauseIndex++ );
     }
 
-    static int m_anonClauseIndex;
+    /**
+     * Engine item E14: atomic, and process-wide.
+     *
+     * A static member, so ONE counter is shared by every ClauseContext,
+     * every Context and every World in the process -- which means two
+     * RuntimeContexts parsing at once (exactly what a session that no
+     * longer waits for engine idle permits) were racing to name their
+     * desugared clauses. A collision here does not merely produce an
+     * odd name: two different control constructs would be given the
+     * same __fe__N and silently share a predicate.
+     *
+     * Making it atomic fixes the race, not the sharing. Per-World
+     * numbering is the right end state and is a behaviour change (the
+     * generated names move), so it belongs with E12's staged parse
+     * rather than here.
+     */
+    static std::atomic<int> m_anonClauseIndex;
 };
 
 class Context {

@@ -152,7 +152,13 @@ World::~World()
 
 void World::setTermDebugInfo( const AbstractTerm* pTerm, TermDebugInfo* pTermDebugInfo )
 {
-    // TXWTODO: Lock begin
+    // Engine item E14: this is the lock the two TXWTODO comments asked for.
+    //
+    // LOCK ORDER: ExecutionState::appendClause() calls this while already
+    // holding clauseDbMutex(), so m_mutexDebugInfos is always taken SECOND
+    // and must never be held while taking the clause-db lock.
+    Guard g( m_mutexDebugInfos );
+
     /*
      * Do NOT delete a replaced value here: TermDebugInfo objects can be
      * registered under several term keys (see the '->' desugaring in
@@ -165,14 +171,17 @@ void World::setTermDebugInfo( const AbstractTerm* pTerm, TermDebugInfo* pTermDeb
         m_lsRetiredDebugInfos.push_back( it->second );
     }
     m_mapDebugInfos[pTerm] = pTermDebugInfo;
-    // TXWTODO: Lock end.
 }
 
 
 TermDebugInfo* World::getTermDebugInfo( const AbstractTerm* pTerm )
 {
-    // TermDebugInfo* pTermDebugInfo = NULL;
-    // TXWTODO: Guard from here.
+    // Engine item E14. The reader needs the lock as much as the writer:
+    // a std::map lookup concurrent with a std::map insert is undefined
+    // behaviour outright, not a benign word-sized race, and this lookup is
+    // reachable from the debugger's thread while the parser is inserting.
+    Guard g( m_mutexDebugInfos );
+
     TermDebugMap::iterator it = m_mapDebugInfos.find( pTerm );
     if( it != m_mapDebugInfos.end() ) {
         return it->second;

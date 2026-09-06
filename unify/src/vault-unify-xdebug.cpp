@@ -299,7 +299,8 @@ void XDebugCombine::consumeXDebugCommand( const std::list<std::string>& lsComman
         resGetOpt = parseCommand( lsCommand, argSpec, optargs );
         if( resGetOpt<0 ) return;
 
-        static int fakeBreakpointId = 10000;
+        // Engine item E14: shared by every debugger connection.
+static std::atomic<int> fakeBreakpointId( 10000 );
         ++fakeBreakpointId;
 
         m_pXDebugContext->sendXML( "<response"

@@ -21,7 +21,7 @@ namespace vault {
 namespace unify {
 namespace PrologParser {
 
-int ClauseContext::m_anonClauseIndex;
+std::atomic<int> ClauseContext::m_anonClauseIndex( 0 );
 
 namespace {
 

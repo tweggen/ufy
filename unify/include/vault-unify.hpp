@@ -24,6 +24,11 @@
 #include <string>
 #include <map>
 #include <vector>
+
+// Engine item E14 (the ROADMAP 5.1 concurrency subset): the id counters
+// below are read and written from more than one thread once a session
+// stops serialising everything behind waitForEngineIdle().
+#include <atomic>
 #include <list>
 #include <set>
 
@@ -1163,7 +1168,12 @@ public:
     }
 
 private:
-    static VarTermId m_counterUidTerm;
+    /// Engine item E14: atomic. The busiest counter in the engine -- one
+    /// increment per VarTerm CONSTRUCTION, clones included -- and the
+    /// narrowest (VarTermId is uint32_t), so it is also the one most
+    /// likely to wrap on a long-lived session. Wrapping is out of scope
+    /// here; racing is not.
+    static std::atomic<VarTermId> m_counterUidTerm;
     VarTermId m_uidTerm;
 
     std::string m_originalVarName;
@@ -1642,7 +1652,18 @@ public:
      * ExecutionState::appendClause() -- both mutate state guarded by that
      * one lock.
      */
-    void retire( uint64_t gen ) { m_isRetired = true; m_retireGeneration = gen; }
+    void retire( uint64_t gen ) {
+        // Engine item E14: the retirement generation is published BEFORE
+        // the flag, and both are atomic, because ClauseIterator::isValid()
+        // reads them on the worker thread while this runs. isValid() reads
+        // the flag first and only then the generation, so ordering them
+        // this way means a reader that sees the flag set is guaranteed to
+        // see the matching generation rather than a stale zero -- which
+        // would make a just-retired clause look retired since the beginning
+        // of time and hide it from an iteration that should still see it.
+        m_retireGeneration = gen;
+        m_isRetired = true;
+    }
 
     /// See ExecutionState::appendClause() -- stamped with the World
     /// mutation generation (World::bumpGeneration()) this clause was
@@ -1661,21 +1682,30 @@ public:
 private:
     ConsTerm* m_pLeftHandTerm;
 
-    static ClauseId m_nextUid;
+    /// Engine item E14: atomic. Every Clause construction increments it,
+    /// and a parse on the caller's thread now overlaps a solve on the
+    /// worker -- two clauses could otherwise be given the same uid, or
+    /// the counter could lose an increment entirely.
+    static std::atomic<ClauseId> m_nextUid;
 
     /// Uid of the clause.
     ClauseId m_uid;
 
     DebugLocation m_debugLocation;
 
-    /// See isRetired()/retire() above.
-    bool m_isRetired;
+    /// See isRetired()/retire() above. Engine item E14: atomic, because
+    /// `retract` sets it on the worker thread while another iteration is
+    /// walking past this clause.
+    std::atomic<bool> m_isRetired;
 
-    /// See getAppendGeneration()/setAppendGeneration() above.
-    uint64_t m_appendGeneration;
+    /// See getAppendGeneration()/setAppendGeneration() above. Engine item
+    /// E14: atomic -- written by whichever thread appends the clause and
+    /// read by every ClauseIterator that walks past it.
+    std::atomic<uint64_t> m_appendGeneration;
 
-    /// See getRetireGeneration()/retire() above.
-    uint64_t m_retireGeneration;
+    /// See getRetireGeneration()/retire() above. Engine item E14: atomic,
+    /// for the same reason as m_isRetired.
+    std::atomic<uint64_t> m_retireGeneration;
 
     /// See getOrigin()/setOrigin() above (engine item E1).
     ClauseOrigin m_origin;
@@ -1991,7 +2021,8 @@ public:
     static InstanceId createIid() {
         return ++m_iidLast;
     }
-    static InstanceId m_iidLast;
+    /// Engine item E14: atomic. See Clause::m_nextUid.
+    static std::atomic<InstanceId> m_iidLast;
 
     /**
      * The parent unification context.
@@ -2280,11 +2311,37 @@ private:
     std::map<std::string, ModuleId> m_mapModuleIds;
 
     /// See currentGeneration()/bumpGeneration() above.
-    /// See currentGeneration()/bumpGeneration() above.
-    uint64_t m_mutationGeneration;
+    /// Engine item E14: atomic. The WRITE side is still done under
+    /// clauseDbMutex() (bumpGeneration()), which is what keeps it a
+    /// correct counter; atomic is for the READ side, which
+    /// currentGeneration() deliberately performs unlocked from every
+    /// ClauseIterator construction. That read was a plain data race on a
+    /// uint64_t -- benign in practice on the platforms this has run on,
+    /// and undefined behaviour by the language, which a sanitizer is
+    /// entitled to report and an optimiser is entitled to exploit.
+    std::atomic<uint64_t> m_mutationGeneration;
 
     /// See clauseDbMutex() above.
     boost::mutex m_mutexClauseDb;
+
+    /**
+     * Engine item E14: guards m_mapDebugInfos and
+     * m_lsRetiredDebugInfos.
+     *
+     * A SEPARATE lock rather than clauseDbMutex(), because
+     * ExecutionState::appendClause() calls setTermDebugInfo() while
+     * already holding the clause-db lock and boost::mutex is not
+     * recursive. LOCK ORDER, therefore: clause-db first, debug-info
+     * second, never the reverse.
+     *
+     * This one is not a benign race: the previous code had
+     * `// TXWTODO: Lock begin` / `// TXWTODO: Lock end` around a bare
+     * std::map insert, with an equally unlocked lookup in
+     * getTermDebugInfo() reachable from the debugger. Concurrent
+     * insert and lookup on a std::map is real undefined behaviour,
+     * not a word-sized read that happens to be atomic in practice.
+     */
+    mutable boost::mutex m_mutexDebugInfos;
 };
 
 
@@ -2673,7 +2730,17 @@ public:
      */
     virtual int triggerRelease() = 0;
 
-    JobId getId() const { return m_idNextJob; }
+    /**
+     * This returned m_idNextJob -- the STATIC counter -- not m_id.
+     *
+     * So every live job reported the same id, and that id changed
+     * whenever any other job was created. Every "Job %lld ..." trace
+     * line in the engine is printed through this, which is why the
+     * logs have always looked plausible and been wrong. Found while
+     * inventorying the counters for engine item E14; m_id was being
+     * set correctly all along and simply never read.
+     */
+    JobId getId() const { return m_id; }
 
     Job& onFinished( boost::function<void (boost::shared_ptr<Job>)> onFinished );
 
@@ -2689,7 +2756,9 @@ private:
 
     JobId m_id;
     State m_state;
-    static JobId m_idNextJob;
+    /// Engine item E14: atomic. Jobs are created by whichever thread
+    /// submits one and destroyed on the worker.
+    static std::atomic<JobId> m_idNextJob;
     boost::function<void (boost::shared_ptr<Job>)> m_onFinished;
     DebugListener::ChangeReason m_debugTargetState;
 };

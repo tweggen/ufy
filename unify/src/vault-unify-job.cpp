@@ -21,7 +21,7 @@ namespace vault {
 namespace unify {
 
 
-JobId Job::m_idNextJob = (JobId) 0;
+std::atomic<JobId> Job::m_idNextJob( (JobId) 0 );
 
 
 Job& Job::onFinished( boost::function<void (boost::shared_ptr<Job>)> onFinished )
@@ -74,7 +74,9 @@ int Job::setDebugTargetState( DebugListener::ChangeReason debugTargetState )
 
 Job::Job()
 {
-    // TXWTODO:  Mutex
+    // Engine item E14: the counter is std::atomic now, so this is the
+    // increment the TXWTODO asked for -- without a mutex, which for a
+    // single counter would be both slower and no more correct.
     m_id = ++m_idNextJob;
     m_state = CREATED;
     m_debugTargetState = DebugListener::REGULAR;
