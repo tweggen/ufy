@@ -64,7 +64,14 @@ else()
     option(UNIFY_BUILD_XDEBUG "Build the xdebug TCP debugger backend" OFF)
 endif()
 
-find_package(Boost REQUIRED COMPONENTS thread system filesystem)
+# Boost.System has been header-only since Boost 1.69, and distributions
+# packaging Boost >= 1.87 (Ubuntu's 1.90, for one) ship no libboost_system
+# at all -- so requiring it as a component makes configuration fail outright
+# on a perfectly good Boost. Ask for it optionally and link the imported
+# target only if this Boost still provides one; the header-only Boost.System
+# comes in via Boost::thread / Boost::filesystem regardless.
+find_package(Boost REQUIRED COMPONENTS thread filesystem
+                   OPTIONAL_COMPONENTS system)
 find_package(Threads REQUIRED)
 
 # ---------------------------------------------------------------------------
@@ -121,10 +128,13 @@ target_compile_definitions(vault-unify-core PRIVATE VAULT_NO_PPLX)
 target_link_libraries(vault-unify-core
     PUBLIC
         Boost::thread
-        Boost::system
         Boost::filesystem
         Threads::Threads
 )
+
+if(TARGET Boost::system)
+    target_link_libraries(vault-unify-core PUBLIC Boost::system)
+endif()
 
 # The C++03-era boost::bind/boost::asio usage in vault-unify-xdebug-tcp.cpp
 # relies on the pre-C++11 global placeholders (_1, _2, ...); newer Boost
