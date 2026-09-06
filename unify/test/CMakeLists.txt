@@ -12,6 +12,15 @@
 # does not depend on the script's executable bit surviving checkout.
 #
 
+#
+# Session-boundary tests -- plans/todo/lens/ACCEPTANCE.md gate G0.
+#
+# Deliberately added BEFORE the bash check below: that check `return()`s out
+# of this file when bash is missing, and gate G0.1 is a compile test that has
+# no business being skipped because a shell is absent.
+#
+add_subdirectory(session)
+
 find_program(BASH_PROGRAM bash)
 if(NOT BASH_PROGRAM)
     message(WARNING "bash not found; skipping Unify golden-output tests.")
