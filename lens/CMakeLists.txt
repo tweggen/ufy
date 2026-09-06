@@ -64,6 +64,50 @@ if(NOT MSVC)
     target_compile_options(lens-layout PRIVATE -Wall -Wextra)
 endif()
 
+# ---------------------------------------------------------------------------
+# modreg/ -- the command table, keymaps, and the help surfaces generated from
+# them. Pure: it depends on neither the engine nor a terminal library, which
+# is what lets the "H" criterion be tested without either.
+# ---------------------------------------------------------------------------
+
+add_library(lens-modreg STATIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/modreg/command.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/modreg/keymap.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/modreg/help.cpp"
+)
+target_include_directories(lens-modreg PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+if(NOT MSVC)
+    target_compile_options(lens-modreg PRIVATE -Wall -Wextra)
+endif()
+
+add_executable(lens-modreg-test "${CMAKE_CURRENT_SOURCE_DIR}/test/modreg-test.cpp")
+target_link_libraries(lens-modreg-test PRIVATE lens-modreg)
+if(NOT MSVC)
+    target_compile_options(lens-modreg-test PRIVATE -Wall -Wextra)
+endif()
+add_test(NAME lens-modreg COMMAND lens-modreg-test)
+set_tests_properties(lens-modreg PROPERTIES TIMEOUT 120)
+
+# ---------------------------------------------------------------------------
+# G1.5 / G1.6 -- the layering gates.
+#
+# A script rather than a compile check, because what they forbid is an
+# #include, and the cheapest honest way to prove a file does not include
+# something is to look. Verified to be able to FAIL, not just to pass.
+# ---------------------------------------------------------------------------
+
+find_program(BASH_PROGRAM bash)
+if(BASH_PROGRAM)
+    add_test(
+        NAME lens-layering
+        COMMAND "${BASH_PROGRAM}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/test/check-layering.sh"
+                "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    )
+else()
+    message(WARNING "bash not found; skipping the lens layering gates.")
+endif()
+
 add_executable(lens-layout-test "${CMAKE_CURRENT_SOURCE_DIR}/test/layout-test.cpp")
 target_link_libraries(lens-layout-test PRIVATE lens-layout)
 if(NOT MSVC)
