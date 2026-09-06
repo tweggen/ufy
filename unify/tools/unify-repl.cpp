@@ -486,7 +486,20 @@ void listClauses( vault::unify::RuntimeContext& rt, const std::string& strFilter
         if( !pClause ) {
             continue;
         }
-        if( dynamic_cast<const vault::unify::SimpleBuiltinClause*>( pClause ) ) {
+        // Engine item E1 (clause provenance). This used to be two guesses:
+        // a dynamic_cast to SimpleBuiltinClause for "is it a builtin", and a
+        // `__` head-name prefix test for "is it a desugared for/foreach/if".
+        // Both happened to be right, and neither was a fact -- the cast
+        // because every builtin is currently that one subclass, the prefix
+        // because the parser happens to name its artefacts that way. A user
+        // predicate legitimately called `__cache` was silently unlistable.
+        //
+        // The clause now records where it came from, so this asks.
+        //
+        // One deliberate behaviour change comes with that, and it is the
+        // point rather than a side effect: a user predicate whose name
+        // begins with `__` is now listed, because it is the user's code.
+        if( pClause->getOrigin().isInternal() ) {
             continue;
         }
         const vault::unify::ConsTerm* pHead = pClause->leftHandTerm();
@@ -494,9 +507,6 @@ void listClauses( vault::unify::RuntimeContext& rt, const std::string& strFilter
             continue;
         }
         const std::string& strName = pHead->getName().value();
-        if( 0 == strName.compare( 0, 2, "__" ) ) {
-            continue;
-        }
         if( !strFilter.empty() && strName != strFilter ) {
             continue;
         }
@@ -696,9 +706,14 @@ int runRepl( vault::unify::RuntimeContext& rt )
             segment = pending;
         }
 
+        // Engine item E1: text typed at the prompt is TRANSCRIPT, not
+        // MODULE. It reaches parseExecuteSegment() looking exactly like a
+        // file (FileDebugInfo and all -- see pReplFileDebugInfo above), so
+        // this call site is the only place that knows the difference.
         counters.errorCount += rt.parseExecuteSegment(
             segment.begin(), segment.end(),
-            onQueryFinished, pReplFileDebugInfo );
+            onQueryFinished, pReplFileDebugInfo,
+            vault::unify::ClauseOrigin::TRANSCRIPT );
 
         /*
          * Nothing is read from the prompt again until every job this item

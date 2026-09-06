@@ -22,10 +22,19 @@ namespace unify {
 
 
 void PrintBuiltinClause::output(
-        Engine* /*pEngine*/,
+        Engine* pEngine,
         const std::string& outputString ) const
 {
-    std::cout << "print: " << outputString << std::endl;
+    // Engine item E4: through the engine's sink, not to this process's
+    // stdout. The default sink reproduces the previous
+    //     std::cout << "print: " << outputString << std::endl
+    // exactly -- prefix, newline and flush -- because the golden corpus
+    // pins every byte of it.
+    if( pEngine ) {
+        pEngine->writeOutput( "stdout", "print: " + outputString + "\n" );
+    } else {
+        std::cout << "print: " << outputString << std::endl;
+    }
 }
 
 

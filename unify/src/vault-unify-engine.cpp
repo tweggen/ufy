@@ -304,7 +304,159 @@ WorldPtr Engine::createWorld()
  */
 void Engine::emitChange( const std::string& change )
 {
-    std::cerr << "Change: " << change << std::endl;
+    writeOutput( "stderr", "Change: " + change + "\n" );
+}
+
+
+/*
+ * Engine item E4 (output redirection).
+ *
+ * The default sink exists so that "no sink installed" is not a special case
+ * anywhere else: writeOutput() always has somewhere to write, and the
+ * previous behaviour is expressed as one small object rather than as a
+ * branch repeated in every builtin.
+ *
+ * The bytes here are load-bearing. `print` used to write
+ *     std::cout << "print: " << s << std::endl
+ * and std::endl is a newline AND a flush, so both are reproduced: the
+ * caller supplies the newline inside strText, and this flushes. The whole
+ * golden corpus under test/golden pins this output, so a tidier
+ * formulation that dropped the flush would reorder output against anything
+ * else writing to the same descriptor and break tests that have nothing to
+ * do with E4.
+ */
+namespace {
+
+class DefaultOutputSink
+    : public OutputSink
+{
+public:
+    virtual void onOutput( const std::string& strStream,
+                           const std::string& strText )
+    {
+        if( strStream == "stderr" ) {
+            std::cerr << strText << std::flush;
+        } else {
+            std::cout << strText << std::flush;
+        }
+    }
+};
+
+DefaultOutputSink g_defaultOutputSink;
+
+
+/*
+ * Engine item E10 (structured diagnostics).
+ *
+ * The bytes below are exactly what reportParseError() and
+ * reportImportError() used to fprintf() directly:
+ *
+ *     <file>:<line>:<column>: parse error
+ *     <the offending source line>
+ *     <spaces>^
+ *
+ * and, for a diagnostic with no source line to show,
+ *
+ *     <file>:<line>: <message>
+ *
+ * That format is what unify-run prints today and what its CI logs are read
+ * against, so it is reproduced rather than improved: E10 moves where the
+ * decision is made, not what the default decision is.
+ */
+class DefaultDiagnosticSink
+    : public DiagnosticSink
+{
+public:
+    virtual void onDiagnostic( const Diagnostic& diagnostic )
+    {
+        const char* strSeverity = "";
+        if( diagnostic.severity == Diagnostic::WARNING ) {
+            strSeverity = "warning: ";
+        } else if( diagnostic.severity == Diagnostic::NOTE ) {
+            strSeverity = "note: ";
+        }
+
+        if( diagnostic.column > 0 ) {
+            fprintf( stderr, "%s:%llu:%llu: %s%s\n",
+                diagnostic.uriFile.c_str(),
+                (unsigned long long) diagnostic.line,
+                (unsigned long long) diagnostic.column,
+                strSeverity,
+                diagnostic.message.c_str() );
+        } else {
+            fprintf( stderr, "%s:%llu: %s%s\n",
+                diagnostic.uriFile.c_str(),
+                (unsigned long long) diagnostic.line,
+                strSeverity,
+                diagnostic.message.c_str() );
+        }
+
+        if( !diagnostic.sourceLine.empty() ) {
+            fprintf( stderr, "%s\n", diagnostic.sourceLine.c_str() );
+            std::string strCaret(
+                diagnostic.column > 1
+                    ? (std::size_t)( diagnostic.column - 1 )
+                    : (std::size_t) 0,
+                ' ' );
+            fprintf( stderr, "%s^\n", strCaret.c_str() );
+        }
+    }
+};
+
+DefaultDiagnosticSink g_defaultDiagnosticSink;
+
+} // anonymous namespace
+
+
+OutputSink::~OutputSink()
+{
+}
+
+
+void Engine::setOutputSink( OutputSink* pOutputSink )
+{
+    m_pOutputSink = pOutputSink ? pOutputSink : &g_defaultOutputSink;
+}
+
+
+DiagnosticSink::~DiagnosticSink()
+{
+}
+
+
+void Engine::setDiagnosticSink( DiagnosticSink* pDiagnosticSink )
+{
+    m_pDiagnosticSink = pDiagnosticSink;
+}
+
+
+void Engine::writeDiagnostic( const Diagnostic& diagnostic,
+                              DiagnosticDefault whenNoSink )
+{
+    if( m_pDiagnosticSink ) {
+        // An installed sink gets everything, including the runtime errors
+        // that used to go nowhere. That is E10's actual deliverable.
+        m_pDiagnosticSink->onDiagnostic( diagnostic );
+        return;
+    }
+
+    if( whenNoSink == DIAGNOSTIC_PRINT ) {
+        g_defaultDiagnosticSink.onDiagnostic( diagnostic );
+    }
+}
+
+
+void Engine::writeOutput( const std::string& strStream,
+                          const std::string& strText )
+{
+    // m_pOutputSink is never NULL (the constructor installs the default),
+    // but a garbage Engine is a real failure mode in this codebase --
+    // RuntimeContext has no constructor and leaves its members
+    // uninitialized until setupDone() -- so this stays defensive rather
+    // than assuming.
+    if( m_pOutputSink ) {
+        m_pOutputSink->onOutput( strStream, strText );
+    }
 }
 
 
@@ -420,6 +572,9 @@ Engine::Engine()
     // so garbage here stalls the scheduler or crashes.
     m_isDebugHalted = false;
     m_pDebugListener = NULL;
+    // Engine items E4/E10: never NULL, so the writers have no unset case.
+    m_pOutputSink = &g_defaultOutputSink;
+    m_pDiagnosticSink = NULL;
 }
 
 

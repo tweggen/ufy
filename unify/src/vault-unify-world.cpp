@@ -195,29 +195,37 @@ int World::appendRootClause( const Clause* pClause, ClauseId& out_uid )
 
 void World::init()
 {
+    // Engine item E1: builtins belong to no module and have no source
+    // file. In particular NOT their own C++ file -- every builtin calls
+    // setDebugLocation( "file://" __FILE__, ... ) in its constructor, so
+    // taking the origin from there would register a "module" per builtin
+    // implementation file and attribute engine internals to it.
+    ClauseOrigin originBuiltin;
+    originBuiltin.kind = ClauseOrigin::BUILTIN;
+
     WorldPtr spWorld = shared_from_this();
-    m_rootState.appendClause( spWorld, new UnifyBuiltinClause() );
-    m_rootState.appendClause( spWorld, new PrintBuiltinClause() );
-    m_rootState.appendClause( spWorld, new EmitBuiltinClause() );
-    m_rootState.appendClause( spWorld, new MemberBuiltinClause() );
+    m_rootState.appendClause( spWorld, new UnifyBuiltinClause(), originBuiltin );
+    m_rootState.appendClause( spWorld, new PrintBuiltinClause(), originBuiltin );
+    m_rootState.appendClause( spWorld, new EmitBuiltinClause(), originBuiltin );
+    m_rootState.appendClause( spWorld, new MemberBuiltinClause(), originBuiltin );
     // ROADMAP Phase 2: Arithmetic and comparison builtins (SPEC.md).
-    m_rootState.appendClause( spWorld, new ArithEvalBuiltinClause() );
-    m_rootState.appendClause( spWorld, new CompareBuiltinClause() );
+    m_rootState.appendClause( spWorld, new ArithEvalBuiltinClause(), originBuiltin );
+    m_rootState.appendClause( spWorld, new CompareBuiltinClause(), originBuiltin );
     // ROADMAP ("for"/"foreach" loops + ranges, language owner request
     // 2026-08-21, SPEC.md): what `foreach`'s synthesized clause and a
     // variable-bounds range desugar to, respectively.
-    m_rootState.appendClause( spWorld, new ArrayAtBuiltinClause() );
-    m_rootState.appendClause( spWorld, new RangeBuiltinClause() );
+    m_rootState.appendClause( spWorld, new ArrayAtBuiltinClause(), originBuiltin );
+    m_rootState.appendClause( spWorld, new RangeBuiltinClause(), originBuiltin );
     // ROADMAP Phase 2: String operations (concat, compare, match), SPEC.md.
     // Compare already exists via the comparison operators (CompareBuiltinClause
     // above); this adds concat/strlen (parser-recognized, like findall) and
     // the contains/startswith/endswith plain goal builtins (soft-reserved by
     // clause order -- see vault-unify-clause-builtin.hpp's class comments).
-    m_rootState.appendClause( spWorld, new ConcatBuiltinClause() );
-    m_rootState.appendClause( spWorld, new StrlenBuiltinClause() );
-    m_rootState.appendClause( spWorld, new ContainsBuiltinClause() );
-    m_rootState.appendClause( spWorld, new StartswithBuiltinClause() );
-    m_rootState.appendClause( spWorld, new EndswithBuiltinClause() );
+    m_rootState.appendClause( spWorld, new ConcatBuiltinClause(), originBuiltin );
+    m_rootState.appendClause( spWorld, new StrlenBuiltinClause(), originBuiltin );
+    m_rootState.appendClause( spWorld, new ContainsBuiltinClause(), originBuiltin );
+    m_rootState.appendClause( spWorld, new StartswithBuiltinClause(), originBuiltin );
+    m_rootState.appendClause( spWorld, new EndswithBuiltinClause(), originBuiltin );
 }
 
 
@@ -245,6 +253,163 @@ int World::asyncShutdown( WorldPtr spWorld )
     /// Execution states recursively.
     return 0;
 }
+
+
+/*
+ * Engine item E1 (clause provenance): the module registry.
+ *
+ * A vector for the id space and a map for the lookup, rather than one
+ * std::map<std::string,ModuleId> that also has to be reverse-searched:
+ * moduleFile() is on the catalogue's path, and scanning a map to turn an id
+ * back into a file would make listing a large world quadratic for no reason.
+ *
+ * No locking here -- appendClause() holds World::clauseDbMutex() across the
+ * call. See moduleIdForFile()'s declaration for why that is deliberate.
+ */
+ModuleId World::moduleIdForFile( const std::string& uriFile )
+{
+    if( uriFile.empty() ) {
+        return NO_MODULE;
+    }
+
+    std::map<std::string, ModuleId>::const_iterator it
+        = m_mapModuleIds.find( uriFile );
+    if( it != m_mapModuleIds.end() ) {
+        return it->second;
+    }
+
+    m_lsModuleFiles.push_back( uriFile );
+    const ModuleId id = (ModuleId) m_lsModuleFiles.size();
+    m_mapModuleIds[uriFile] = id;
+    return id;
+}
+
+
+const std::string& World::moduleFile( ModuleId id ) const
+{
+    static const std::string strEmpty;
+    if( id == NO_MODULE || id > m_lsModuleFiles.size() ) {
+        return strEmpty;
+    }
+    return m_lsModuleFiles[(size_t)(id - 1)];
+}
+
+
+
+/*
+ * Engine item E2 (definition catalogue).
+ *
+ * Maintained incrementally at the two points where the clause database
+ * changes -- appendClause() and retract's retire() -- rather than rebuilt
+ * on demand. Rebuilding means walking every clause in the World to answer
+ * "what is defined?", which is what the REPL's `:list` does and what makes
+ * it O(database) per keystroke in a browser that asks after every edit.
+ *
+ * No locking in catalogueAppend()/catalogueRetire(): both are called from
+ * inside a critical section that already holds clauseDbMutex(). The reader
+ * (copyCatalogue) takes it, which is the reader-safety half of engine item
+ * E14 -- see that function's declaration.
+ */
+static bool catalogueKeyForClause(
+        const vault::unify::Clause* pClause,
+        vault::unify::PredicateKey& out_key )
+{
+    if( !pClause ) {
+        return false;
+    }
+    const vault::unify::ConsTerm* pHead = pClause->leftHandTerm();
+    if( !pHead ) {
+        return false;
+    }
+    out_key.name = pHead->getName().value();
+    out_key.arity = pHead->getArity();
+    out_key.module = pClause->getOrigin().module;
+    return true;
+}
+
+
+void World::catalogueAppend( const Clause* pClause )
+{
+    PredicateKey key;
+    if( !catalogueKeyForClause( pClause, key ) ) {
+        return;
+    }
+
+    std::map<PredicateKey, CatalogueEntry>::iterator it
+        = m_mapCatalogue.find( key );
+    if( it == m_mapCatalogue.end() ) {
+        CatalogueEntry entry;
+        entry.key = key;
+        entry.kind = pClause->getOrigin().kind;
+        entry.uriFile = pClause->getOrigin().uriFile;
+        entry.firstLine = pClause->getOrigin().line;
+        entry.clauseCount = 1;
+        entry.retiredCount = 0;
+        entry.generation = pClause->getAppendGeneration();
+        m_mapCatalogue[key] = entry;
+        return;
+    }
+
+    ++it->second.clauseCount;
+    it->second.generation = pClause->getAppendGeneration();
+}
+
+
+void World::catalogueRetire( const Clause* pClause )
+{
+    PredicateKey key;
+    if( !catalogueKeyForClause( pClause, key ) ) {
+        return;
+    }
+
+    std::map<PredicateKey, CatalogueEntry>::iterator it
+        = m_mapCatalogue.find( key );
+    if( it == m_mapCatalogue.end() ) {
+        return;
+    }
+
+    if( it->second.clauseCount > 0 ) {
+        --it->second.clauseCount;
+    }
+    ++it->second.retiredCount;
+    it->second.generation = pClause->getRetireGeneration();
+
+    // The entry is deliberately NOT erased when clauseCount reaches zero.
+    // A predicate every clause of which has been retracted still exists as
+    // far as the database is concerned -- its tombstones are still walked
+    // by every goal -- and a browser that made such a predicate vanish
+    // would hide exactly the state a user is most likely to be debugging.
+    // retiredCount is what says what happened.
+}
+
+
+void World::copyCatalogue( std::vector<CatalogueEntry>& out_lsEntries )
+{
+    Guard g( clauseDbMutex() );
+
+    out_lsEntries.clear();
+    out_lsEntries.reserve( m_mapCatalogue.size() );
+    std::map<PredicateKey, CatalogueEntry>::const_iterator it;
+    for( it = m_mapCatalogue.begin(); it != m_mapCatalogue.end(); ++it ) {
+        out_lsEntries.push_back( it->second );
+    }
+}
+
+
+bool World::findCatalogueEntry( const PredicateKey& key,
+                                CatalogueEntry& out_entry )
+{
+    Guard g( clauseDbMutex() );
+
+    std::map<PredicateKey, CatalogueEntry>::const_iterator it
+        = m_mapCatalogue.find( key );
+    if( it == m_mapCatalogue.end() ) {
+        return false;
+    }
+    out_entry = it->second;
+    return true;
+}
+
 
 
 };

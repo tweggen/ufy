@@ -20,6 +20,7 @@
 # no business being skipped because a shell is absent.
 #
 add_subdirectory(session)
+add_subdirectory(engine)
 
 find_program(BASH_PROGRAM bash)
 if(NOT BASH_PROGRAM)

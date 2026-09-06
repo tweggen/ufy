@@ -307,6 +307,90 @@ the reference workload).
       limitations with workarounds). Complements the normative SPEC.md.)*
 - [ ] Better runtime diagnostics: warnings for unbound-variable printing,
       unknown predicates (typo detection via name/arity index).
+      *(2026-09-06: the name/arity index this needs now exists — engine item
+      E2's definition catalogue, `World::copyCatalogue()`. The diagnostics
+      themselves are still to write.)*
+
+### Engine work pulled in by the lens plan (E1–E16)
+
+`plans/todo/lens/` specifies a text-mode environment whose critical path
+runs through the engine rather than the UI. These are its engine items,
+recorded here because several are Phase 3/5 work brought forward and should
+not be filed under Phase 4 tooling.
+
+- [x] **E1 — Clause provenance.** Origin kind (module / asserted / builtin /
+      synthesized / transcript), module id, file and line on every `Clause`,
+      stamped at `ExecutionState::appendClause()`.
+      *(2026-09-06. Replaces two guesses in `unify-run`'s `:list` — a
+      `dynamic_cast<const SimpleBuiltinClause*>` and a `__` head-name prefix
+      test. Verified the way the plan's handoff asked: `:list` rewritten to
+      use provenance produces byte-identical output to the heuristic
+      version, with exactly one intended difference — a user predicate named
+      `__cache` is now listed, because it is the user's. Note the first
+      attempt derived the origin from the clause's `DebugLocation` and was
+      wrong twice over: the parser never sets one on a clause, and every
+      builtin sets one pointing at its own C++ source, so builtins were
+      being given modules named after `vault-unify-clause-builtin-*.cpp`.
+      The engine test caught both.)*
+- [x] **E2 — Definition catalogue.** `(name, arity, module) → {clause count,
+      retired count, origin, generation}`, maintained incrementally at the
+      two points that mutate the database.
+      *(2026-09-06. `World::copyCatalogue()` snapshots under
+      `clauseDbMutex()`, which is the reader-safety half of E14.
+      `retiredCount` is deliberately exposed: clauses are tombstoned and
+      never removed, so it is the number that grows without bound under
+      repeated redefinition, and gate G3.7 cannot be written against a
+      number nobody records.)*
+- [x] **E4 — Output redirection.** A per-`Engine` `OutputSink` for
+      `print`/`emit`/world-change logging instead of `std::cout`/`std::cerr`.
+      *(2026-09-06. The default sink reproduces the previous bytes exactly,
+      newline and flush included — `std::endl` is both — so the golden
+      corpus is unchanged. Note `emit` has two sinks and always did: the
+      text line, now redirectable, and the `UserEventListener` fan-out,
+      which is an event bus and stays as it was.)*
+- [x] **E10 — Structured diagnostics.** Parse, import and runtime errors as
+      a `Diagnostic` value (severity, file, line, column, message, offending
+      source line) through a `DiagnosticSink`.
+      *(2026-09-06. The default sink prints byte-for-byte what the three
+      `fprintf(stderr, ...)` calls in `reportParseError()` printed. One
+      asymmetry is deliberate and is spelled out in
+      `Engine::DiagnosticDefault`: a parse error always printed, and still
+      does; a runtime `UnifyError` never printed anything, and still does
+      not, because "unify-run keeps working, unchanged" is a rule of the
+      lens plan. An installed sink receives both. `SolveJob` also keeps the
+      full list now, not just a count and the last message.)*
+- [x] **E14 — The ROADMAP 5.1 concurrency subset.** See 5.1 above.
+      *(2026-09-06. Done as specified — atomic counters, locked
+      `setTermDebugInfo`, reader-safe catalogue reads — and the plan's own
+      warning that "E14's scope may be larger" turned out to be right: see
+      E16.)*
+- [ ] **E16 — Race-free clause-list traversal.** *(New, 2026-09-06.)* The
+      last thing TSan reports, and the one E14 did not cover.
+      `ExecutionState::ClauseIterator` walks `std::list<Clause*>
+      m_listClauses` unlocked while `appendClause()` does `push_back` on
+      another thread: 13 reports over the corpus, every one of them a list
+      node's `_M_next` being read as it is written. The clause fields the
+      iterator reads (`m_isRetired`, `m_appendGeneration`,
+      `m_retireGeneration`) are atomic as of E14; the container is not.
+      This is NOT introduced by the lens work — it is the documented
+      "reader side deliberately left UNLOCKED" decision in
+      `World::clauseDbMutex()`, whose justification ("exactly one reader
+      today, the single worker thread") is already false, because
+      `parseExecuteSegment()` launches queries mid-parse and keeps parsing.
+      Locking the reader is the obvious fix and the wrong one: `isValid()`
+      is the hottest path in the engine, called once per candidate clause
+      per goal. The shape that fits is an append-only segmented store with
+      an atomic published count — readers take a count snapshot and index
+      `[0, n)`, writers publish with a release store — which removes the
+      race with no lock on the read path and gives ROADMAP Phase 3's
+      first-argument indexing a better substrate than a linked list. Five
+      call sites touch the container. Gate G0.9 cannot close until this
+      lands.
+- [ ] **E3, E5, E6, E7, E9, E11, E12, E13, E15** — not started. E9 (world
+      reset) and E12 (staged parse and commit) are the two the lens plan
+      calls out as larger than they look; `RuntimeContext` binds one Engine
+      and World for life and `~RuntimeContext` deliberately leaks the
+      Engine, so `load` needs a real shutdown path first.
 
 ---
 
@@ -322,14 +406,37 @@ come before enabling the second worker thread.
 One query = one `SolveJob`; jobs are almost fully self-contained. For N
 workers running N independent queries:
 
-- [ ] Make all static id counters atomic (`UnifyContext::m_iidLast`,
+- [x] Make all static id counters atomic (`UnifyContext::m_iidLast`,
       `uidNextUnifyContext`, `VarTerm::m_counterUidTerm`, `Clause::m_nextUid`,
       `Job::m_idNextJob`).
+      *(2026-09-06, as engine item E14 of the lens plan — pulled forward
+      because a session that no longer waits for engine idle makes the
+      parser thread and the worker genuinely concurrent. Also caught two
+      counters the list above missed: `ClauseContext::m_anonClauseIndex`
+      (process-wide, shared by every World, so two parses could hand the
+      same `__fe__N` to two different constructs) and xdebug's
+      `fakeBreakpointId`. And one outright bug found while inventorying
+      them: `Job::getId()` returned `m_idNextJob`, the static counter,
+      instead of `m_id` — so every live job reported the same id and every
+      "Job %lld ..." trace line in the engine has always been wrong.
+      Measured with TSan over the whole corpus: 164 race reports before,
+      13 after.)*
 - [ ] Lock (or make atomic) the `Job` state machine (`state()`,
       `setDebugTargetState()` — the `TXWTODO: Mutex` items).
 - [ ] Implement the commented-out locking in `ExecutionState::appendClause` /
       `fork`, or make the clause database append-only + snapshot-read.
-- [ ] Protect or freeze `World`'s debug-info map (`setTermDebugInfo`).
+      *(2026-09-06: `appendClause`'s own locking was already done; what
+      remains is the READER side, and it is now the only thing TSan still
+      reports. See E16 below — this is the item the lens plan's E14
+      under-scoped.)*
+- [x] Protect or freeze `World`'s debug-info map (`setTermDebugInfo`).
+      *(2026-09-06, engine item E14. The two `TXWTODO: Lock begin/end`
+      comments now have a real mutex, and `getTermDebugInfo()` takes it too
+      — the reader needed it as much as the writer, since a concurrent
+      `std::map` insert and lookup is undefined behaviour outright rather
+      than a benign word-sized race. Deliberately a SEPARATE lock from
+      `clauseDbMutex()`, which `appendClause` already holds when it calls
+      in; lock order is clause-db first, debug-info second.)*
 - [ ] Implement `removeUserEventListener`; make listener dispatch safe against
       concurrent add/remove.
 - [ ] Engine shutdown and job cancellation: `executionLoop` must be able to

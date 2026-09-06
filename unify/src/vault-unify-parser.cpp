@@ -783,8 +783,21 @@ public:
         // depth-first, all-solutions search tries "cond succeeded" before
         // "cond was skipped" -- see SPEC.md section 5 and the caveat
         // above this function).
-        spWorld->getRootState()->appendClause( spWorld, pRuleClause );
-        spWorld->getRootState()->appendClause( spWorld, pFactClause );
+        // Engine item E1: these are desugaring artefacts -- the __if__N /
+        // __fe__N / __feb__N / __for__N clauses a control construct expands
+        // into. They are real clauses and must be findable, but they are
+        // not the user's text, so an image writer prints the source that
+        // produced them and a browser collapses them into a counted stub.
+        // The file is carried so a diagnostic inside one can still point at
+        // the construct it came from.
+        ClauseOrigin originSynth;
+        originSynth.kind = ClauseOrigin::SYNTHESIZED;
+        if( m_clauseContext.m_context.getFileDebugInfo() ) {
+            originSynth.uriFile =
+                m_clauseContext.m_context.getFileDebugInfo()->getFileUri();
+        }
+        spWorld->getRootState()->appendClause( spWorld, pRuleClause, originSynth );
+        spWorld->getRootState()->appendClause( spWorld, pFactClause, originSynth );
         VAULT_UNIFY_DI( ALWAYS, "Added clause '%s'.\n", pRuleClause->toString().c_str() );
         VAULT_UNIFY_DI( ALWAYS, "Added clause '%s'.\n", pFactClause->toString().c_str() );
 
@@ -1134,8 +1147,21 @@ public:
         delete[] ppFebFactArgs;
         Clause* pFebFactClause = new vault::unify::StandardClause( pFebHeadFact, NULL );
 
-        spWorld->getRootState()->appendClause( spWorld, pFebRuleClause );
-        spWorld->getRootState()->appendClause( spWorld, pFebFactClause );
+        // Engine item E1: these are desugaring artefacts -- the __if__N /
+        // __fe__N / __feb__N / __for__N clauses a control construct expands
+        // into. They are real clauses and must be findable, but they are
+        // not the user's text, so an image writer prints the source that
+        // produced them and a browser collapses them into a counted stub.
+        // The file is carried so a diagnostic inside one can still point at
+        // the construct it came from.
+        ClauseOrigin originSynth;
+        originSynth.kind = ClauseOrigin::SYNTHESIZED;
+        if( m_clauseContext.m_context.getFileDebugInfo() ) {
+            originSynth.uriFile =
+                m_clauseContext.m_context.getFileDebugInfo()->getFileUri();
+        }
+        spWorld->getRootState()->appendClause( spWorld, pFebRuleClause, originSynth );
+        spWorld->getRootState()->appendClause( spWorld, pFebFactClause, originSynth );
 
         // f. __fe__N (main loop). $arr/$i are brand-new synthesized
         // parameters (positions 0/1); the loop variable itself occupies
@@ -1305,8 +1331,11 @@ public:
         delete[] ppFeFactArgs;
         Clause* pFeFactClause = new vault::unify::StandardClause( pFeHeadFact, NULL );
 
-        spWorld->getRootState()->appendClause( spWorld, pFeRuleClause );
-        spWorld->getRootState()->appendClause( spWorld, pFeFactClause );
+        // originSynth (declared above, for the __feb__N pair) is
+        // reused here: both halves of a foreach desugaring come from
+        // the same construct in the same file.
+        spWorld->getRootState()->appendClause( spWorld, pFeRuleClause, originSynth );
+        spWorld->getRootState()->appendClause( spWorld, pFeFactClause, originSynth );
 
         // g. body's scratch term trees have now been fully cloned into
         // __feb__N's rule clause; free their structural nodes (VarTerms
@@ -1656,8 +1685,21 @@ public:
         delete[] ppHeadArgsFact;
         Clause* pFactClause = new vault::unify::StandardClause( pHeadFact, NULL );
 
-        spWorld->getRootState()->appendClause( spWorld, pRuleClause );
-        spWorld->getRootState()->appendClause( spWorld, pFactClause );
+        // Engine item E1: these are desugaring artefacts -- the __if__N /
+        // __fe__N / __feb__N / __for__N clauses a control construct expands
+        // into. They are real clauses and must be findable, but they are
+        // not the user's text, so an image writer prints the source that
+        // produced them and a browser collapses them into a counted stub.
+        // The file is carried so a diagnostic inside one can still point at
+        // the construct it came from.
+        ClauseOrigin originSynth;
+        originSynth.kind = ClauseOrigin::SYNTHESIZED;
+        if( m_clauseContext.m_context.getFileDebugInfo() ) {
+            originSynth.uriFile =
+                m_clauseContext.m_context.getFileDebugInfo()->getFileUri();
+        }
+        spWorld->getRootState()->appendClause( spWorld, pRuleClause, originSynth );
+        spWorld->getRootState()->appendClause( spWorld, pFactClause, originSynth );
 
         // g. Scratch trees (cond's/step's own pre-goals, cond, body, and
         // the step-value expression) have now all been cloned; free their

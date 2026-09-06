@@ -166,6 +166,24 @@ public:
      */
     const std::string& getLastError() const { return m_lastError; }
 
+    /**
+     * Every error recorded while solving this job, in order -- engine item
+     * E10.
+     *
+     * getLastError() keeps only the most recent one, which is enough for
+     * unify-run's one-line summary and useless for a diagnostics panel: a
+     * goal that fails ten different ways has ten things to show the user,
+     * and nine of them used to be overwritten. Kept alongside the count and
+     * the last message rather than replacing them, because both are on
+     * unify-run's existing path and E10 is not licence to change it.
+     *
+     * LIFETIME: valid only while the job is; ~SolveJob frees the job's
+     * whole arena. A consumer that needs these after completion must copy
+     * them inside the onFinished callback, exactly like getSolutionList().
+     */
+    const std::vector<Diagnostic>& getDiagnostics() const
+        { return m_lsDiagnostics; }
+
 
 private:
     /**
@@ -264,6 +282,9 @@ private:
 
     /// Description of the most recent unification error. See getLastError().
     std::string m_lastError;
+
+    /// See getDiagnostics() above (engine item E10).
+    std::vector<Diagnostic> m_lsDiagnostics;
 
 };
 

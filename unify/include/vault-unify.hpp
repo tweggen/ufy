@@ -134,6 +134,177 @@ class ConsTerm;
 class Clause;
 class UnifyContext;
 
+
+/**
+ * Identifies one loaded module -- one .ufy file, the transcript, or the
+ * anonymous module a bare World starts with.
+ *
+ * Introduced with clause provenance (plans/todo/lens/ACCEPTANCE.md, engine
+ * item E1). Ids are assigned by World::moduleIdForFile() in first-seen
+ * order and are stable for the life of a World; 0 is "no module", which is
+ * what a builtin and a runtime-asserted clause carry.
+ */
+typedef uint64_t ModuleId;
+
+/// See ModuleId: never a valid module.
+const ModuleId NO_MODULE = 0;
+
+
+/**
+ * Where a clause came from -- engine item E1.
+ *
+ * Before this existed, "is this user code?" was inferred by the REPL from a
+ * `dynamic_cast<const SimpleBuiltinClause*>` plus a `__` head-name prefix
+ * test (unify-run's `:list`). Both were guesses that happened to be right:
+ * the cast because every builtin is currently that one subclass, the prefix
+ * because the parser happens to name its desugared clauses that way. Neither
+ * survives contact with a user predicate legitimately named `__cache`, and
+ * neither can answer the questions the catalogue, the source view and the
+ * image writer actually ask -- which file, which line, which module.
+ *
+ * So the answer is recorded when it is known -- at the one append -- rather
+ * than reconstructed later from the shape of the name.
+ */
+struct ClauseOrigin {
+    enum Kind {
+        /// Parsed from a module's source text.
+        MODULE = 0,
+        /// Created at run time by assert()/asserta()/assertz().
+        ASSERTED,
+        /// Provided by the engine itself (World::init()).
+        BUILTIN,
+        /// Produced by parse-time desugaring: __if__N, __fe__N, __feb__N,
+        /// __for__N. Real clauses, but never the user's own text -- an
+        /// image that printed these back would emit machine output instead
+        /// of the program.
+        SYNTHESIZED,
+        /// Typed at an interactive prompt.
+        TRANSCRIPT
+    };
+
+    ClauseOrigin()
+        : kind( MODULE )
+        , module( NO_MODULE )
+        , line( 0 )
+        , endLine( 0 )
+    {
+    }
+
+    Kind        kind;
+    ModuleId    module;
+
+    /// The source file, when there is one. Empty for BUILTIN, ASSERTED and
+    /// TRANSCRIPT. Duplicated from the clause's DebugLocation rather than
+    /// referenced, because a DebugLocation is optional and provenance is not.
+    std::string uriFile;
+
+    /// 1-based; 0 when unknown.
+    uint64_t    line;
+
+    /// 1-based end of the clause's source span; 0 when unknown. Set for
+    /// MODULE and TRANSCRIPT clauses so the source view can show a whole
+    /// definition rather than re-deriving its extent.
+    uint64_t    endLine;
+
+    /// True for clauses the user did not write and would not expect to see
+    /// listed: builtins and desugaring artefacts. The one place this
+    /// judgement is made, so it cannot drift between the REPL, the
+    /// catalogue and the image writer.
+    bool isInternal() const { return kind == BUILTIN || kind == SYNTHESIZED; }
+};
+
+
+/**
+ * A predicate's identity -- engine item E2.
+ *
+ * The unit the catalogue, the browser, the source view and `undefine` all
+ * address. Module is part of the key because the same name/arity in two
+ * modules is two predicates.
+ */
+struct PredicateKey {
+    PredicateKey()
+        : arity( 0 )
+        , module( NO_MODULE )
+    {
+    }
+
+    PredicateKey( const std::string& strName, int nArity, ModuleId idModule )
+        : name( strName )
+        , arity( nArity )
+        , module( idModule )
+    {
+    }
+
+    std::string name;
+    int         arity;
+    ModuleId    module;
+
+    /// Ordered so the catalogue can be a std::map and a listing is stable
+    /// without a sort: module, then name, then arity.
+    bool operator < ( const PredicateKey& other ) const {
+        if( module != other.module ) { return module < other.module; }
+        if( name != other.name ) { return name < other.name; }
+        return arity < other.arity;
+    }
+    bool operator == ( const PredicateKey& other ) const {
+        return module == other.module
+            && arity == other.arity
+            && name == other.name;
+    }
+};
+
+
+/**
+ * One row of the definition catalogue -- engine item E2.
+ *
+ * The catalogue exists because the only way to answer "what predicates are
+ * defined?" used to be to walk the whole clause list and group by head name
+ * -- which is O(total clauses) per question, is what the REPL's `:list`
+ * does today, and is unusable for a browser that asks after every edit.
+ * It is also, not incidentally, the index ROADMAP Phase 3's first-argument
+ * indexing needs: built once, used twice.
+ */
+struct CatalogueEntry {
+    CatalogueEntry()
+        : kind( ClauseOrigin::MODULE )
+        , firstLine( 0 )
+        , clauseCount( 0 )
+        , retiredCount( 0 )
+        , generation( 0 )
+    {
+    }
+
+    PredicateKey       key;
+
+    /// The provenance of this predicate's clauses (engine item E1). A
+    /// predicate whose clauses disagree reports the first clause's kind;
+    /// mixing builtin and user clauses under one key is not possible today.
+    ClauseOrigin::Kind kind;
+
+    /// Where the first clause was defined, for "jump to definition".
+    std::string        uriFile;
+    uint64_t           firstLine;
+
+    /// Live clauses -- tombstones excluded.
+    uint32_t           clauseCount;
+
+    /**
+     * Tombstoned clauses still occupying the clause list.
+     *
+     * Exposed rather than hidden because clauses are never removed (see
+     * Clause::isRetired()), so repeated redefinition grows the list
+     * monotonically and every future goal walks past the corpses. This
+     * counter is what lets that degradation be MEASURED instead of
+     * discovered as a mysterious slowdown -- it is the number gate G3.7
+     * of plans/todo/lens/ACCEPTANCE.md is written against.
+     */
+    uint32_t           retiredCount;
+
+    /// World mutation generation of the last change to this predicate.
+    uint64_t           generation;
+};
+
+
 class AbstractTerm;
 class TermTraversable;
 
@@ -420,8 +591,27 @@ public:
      *
      * @param pClause
      *     The execution context takes ownership of the clause.
+     * @param origin
+     *     Where this clause came from -- engine item E1. Required rather
+     *     than defaulted: this is the single choke point through which
+     *     every clause in the database passes, so it is the one place where
+     *     forgetting to say is caught by the compiler instead of producing
+     *     a database that quietly claims everything is user code.
+     *
+     *     The caller fills in `kind`, `uriFile` and `line`; `module` is
+     *     resolved here from `uriFile` via World::moduleIdForFile().
+     *
+     *     Note that the origin is NOT derived from the clause's
+     *     DebugLocation, which would have been the obvious shortcut and is
+     *     wrong twice over: the parser never sets a DebugLocation on a
+     *     clause at all (only on terms, and only via the World's debug-info
+     *     map), so every parsed clause would have come out with no file;
+     *     and every builtin DOES set one -- to its own C++ source file and
+     *     line -- so every builtin would have been assigned a module named
+     *     after vault-unify-clause-builtin-print.cpp. The first version of
+     *     E1 did exactly this and the engine test caught both.
      */
-    int appendClause( WorldPtr spWorld, Clause* );
+    int appendClause( WorldPtr spWorld, Clause*, const ClauseOrigin& origin );
 
     /**
      * Collect (without deleting) every term reachable from every clause in
@@ -1380,6 +1570,16 @@ public:
 
     ClauseId getUID() const { return m_uid; }
 
+    /**
+     * Provenance -- engine item E1. Stamped by
+     * ExecutionState::appendClause(); meaningful only for a clause that has
+     * actually been appended (an unappended clause reports the default,
+     * ClauseOrigin::MODULE with no file, which is why the append is the
+     * thing that sets it rather than the constructor).
+     */
+    const ClauseOrigin& getOrigin() const { return m_origin; }
+    void setOrigin( const ClauseOrigin& origin ) { m_origin = origin; }
+
     const ConsTerm* leftHandTerm() const { return m_pLeftHandTerm; }
 
     virtual UnificationState startUnification(
@@ -1476,6 +1676,9 @@ private:
 
     /// See getRetireGeneration()/retire() above.
     uint64_t m_retireGeneration;
+
+    /// See getOrigin()/setOrigin() above (engine item E1).
+    ClauseOrigin m_origin;
 };
 
 
@@ -1933,6 +2136,68 @@ public:
     }
 
     /**
+     * Record a clause in the definition catalogue -- engine item E2.
+     *
+     * LOCKING: the caller must hold clauseDbMutex(). Public only because
+     * ExecutionState::appendClause() is the single call site and is not a
+     * member of World; it is not part of the World's usable surface.
+     */
+    void catalogueAppend( const Clause* pClause );
+
+    /**
+     * Account for a clause being tombstoned -- engine item E2. Same locking
+     * rule as catalogueAppend(); called from `retract`'s special form,
+     * which already holds the lock to call Clause::retire().
+     */
+    void catalogueRetire( const Clause* pClause );
+
+    /**
+     * Snapshot the catalogue -- engine items E2 and E14.
+     *
+     * Takes clauseDbMutex() and copies, rather than handing out a reference
+     * into the live map. That is the whole point: World::clauseDbMutex()'s
+     * comment justifies an unlocked reader side by "this engine has exactly
+     * one reader today, the single worker thread", and a session that
+     * answers `listing` while a query runs makes that false. Copying a few
+     * hundred rows is cheap next to the alternative, which is a std::map
+     * being read during a rehash.
+     */
+    void copyCatalogue( std::vector<CatalogueEntry>& out_lsEntries );
+
+    /**
+     * Snapshot one predicate's catalogue entry. Returns false if there is
+     * no such predicate. Same locking as copyCatalogue().
+     */
+    bool findCatalogueEntry( const PredicateKey& key,
+                             CatalogueEntry& out_entry );
+
+    /**
+     * The module id for a source file, assigning one on first sight
+     * (engine item E1).
+     *
+     * Ids are 1-based and dense, in first-seen order, and stable for the
+     * life of this World; NO_MODULE (0) is returned for an empty path,
+     * which is what a builtin or a runtime-asserted clause has.
+     *
+     * LOCKING: this is called from ExecutionState::appendClause(), which
+     * holds clauseDbMutex(). It is not safe to call from anywhere that does
+     * not hold that lock, and there is deliberately no internal locking --
+     * a second, finer lock here would have to be ordered against the clause
+     * -db one and would buy nothing, since every writer is already inside
+     * that critical section. See clauseDbMutex()'s comment.
+     */
+    ModuleId moduleIdForFile( const std::string& uriFile );
+
+    /**
+     * The file a module id names, or an empty string for NO_MODULE or an
+     * id this World never issued.
+     */
+    const std::string& moduleFile( ModuleId id ) const;
+
+    /// How many modules have been seen. Ids run 1..moduleCount().
+    size_t moduleCount() const { return m_lsModuleFiles.size(); }
+
+    /**
      * ROADMAP Phase 2 (runtime assert/retract, SPEC.md -- "logical update
      * view"): the current clause-database mutation generation, for a
      * ClauseIterator to snapshot at construction (see
@@ -2004,6 +2269,17 @@ private:
     /// discovers via TermDebugInfo entries.
     std::list<FileDebugInfo*> m_lsOwnedFileDebugInfos;
 
+    /// See catalogueAppend()/copyCatalogue() above (engine item E2).
+    std::map<PredicateKey, CatalogueEntry> m_mapCatalogue;
+
+    /// See moduleIdForFile()/moduleFile() above (engine item E1). The
+    /// vector is the id space -- index i holds the file for id i+1 -- and
+    /// the map is only an index into it, so an id can never be invalidated
+    /// by a later insertion.
+    std::vector<std::string> m_lsModuleFiles;
+    std::map<std::string, ModuleId> m_mapModuleIds;
+
+    /// See currentGeneration()/bumpGeneration() above.
     /// See currentGeneration()/bumpGeneration() above.
     uint64_t m_mutationGeneration;
 
@@ -2041,6 +2317,113 @@ public:
  * It provides the real world resources which not directly are persistable.
  *
  */
+/**
+ * One user error, as data -- engine item E10.
+ *
+ * Before this existed, a parse error was three fprintf()s to stderr
+ * (reportParseError, vault-unify-runtime-context.cpp) and the caller got
+ * back an error COUNT; a runtime UnifyError incremented a counter and
+ * overwrote a single "last error" string (SolveJob::recordError). Neither
+ * is something a diagnostics panel can navigate to, neither survives a
+ * process boundary, and neither can be attributed to the query that caused
+ * it. Formatting is a presentation decision, so it moves to the sink and
+ * the engine reports facts.
+ *
+ * The default sink prints exactly the bytes the fprintf()s did -- see
+ * DefaultDiagnosticSink in vault-unify-engine.cpp. That format is what
+ * unify-run's users and its CI logs read, so E10 is a change of plumbing,
+ * not of output.
+ */
+struct Diagnostic {
+    enum Severity {
+        NOTE = 0,
+        WARNING,
+        ERROR
+    };
+
+    Diagnostic()
+        : severity( ERROR )
+        , line( 0 )
+        , column( 0 )
+    {
+    }
+
+    Severity    severity;
+
+    /// The file, or a pseudo-URI such as "<repl>" or "<input>".
+    std::string uriFile;
+
+    /// 1-based; 0 when unknown (a runtime error has no column).
+    uint64_t    line;
+    uint64_t    column;
+
+    /// What went wrong, with no file/line prefix and no trailing newline.
+    std::string message;
+
+    /**
+     * The offending source line, without its newline. Empty when there is
+     * none to show -- a runtime error, or an import that parsed fine and
+     * merely could not be opened.
+     *
+     * Carried here rather than re-read from the file by the consumer,
+     * because a transcript line has no file to re-read and a remote core's
+     * files are on the wrong machine.
+     */
+    std::string sourceLine;
+};
+
+
+/**
+ * Where diagnostics go -- engine item E10. See OutputSink below for the
+ * ownership and threading rules, which are the same.
+ */
+class DiagnosticSink {
+public:
+    virtual ~DiagnosticSink();
+    virtual void onDiagnostic( const Diagnostic& diagnostic ) = 0;
+};
+
+
+/**
+ * Where a program's output goes -- engine item E4.
+ *
+ * Before this existed, `print` wrote to std::cout, `emit` wrote to
+ * std::cout, and world-change logging wrote to std::cerr, each directly
+ * from whichever thread happened to be executing. That is fine for a
+ * command-line tool and unusable for anything else: a remote engine's
+ * `print` sent to the engine process's stdout is simply lost on another
+ * machine, and two sessions sharing one process interleave into the same
+ * two file descriptors with no way to tell whose output is whose.
+ *
+ * So output becomes something a caller can be handed instead of something
+ * the engine performs. The default sink (Engine's, installed unless
+ * replaced) reproduces the previous bytes exactly -- see DefaultOutputSink
+ * in vault-unify-engine.cpp -- because the golden corpus pins them and a
+ * "harmless" reformatting here would break every one of them.
+ *
+ * THREADING: called on the engine's worker thread, from inside a builtin.
+ * An implementation must not block and must not call back into the engine.
+ */
+class OutputSink {
+public:
+    virtual ~OutputSink();
+
+    /**
+     * @param strStream
+     *     "stdout" or "stderr" -- which of the two the default sink would
+     *     have used. A session sink turns this into the `stream` field of
+     *     an Output event rather than choosing a file descriptor.
+     * @param strText
+     *     The complete text to write, newline included. Deliberately not
+     *     line-oriented: the caller assembles the whole line so that a sink
+     *     never has to reassemble one, and so the default sink is a single
+     *     write with no formatting decisions of its own.
+     */
+    virtual void onOutput( const std::string& strStream,
+                           const std::string& strText ) = 0;
+};
+
+
 class Engine
     : public ExecutionController
 {
@@ -2051,6 +2434,64 @@ public:
     void setWorldChangeSink( WorldChangeSink* pWorldChangeSink ) {
         m_pWorldChangeSink = pWorldChangeSink;
     }
+
+    /**
+     * Engine item E4: redirect this engine's program output.
+     *
+     * Passing NULL restores the default sink (stdout/stderr, byte-for-byte
+     * as before E4). The caller retains ownership and must outlive the
+     * engine, or must clear the sink before dying -- there is no shutdown
+     * path to do it for them (ROADMAP 5.1).
+     */
+    void setOutputSink( OutputSink* pOutputSink );
+
+    /**
+     * Engine item E10: redirect this engine's diagnostics. NULL restores
+     * the default (gcc-style text on stderr, byte-for-byte as before E10).
+     */
+    void setDiagnosticSink( DiagnosticSink* pDiagnosticSink );
+
+    /**
+     * What the DEFAULT sink should do with a diagnostic when no sink has
+     * been installed.
+     *
+     * This exists because E10 must not change what unify-run prints. The
+     * two error paths it unifies did not previously behave the same way: a
+     * parse error was three lines on stderr, and a runtime UnifyError
+     * (SolveJob::recordError) printed NOTHING AT ALL -- it bumped a counter
+     * and overwrote a "last error" string that only unify-run's one-line
+     * summary ever read.
+     *
+     * Routing both to a printing default would have made the engine start
+     * reporting runtime errors it had always swallowed. That is arguably an
+     * improvement, and it is not this item's to make: "unify-run keeps
+     * working, unchanged" is a rule of the plan, and a diagnostics change
+     * that quietly adds output to everyone's CI logs is exactly the kind of
+     * drive-by the rule is there to prevent.
+     *
+     * So the call site states what silence meant before, and an INSTALLED
+     * sink receives everything either way -- which is the whole point:
+     * a front end gets the runtime errors, and unify-run's output does not
+     * move.
+     */
+    enum DiagnosticDefault {
+        /// No sink installed: print it, as this path always did.
+        DIAGNOSTIC_PRINT = 0,
+        /// No sink installed: drop it, as this path always did.
+        DIAGNOSTIC_SILENT
+    };
+
+    /** Report one diagnostic. The single funnel, for the same reason. */
+    void writeDiagnostic( const Diagnostic& diagnostic,
+                          DiagnosticDefault whenNoSink = DIAGNOSTIC_PRINT );
+
+    /**
+     * Write one complete piece of program output. Used by the `print` and
+     * `emit` builtins and by world-change logging; the single funnel is the
+     * point, since anything that bypasses it is invisible to a remote
+     * front end.
+     */
+    void writeOutput( const std::string& strStream, const std::string& strText );
 
     WorldPtr createWorld();
 
@@ -2126,6 +2567,19 @@ private:
      * Holds the number of threads currently waiting for work.
      */
     int m_nThreadsWaiting;
+
+    /// See setOutputSink()/writeOutput() above (engine item E4). Never
+
+    /// NULL: cleared back to the process-output default rather than unset.
+
+    OutputSink* m_pOutputSink;
+
+    /// See setDiagnosticSink()/writeDiagnostic() above (engine item E10).
+    /// NULL when no sink has been installed -- unlike m_pOutputSink, the
+    /// "nobody is listening" case is not uniform here (see
+    /// DiagnosticDefault), so it has to be distinguishable.
+    DiagnosticSink* m_pDiagnosticSink;
+
 
     WorldChangeSink* m_pWorldChangeSink;
 
@@ -2270,7 +2724,18 @@ public:
         std::string::const_iterator itLine, 
         std::string::const_iterator itLineEnd,
         boost::function<void (boost::shared_ptr<vault::unify::Job>)> onFinished,
-        const FileDebugInfo* pFileDebugInfo = NULL );
+        const FileDebugInfo* pFileDebugInfo = NULL,
+        /**
+         * Engine item E1: the provenance to stamp on every clause this
+         * segment defines.
+         *
+         * Defaulted to MODULE because that is what a file is, and every
+         * caller that parses a file wants it. The REPL passes TRANSCRIPT
+         * for text typed at the prompt -- a distinction this function
+         * cannot make for itself, since the REPL hands it a FileDebugInfo
+         * just as a file does (with the pseudo-URI "<repl>").
+         */
+        ClauseOrigin::Kind kind = ClauseOrigin::MODULE );
 
     Engine* getEngine() const { return m_pEngine; }
     WorldPtr getWorld() const { return m_spWorld; }

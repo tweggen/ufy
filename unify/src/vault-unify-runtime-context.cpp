@@ -67,6 +67,7 @@ typedef boost::spirit::line_pos_iterator<std::string::const_iterator> ParseError
  * newlines, bounded by [itBegin, itEnd).
  */
 void reportParseError(
+        vault::unify::Engine* pEngine,
         ParseErrorIterator itBegin,
         ParseErrorIterator itError,
         ParseErrorIterator itEnd,
@@ -96,10 +97,23 @@ void reportParseError(
         ? pFileDebugInfo->getFileUri()
         : std::string( "<input>" );
 
-    fprintf( stderr, "%s:%ld:%ld: parse error\n", strFile.c_str(), line, column );
-    fprintf( stderr, "%s\n", strLine.c_str() );
-    std::string strCaret( column > 1 ? (std::size_t)( column - 1 ) : (std::size_t) 0, ' ' );
-    fprintf( stderr, "%s^\n", strCaret.c_str() );
+    // Engine item E10: reported as data. The engine's default diagnostic
+    // sink prints exactly the three lines this function used to fprintf()
+    // itself -- header, source line, caret -- so nothing a user or a CI log
+    // sees changes; what changes is that a front end can now receive this
+    // with the file, line and column intact instead of having to parse them
+    // back out of formatted text.
+    vault::unify::Diagnostic diagnostic;
+    diagnostic.severity = vault::unify::Diagnostic::ERROR;
+    diagnostic.uriFile = strFile;
+    diagnostic.line = (uint64_t) line;
+    diagnostic.column = (uint64_t) column;
+    diagnostic.message = "parse error";
+    diagnostic.sourceLine = strLine;
+
+    if( pEngine ) {
+        pEngine->writeDiagnostic( diagnostic );
+    }
 }
 
 
@@ -112,6 +126,7 @@ void reportParseError(
  * design ("<importing-file>:<line>: cannot open import \"path\"").
  */
 void reportImportError(
+        vault::unify::Engine* pEngine,
         const vault::unify::FileDebugInfo* pImportingFileDebugInfo,
         int line,
         const std::string& strRawPath )
@@ -119,8 +134,22 @@ void reportImportError(
     std::string strFile = pImportingFileDebugInfo
         ? pImportingFileDebugInfo->getFileUri()
         : std::string( "<input>" );
-    fprintf( stderr, "%s:%d: cannot open import \"%s\"\n",
-        strFile.c_str(), line, strRawPath.c_str() );
+
+    // Engine item E10. No source line and no caret here, deliberately: the
+    // import statement parsed fine, so there is no offending text to point
+    // at -- only a target that would not open. The default sink prints the
+    // one-line form when sourceLine is empty, reproducing exactly what this
+    // function used to fprintf().
+    vault::unify::Diagnostic diagnostic;
+    diagnostic.severity = vault::unify::Diagnostic::ERROR;
+    diagnostic.uriFile = strFile;
+    diagnostic.line = (uint64_t) line;
+    diagnostic.column = 0;
+    diagnostic.message = "cannot open import \"" + strRawPath + "\"";
+
+    if( pEngine ) {
+        pEngine->writeDiagnostic( diagnostic );
+    }
 }
 
 } // anonymous namespace
@@ -130,7 +159,8 @@ int RuntimeContext::parseExecuteSegment(
         std::string::const_iterator itLine, 
         std::string::const_iterator itLineEnd,
         boost::function<void (boost::shared_ptr<vault::unify::Job>)> onFinished,
-        const vault::unify::FileDebugInfo* pFileDebugInfo )
+        const vault::unify::FileDebugInfo* pFileDebugInfo,
+        ClauseOrigin::Kind kind )
 {
     typedef boost::spirit::line_pos_iterator<std::string::const_iterator> ParseIterator;
     typedef vault::unify::PrologParser::ufy_skipper<ParseIterator> ParseSkipper;
@@ -179,7 +209,25 @@ int RuntimeContext::parseExecuteSegment(
                 (void) prologContext.createClause(
                     clauseContext, 
                     inputEvent.clause, pClause );
-                m_esRoot->appendClause( m_spWorld, pClause );
+                // Engine item E1: the caller says whether this segment is a
+                // module's text or a line typed at a prompt. Both arrive
+                // here identically -- same parser, and the REPL supplies a
+                // FileDebugInfo too (pseudo-URI "<repl>") -- so the
+                // distinction cannot be recovered from anything visible in
+                // this function, and deriving it from the URI would be
+                // exactly the string heuristic E1 exists to remove.
+                // Engine item E1. The file comes from the segment's
+                // FileDebugInfo and the line from the parser's own
+                // line counter -- neither is on the clause itself, since
+                // the parser records debug info against TERMS via the
+                // World's map, not against clauses.
+                ClauseOrigin origin;
+                origin.kind = kind;
+                if( pFileDebugInfo ) {
+                    origin.uriFile = pFileDebugInfo->getFileUri();
+                }
+                origin.line = (uint64_t) lastStartLine;
+                m_esRoot->appendClause( m_spWorld, pClause, origin );
                 VAULT_UNIFY_DI( ALWAYS, "line %d: Added clause '%s'.\n", 
                     lastStartLine,
                     pClause->toString().c_str() );
@@ -215,7 +263,8 @@ int RuntimeContext::parseExecuteSegment(
             }
         } else {
             ++errorCount;
-            reportParseError( itPosBegin, itPosLine, itPosLineEnd, pFileDebugInfo );
+            reportParseError( m_pEngine, itPosBegin, itPosLine,
+                              itPosLineEnd, pFileDebugInfo );
             // Break, if we did not advance in the source. Otherwise, we would loop.
             if( !advanced ) break;
         }
@@ -265,7 +314,7 @@ int RuntimeContext::processImport(
     boost::system::error_code ec;
     bfs::path canonicalPath = bfs::canonical( resolvedPath, ec );
     if( ec ) {
-        reportImportError( pCurrentFileDebugInfo, line, strRawPath );
+        reportImportError( m_pEngine, pCurrentFileDebugInfo, line, strRawPath );
         return 1;
     }
 
@@ -288,7 +337,7 @@ int RuntimeContext::processImport(
         // file is; the once-set entry is left in place regardless (retrying
         // the same import later in this file would just fail again the
         // same way, which is fine).
-        reportImportError( pCurrentFileDebugInfo, line, strRawPath );
+        reportImportError( m_pEngine, pCurrentFileDebugInfo, line, strRawPath );
         return 1;
     }
     std::ostringstream buf;
@@ -310,9 +359,12 @@ int RuntimeContext::processImport(
         new vault::unify::FileDebugInfo( resolvedPath.string() );
     getWorld()->adoptFileDebugInfo( pImportedFileDebugInfo );
 
+    // An imported file is a module however it was reached: importing from
+    // the prompt yields module clauses, not transcript ones, so the kind is
+    // fixed here rather than inherited from the importing segment.
     return parseExecuteSegment(
         strContent.begin(), strContent.end(),
-        onFinished, pImportedFileDebugInfo );
+        onFinished, pImportedFileDebugInfo, ClauseOrigin::MODULE );
 }
 
 

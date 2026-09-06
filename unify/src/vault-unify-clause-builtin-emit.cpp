@@ -34,8 +34,15 @@ void EmitBuiltinClause::output(
         Engine* pEngine,
         const std::string& outputString ) const
 {
-    std::cout << "emit: " << outputString << std::endl;
-    pEngine->emitEvent( outputString );
+    // Engine item E4. Note that `emit` has always had TWO sinks: the text
+    // line, and the programmatic fan-out to UserEventListeners. Only the
+    // first is output; the second is an event bus and stays as it is.
+    if( pEngine ) {
+        pEngine->writeOutput( "stdout", "emit: " + outputString + "\n" );
+        pEngine->emitEvent( outputString );
+    } else {
+        std::cout << "emit: " << outputString << std::endl;
+    }
 }
 
 

@@ -1006,7 +1006,13 @@ int SolveJob::performSlice()
                     unifyResult = UnifyNot;
                 } else if( ConsTerm* pFactHead = dynamic_cast<ConsTerm*>( pGrounded ) ) {
                     StandardClause* pNewClause = new StandardClause( pFactHead, NULL );
-                    m_spWorld->getRootState()->appendClause( m_spWorld, pNewClause );
+                    // Engine item E1: created at run time, so no source
+                    // file and no module -- an image writes these back as
+                    // canonical facts (E6), not as text it never had.
+                    ClauseOrigin originAsserted;
+                    originAsserted.kind = ClauseOrigin::ASSERTED;
+                    m_spWorld->getRootState()->appendClause(
+                        m_spWorld, pNewClause, originAsserted );
                     unifyResult = UnifyLast;
                 } else {
                     std::string strError = "assert(): argument '";
@@ -1146,6 +1152,11 @@ int SolveJob::performSlice()
                             // liveness state.
                             Guard g( m_spWorld->clauseDbMutex() );
                             pCand->retire( m_spWorld->bumpGeneration() );
+                            // Engine item E2: keep the catalogue in step
+                            // with the tombstone, inside the same critical
+                            // section, so no reader can observe a clause
+                            // count that disagrees with the clause list.
+                            m_spWorld->catalogueRetire( pCand );
                             foundMatch = true;
                         } else if( UnifyError==trialResult ) {
                             // Defensive: no plain ConsTerm/VarTerm/MapTerm/
@@ -1553,6 +1564,35 @@ void SolveJob::recordError( const std::string& strError )
 {
     ++m_errorCount;
     m_lastError = strError;
+
+    // Engine item E10: also record it as data, and hand it to the engine's
+    // diagnostic sink so a front end sees runtime errors on the same path
+    // as parse errors rather than having to poll getLastError() and hope it
+    // has not been overwritten.
+    //
+    // A runtime error has no column and usually no source line -- it is a
+    // goal that failed, not text that would not parse -- so the default
+    // sink prints its one-line form. The file/line come from the job's
+    // debug location when there is one.
+    Diagnostic diagnostic;
+    diagnostic.severity = Diagnostic::ERROR;
+    diagnostic.message = strError;
+    diagnostic.column = 0;
+
+    DebugLocation debugLocation = getDebugLocation();
+    diagnostic.uriFile = debugLocation.uriFile.empty()
+        ? std::string( "<goal>" )
+        : debugLocation.uriFile;
+    diagnostic.line = debugLocation.line;
+
+    m_lsDiagnostics.push_back( diagnostic );
+
+    if( m_pEngine ) {
+        // DIAGNOSTIC_SILENT: before E10 this path printed nothing at all,
+        // and unify-run's output must not move. An installed sink still
+        // receives it -- see Engine::DiagnosticDefault.
+        m_pEngine->writeDiagnostic( diagnostic, Engine::DIAGNOSTIC_SILENT );
+    }
 }
 
 

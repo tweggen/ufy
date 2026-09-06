@@ -94,7 +94,8 @@ bool ExecutionState::ClauseIterator::isValid()
 }
 
 
-int ExecutionState::appendClause( WorldPtr spWorld, Clause* clause )
+int ExecutionState::appendClause( WorldPtr spWorld, Clause* clause,
+                                  const ClauseOrigin& origin )
 {
     Guard g( spWorld->clauseDbMutex() );
     // ROADMAP Phase 2 (runtime assert/retract, SPEC.md -- "logical update
@@ -106,6 +107,30 @@ int ExecutionState::appendClause( WorldPtr spWorld, Clause* clause )
     // -bearing (assert() makes the worker thread a clause-list writer too,
     // alongside the parser thread).
     clause->setAppendGeneration( spWorld->bumpGeneration() );
+
+    // Engine item E1 (clause provenance). Stamped here, under the same lock
+    // and before the push_back that makes the clause visible, for the same
+    // reason the generation is: this is the one function every clause in
+    // the database passes through, so it is the only place where "where did
+    // this come from" can be recorded as a fact rather than guessed later
+    // from the shape of the clause's name.
+    //
+    // Only the module id is derived; the rest is what the caller said. See
+    // the declaration for why deriving the file from the clause's
+    // DebugLocation looks right and is not.
+    {
+        ClauseOrigin stamped = origin;
+        // World::moduleIdForFile() is called under this lock deliberately
+        // -- see its comment.
+        stamped.module = spWorld->moduleIdForFile( stamped.uriFile );
+        clause->setOrigin( stamped );
+    }
+
+    // Engine item E2: the catalogue is maintained here, under the same
+    // lock and from the same single choke point as the provenance stamp
+    // above -- so it cannot drift from the clause list it describes.
+    spWorld->catalogueAppend( clause );
+
     m_listClauses.push_back( clause );
     DebugLocation debugLocation = clause->getDebugLocation();
     if( debugLocation.uriFile.length() ) {
