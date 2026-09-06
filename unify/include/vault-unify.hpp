@@ -340,6 +340,16 @@ public:
                 }
                 ti->next();
             }
+            // abstractTermIterator() is a factory -- it returns `new
+            // TermIterator( this )` -- and the caller owns the result.
+            // Every other call site in the engine deletes it
+            // (collectTermTree, deleteScratchTermTree,
+            // collectVarTermsOrdered, SolveJob's candidate scan); this one
+            // did not, so it leaked one iterator per node visited, on every
+            // traversal. Reached from SolveJob::getSolutionList(), which
+            // batch runs never call -- which is why the golden corpus never
+            // showed it and a session that reads solutions immediately does.
+            delete ti;
         }
     }
 };

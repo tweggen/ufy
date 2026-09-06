@@ -401,6 +401,20 @@ not be filed under Phase 4 tooling.
       first-argument indexing than a linked list was, which is the next
       thing that should touch this structure.
 
+- [x] **LocalSession** — `Session` over the in-process engine
+      (`src/vault-unify-local-session.*`), the only place in the tree that
+      sees both `SolveJob` and the boundary. *(2026-09-06. Closes gate G0:
+      the contract suite passes against it, the fake, and the fake with
+      every independent reply reordered. Deliberately asynchronous even
+      though it could answer directly, and deliberately without a
+      `waitForEngineIdle()` — which is what made E14 and E16 prerequisites.
+      Two bugs it surfaced immediately, both pre-existing: a leaked
+      `AbstractTermIterator` in `TermTraversable::applyVisitor()` — every
+      other call site deletes it, that one did not, and batch runs never
+      reach it because only `getSolutionList()` does; and the quiescence
+      question "has everything been delivered?", which is not the same as
+      "is the queue empty", since an event is popped before its callback
+      runs.)*
 - [ ] **E3, E5, E6, E7, E9, E11, E12, E13, E15** — not started. E9 (world
       reset) and E12 (staged parse and commit) are the two the lens plan
       calls out as larger than they look; `RuntimeContext` binds one Engine

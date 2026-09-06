@@ -3,9 +3,10 @@
  *
  * Runs the session contract suite against every available subject.
  *
- * Today that is FakeSession under two policies. LocalSession joins the list
- * as soon as the engine items it needs are in place; the registration is
- * one call, which is the point of parameterising the suite over a driver.
+ * Today that is FakeSession under two policies and LocalSession over a real
+ * in-process engine. Adding a subject is one registration call, which is the
+ * point of parameterising the suite over a driver rather than over a
+ * Session.
  *
  * Why the fake is run TWICE: the second run reorders every independent
  * reply. Ordering must not change outcomes, so every case must pass
@@ -18,8 +19,11 @@
 #include "contract-suite.hpp"
 #include "fake-session.hpp"
 
+#include "vault-unify-local-session.hpp"
+
 #include <iostream>
 #include <memory>
+#include <sstream>
 
 namespace {
 
@@ -136,21 +140,27 @@ SessionDriver makeFakeDriver( FakeSession::Policy policy )
         fake->scriptGoal( goal, g );
     };
 
-    d.scriptDefineError = [ fake ]( const std::string& text,
-                                    std::uint32_t count ) {
+    /*
+     * The fake produces two diagnostics for this text, so the suite's
+     * "errorCount matches the diagnostics emitted" assertion is checked
+     * against a number greater than one -- which is where an implementation
+     * that reports a boolean dressed up as a count would slip through.
+     */
+    d.badDefineText = "this is not a program";
+    {
         std::vector<us::Diagnostic> diags;
-        for ( std::uint32_t i = 0; i < count; ++i ) {
+        for ( int i = 0; i < 2; ++i ) {
             us::Diagnostic diag;
             diag.sev = us::Severity::Error;
             diag.file = "<transcript>";
             diag.line = static_cast<std::uint32_t>( i + 1 );
             diag.column = 1;
             diag.message = "syntax error";
-            diag.sourceLine = text;
+            diag.sourceLine = d.badDefineText;
             diags.push_back( diag );
         }
-        fake->scriptDefineError( text, diags );
-    };
+        fake->scriptDefineError( d.badDefineText, diags );
+    }
 
     d.goodDefineText = "colour( red ).";
     d.goodDefineKey.name = "colour";
@@ -188,10 +198,218 @@ SessionDriver makeFakeDriver( FakeSession::Policy policy )
     return d;
 }
 
+/**
+ * A Session that rewrites goal text on its way to a real core.
+ *
+ * The suite says `scriptCountingGoal( "ten.", 10 )` and then
+ * `solve( "ten." )`. Against a fake, "ten." is just a key. Against a real
+ * engine there is no such goal until a program makes one, and the program's
+ * predicate cannot be called "ten." So the driver defines a predicate and
+ * records what the suite's name should become; this wrapper applies that
+ * mapping, and nothing else, so the suite still calls a plain Session.
+ *
+ * Everything else forwards unchanged -- which is also a small proof that the
+ * boundary is composable, since a proxy is the same shape.
+ */
+class ScriptedSession : public us::Session {
+public:
+    explicit ScriptedSession( std::shared_ptr<us::Session> inner )
+        : m_inner( std::move( inner ) ) {}
+
+    void mapGoal( const std::string& from, const std::string& to )
+    {
+        m_goals[ from ] = to;
+    }
+
+    us::Capabilities describe() const override { return m_inner->describe(); }
+    void close() override { m_inner->close(); }
+    void subscribe( us::EventSink& sink, us::Seq resumeFrom ) override
+    {
+        m_inner->subscribe( sink, resumeFrom );
+    }
+
+    us::RequestId define( std::string text, us::Origin origin,
+                          us::OverwritePolicy policy ) override
+    {
+        return m_inner->define( std::move( text ), origin, policy );
+    }
+    us::RequestId undefine( us::PredicateKey key, us::ModuleId scope ) override
+    {
+        return m_inner->undefine( key, scope );
+    }
+    us::RequestId listing( us::ListingFilter filter ) override
+    {
+        return m_inner->listing( filter );
+    }
+    us::RequestId source( us::PredicateKey key ) override
+    {
+        return m_inner->source( key );
+    }
+
+    us::QueryId solve( std::string goalText, us::QueryOptions o ) override
+    {
+        const auto it = m_goals.find( goalText );
+        return m_inner->solve( it == m_goals.end() ? goalText : it->second, o );
+    }
+    us::RequestId demand( us::QueryId q, us::Stream s, std::uint32_t n ) override
+    {
+        return m_inner->demand( q, s, n );
+    }
+    us::RequestId cancel( us::QueryId q ) override { return m_inner->cancel( q ); }
+    us::RequestId release( us::QueryId q ) override { return m_inner->release( q ); }
+    us::RequestId inspect( us::QueryId q, std::uint64_t i, us::ValuePath p,
+                           us::ValueBudget b ) override
+    {
+        return m_inner->inspect( q, i, std::move( p ), b );
+    }
+
+    us::RequestId save( std::string path, us::SaveOptions o ) override
+    {
+        return m_inner->save( std::move( path ), o );
+    }
+    us::RequestId load( std::string path ) override
+    {
+        return m_inner->load( std::move( path ) );
+    }
+    us::RequestId insert( std::string path, us::OverwritePolicy p ) override
+    {
+        return m_inner->insert( std::move( path ), p );
+    }
+    us::RequestId debug( us::DebugCommand c ) override
+    {
+        return m_inner->debug( std::move( c ) );
+    }
+
+private:
+    std::shared_ptr<us::Session> m_inner;
+    std::map<std::string, std::string> m_goals;
+};
+
+
+/**
+ * Wrap a real in-process engine as a SessionDriver.
+ *
+ * The subject differences live here, not in the suite. Two are worth naming:
+ *
+ *  - "Scripting a goal" means DEFINING one. The fake is told what a goal
+ *    answers; a real engine has to be given a program that makes it true, so
+ *    scriptCountingGoal( g, 10 ) writes ten facts and points the goal at
+ *    them. That is a stronger test of the same criterion -- the ten
+ *    solutions have to be produced by resolution rather than handed over.
+ *
+ *  - settle() is LocalSession::waitUntilQuiet(), which drains the request
+ *    queue, puts a barrier job behind everything already submitted, and then
+ *    drains the event queue. Crucially it never satisfies demand the suite
+ *    did not ask for, which is the property the "delivers exactly 3, then
+ *    stops" cases rest on and which a settle() that merely slept would
+ *    silently break.
+ */
+SessionDriver makeLocalDriver()
+{
+    auto local = std::make_shared<vault::unify::session::LocalSession>();
+    if ( local->start() != 0 ) {
+        UT_FAIL( "LocalSession::start() failed" );
+    }
+    auto scripted = std::make_shared<ScriptedSession>( local );
+
+    SessionDriver d;
+    d.session = scripted;
+    d.settle = [ local ]() { local->waitUntilQuiet(); };
+
+    /* A fresh predicate per scripted goal, so cases cannot collide. */
+    auto counter = std::make_shared<int>( 0 );
+
+    auto definePredicate = [ local, counter ]( std::uint32_t count )
+        -> std::string
+    {
+        const std::string pred = "g" + std::to_string( ++( *counter ) );
+        std::ostringstream program;
+        for ( std::uint32_t i = 0; i < count; ++i ) {
+            program << pred << "( " << i << " );\n";
+        }
+        us::Origin origin;
+        origin.kind = us::Origin::Kind::Transcript;
+        local->define( program.str(), origin, us::OverwritePolicy::Append );
+        local->waitUntilQuiet();
+        return pred;
+    };
+
+    d.scriptCountingGoal = [ scripted, definePredicate ](
+            const std::string& goal, std::uint32_t count ) {
+        const std::string pred = definePredicate( count );
+        scripted->mapGoal( goal, pred + "( $n );" );
+    };
+
+    d.scriptNoisyGoal = [ scripted, definePredicate ](
+            const std::string& goal, std::uint32_t count,
+            std::uint32_t outputs, std::uint32_t diagnostics ) {
+        /*
+         * canScriptQueryDiagnostics is false for this subject, so the suite
+         * asks for none; if that ever changes, fail loudly rather than
+         * quietly under-delivering and letting the attribution case pass
+         * for the wrong reason.
+         */
+        if ( diagnostics != 0 ) {
+            UT_FAIL( "the in-process subject cannot script query diagnostics" );
+        }
+        const std::string pred = definePredicate( count );
+
+        /*
+         * The prints come first and run once: `print` leaves no choice
+         * point, so backtracking into the facts below it does not re-run
+         * them. That gives exactly `outputs` Output events for the query,
+         * followed by `count` solutions.
+         */
+        std::ostringstream body;
+        for ( std::uint32_t i = 0; i < outputs; ++i ) {
+            body << "print( \"noise\" ); ";
+        }
+        body << pred << "( $n );";
+        scripted->mapGoal( goal, body.str() );
+    };
+
+    d.scriptDeepGoal = []( const std::string&, std::uint32_t ) {
+        /*
+         * Never reached: every case needing a nested value checks
+         * structuredSolutions first and skips. Failing rather than skipping
+         * here, because reaching it would mean the suite's own guard has
+         * gone wrong, and that is a bug, not a missing capability.
+         */
+        UT_FAIL( "scriptDeepGoal is unavailable while engine item E7 is open; "
+                 "the case should have skipped on structuredSolutions" );
+    };
+
+    d.badDefineText = "this is not a program";
+    d.goodDefineText = "colour( red );\n";
+    d.goodDefineKey.name = "colour";
+    d.goodDefineKey.arity = 1;
+    d.goodDefineKey.module = 1;   /* the session's own pseudo-module */
+
+    /* A real UnifyError makes its goal fail, so a query cannot both report
+     * a diagnostic and keep producing solutions. See the field's comment. */
+    d.canScriptQueryDiagnostics = false;
+
+    /* An in-process session has no connection to drop and no transport to
+     * fail; the cases that need those skip rather than pretend. */
+    d.forceDisconnect = nullptr;
+    d.injectFailure = nullptr;
+    d.settleSlowly = nullptr;
+
+    return d;
+}
+
 } // namespace
 
 int main()
 {
+    /*
+     * The engine's stderr trace is on by default and prints several lines
+     * per resolution step. Useful when debugging the engine, and it buries
+     * the suite's own output completely -- unify-run's REPL turns it off
+     * for exactly the same reason.
+     */
+    vault::unify::setDebugTraceEnabled( false );
+
     Registry registry;
 
     {
@@ -210,6 +428,10 @@ int main()
             return makeFakeDriver( reordering );
         } );
     }
+
+    registerContractSuite( registry, "local", []() {
+        return makeLocalDriver();
+    } );
 
     const int failures = registry.run( "session contract suite (G0)" );
 

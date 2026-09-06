@@ -78,9 +78,30 @@ struct SessionDriver {
     std::function<void( const std::string& goalText, std::uint32_t depth )>
         scriptDeepGoal;
 
-    /** Script `define` of this text to produce `count` diagnostics. */
-    std::function<void( const std::string& text, std::uint32_t count )>
-        scriptDefineError;
+    /**
+     * Text this subject's `define` will reject.
+     *
+     * A count is deliberately NOT part of this: a fake can be told to
+     * produce exactly two diagnostics, and a real parser produces however
+     * many it produces. Asserting an exact number would have been asserting
+     * a property of the fake. What the contract actually requires is that a
+     * bad define is never silent, never answers with diagnostics alone, and
+     * never answers with a Defined alone -- and that the count it reports
+     * matches the diagnostics it emitted.
+     */
+    std::string badDefineText;
+
+    /**
+     * Whether this subject can make a query emit Diagnostics.
+     *
+     * False for a real in-process engine today: a runtime UnifyError makes
+     * the goal that caused it fail, so a query cannot both report a
+     * diagnostic and go on producing solutions. The attribution obligation
+     * still holds for whatever IS emitted -- that part of the case is
+     * asserted for every subject -- but the exact count is only demanded
+     * where it can be arranged.
+     */
+    bool canScriptQueryDiagnostics = true;
 
     /**
      * Text that `define` accepts, and the PredicateKey it should define.

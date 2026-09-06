@@ -82,6 +82,9 @@ set_target_properties(unify-session-contract PROPERTIES
 )
 target_include_directories(unify-session-contract PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}"
+    # LocalSession lives in the engine, not in the boundary: the contract
+    # suite is the only thing outside src/ that includes it.
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../src"
 )
 target_link_libraries(unify-session-contract PRIVATE vault-unify-core)
 if(NOT MSVC)

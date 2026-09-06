@@ -276,24 +276,28 @@ void registerContractSuite( Registry& registry,
             Recorder rec;
             d.session->subscribe( rec, 0 );
 
-            const std::string bad = "this is not a program";
-            d.scriptDefineError( bad, 2 );
-
             us::Origin origin;
             origin.kind = us::Origin::Kind::Transcript;
-            d.session->define( bad, origin, us::OverwritePolicy::Append );
+            d.session->define( d.badDefineText, origin,
+                               us::OverwritePolicy::Append );
             d.settle();
             rec.checkInvariants();
 
             const std::vector<us::Diagnostic> diags = rec.all<us::Diagnostic>();
             const std::vector<us::Defined> defined = rec.all<us::Defined>();
 
-            UT_CHECK_MSG( diags.size() == 2,
-                          "expected 2 diagnostics, got " << diags.size()
-                              << " -- never silence" );
+            UT_CHECK_MSG( diags.size() >= 1,
+                          "a rejected define produced no diagnostics at all -- "
+                          "never silence" );
             UT_CHECK_MSG( defined.size() == 1,
-                          "a failed define must still answer Defined" );
-            UT_CHECK_EQ( defined[ 0 ].errorCount, std::uint32_t( 2 ) );
+                          "a failed define must still answer Defined, so a "
+                          "front end rendering only Defined still learns "
+                          "something went wrong" );
+            UT_CHECK_MSG( defined[ 0 ].errorCount == diags.size(),
+                          "Defined.errorCount is " << defined[ 0 ].errorCount
+                              << " but " << diags.size()
+                              << " diagnostics were emitted; the count and the "
+                                 "detail must describe the same errors" );
 
             /*
              * Structured, not text. A diagnostic whose file and line are
@@ -440,8 +444,10 @@ void registerContractSuite( Registry& registry,
             Recorder rec;
             d.session->subscribe( rec, 0 );
 
-            d.scriptNoisyGoal( "noisy_a.", 4, 2, 1 );
-            d.scriptNoisyGoal( "noisy_b.", 4, 2, 1 );
+            const std::uint32_t wantDiagnostics =
+                d.canScriptQueryDiagnostics ? 1 : 0;
+            d.scriptNoisyGoal( "noisy_a.", 4, 2, wantDiagnostics );
+            d.scriptNoisyGoal( "noisy_b.", 4, 2, wantDiagnostics );
 
             us::QueryOptions opt;
             opt.initialDemand = 4;
@@ -480,8 +486,10 @@ void registerContractSuite( Registry& registry,
             UT_CHECK_EQ( rec.allFor<us::Output>( b ).size(), std::size_t( 2 ) );
             UT_CHECK_EQ( rec.allFor<us::Solution>( a ).size(), std::size_t( 4 ) );
             UT_CHECK_EQ( rec.allFor<us::Solution>( b ).size(), std::size_t( 4 ) );
-            UT_CHECK_EQ( rec.allFor<us::Diagnostic>( a ).size(), std::size_t( 1 ) );
-            UT_CHECK_EQ( rec.allFor<us::Diagnostic>( b ).size(), std::size_t( 1 ) );
+            UT_CHECK_EQ( rec.allFor<us::Diagnostic>( a ).size(),
+                         std::size_t( wantDiagnostics ) );
+            UT_CHECK_EQ( rec.allFor<us::Diagnostic>( b ).size(),
+                         std::size_t( wantDiagnostics ) );
         } );
 
     // -- G0.9 ---------------------------------------------------------------
@@ -563,15 +571,29 @@ void registerContractSuite( Registry& registry,
                 return;
             }
 
+            const bool structured = d.session->describe().structuredSolutions;
+
             Recorder rec;
             d.session->subscribe( rec, 0 );
-
-            d.scriptDeepGoal( "deep.", 6 );
 
             us::QueryOptions opt;
             opt.initialDemand = 1;
             opt.retain = true;
-            opt.budget.maxDepth = 2;
+
+            if ( structured ) {
+                d.scriptDeepGoal( "deep.", 6 );
+                opt.budget.maxDepth = 2;
+            } else {
+                /*
+                 * Without engine item E7 there is nothing to expand, but
+                 * retention itself -- inspect works while retained, fails
+                 * after release, and the retained count returns to zero --
+                 * is exactly as testable on a flat binding, and is the part
+                 * of this criterion that guards against a leak.
+                 */
+                d.scriptCountingGoal( "deep.", 1 );
+            }
+
             const us::QueryId q = d.session->solve( "deep.", opt );
             d.settle();
             rec.checkInvariants();
@@ -580,10 +602,12 @@ void registerContractSuite( Registry& registry,
             UT_CHECK_EQ( sols.size(), std::size_t( 1 ) );
             UT_CHECK_MSG( !sols[ 0 ].bindings.empty(), "solution has no bindings" );
 
-            /* The budget must actually have bitten, or the case proves nothing. */
-            UT_CHECK_MSG( us::hasTruncation( sols[ 0 ].bindings[ 0 ].second ),
-                          "a depth-2 budget on a 6-deep term produced no "
-                          "truncation -- the case cannot test inspect" );
+            if ( structured ) {
+                /* The budget must have bitten, or the case proves nothing. */
+                UT_CHECK_MSG( us::hasTruncation( sols[ 0 ].bindings[ 0 ].second ),
+                              "a depth-2 budget on a 6-deep term produced no "
+                              "truncation -- the case cannot test inspect" );
+            }
 
             const auto term = terminalStatus( rec, q );
             UT_CHECK_MSG( term.has_value(), "query never reached a terminal status" );
@@ -605,9 +629,12 @@ void registerContractSuite( Registry& registry,
             UT_CHECK_MSG( expanded.size() == 1,
                           "inspect on a retained query returned "
                               << expanded.size() << " Expanded events" );
-            UT_CHECK_MSG( us::countNodes( expanded[ 0 ].value )
-                              > us::countNodes( sols[ 0 ].bindings[ 0 ].second ),
-                          "inspect returned no more than the truncated value" );
+            if ( structured ) {
+                UT_CHECK_MSG(
+                    us::countNodes( expanded[ 0 ].value )
+                        > us::countNodes( sols[ 0 ].bindings[ 0 ].second ),
+                    "inspect returned no more than the truncated value" );
+            }
 
             rec.clear();
             d.session->release( q );
@@ -750,7 +777,8 @@ void registerContractSuite( Registry& registry,
         [ factory ]() {
             SessionDriver d = factory();
             if ( !d.injectFailure ) {
-                return;   /* subject cannot arrange it; see the header */
+                UT_SKIP( "subject cannot inject an infrastructure failure "
+                         "(an in-process session has no transport to fail)" );
             }
 
             Recorder rec;
@@ -787,7 +815,7 @@ void registerContractSuite( Registry& registry,
         [ factory ]() {
             SessionDriver d = factory();
             if ( !d.forceDisconnect ) {
-                return;
+                UT_SKIP( "subject has no connection to drop" );
             }
 
             Recorder first;
@@ -855,7 +883,7 @@ void registerContractSuite( Registry& registry,
         [ factory ]() {
             SessionDriver d = factory();
             if ( !d.settleSlowly ) {
-                return;
+                UT_SKIP( "subject cannot deliver on a controlled clock" );
             }
 
             Recorder rec;
@@ -922,6 +950,12 @@ void registerContractSuite( Registry& registry,
         name( "truncation marks the node it cut and inspect can undo it" ),
         [ factory ]() {
             SessionDriver d = factory();
+            if ( !d.session->describe().structuredSolutions ) {
+                UT_SKIP( "core reports structuredSolutions:false (engine item "
+                         "E7), so every binding is a flat Str leaf and there "
+                         "is no nesting to truncate" );
+            }
+
             Recorder rec;
             d.session->subscribe( rec, 0 );
 

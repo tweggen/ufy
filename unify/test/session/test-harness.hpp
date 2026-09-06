@@ -29,6 +29,25 @@
 
 namespace unify_test {
 
+/**
+ * Thrown by UT_SKIP: this subject cannot run this case at all.
+ *
+ * Distinct from a failure, and reported distinctly, because the two mean
+ * opposite things -- "the contract is broken" versus "this core declares it
+ * does not have that capability yet". ACCEPTANCE.md's rule that a criterion
+ * which cannot be run is not a criterion is about the SUITE, not about every
+ * subject: the case still runs, and must pass, against the fake. What a skip
+ * records is that a particular core has declared a capability false, and it
+ * prints the reason so the declaration cannot quietly become permanent.
+ */
+class SkipCase : public std::exception {
+public:
+    explicit SkipCase( std::string why ) : m_why( std::move( why ) ) {}
+    const char* what() const noexcept override { return m_why.c_str(); }
+private:
+    std::string m_why;
+};
+
 /** Thrown by CHECK-style macros; caught by the runner, never by a test. */
 class AssertionFailure : public std::exception {
 public:
@@ -66,11 +85,16 @@ public:
         int skipped = 0;
 
         std::cout << "== " << banner << " (" << m_cases.size() << " cases)\n";
+        std::cout.flush();
 
         for ( const TestCase& c : m_cases ) {
             std::string failure;
+            std::string skip;
             try {
                 c.body();
+            }
+            catch ( const SkipCase& e ) {
+                skip = e.what();
             }
             catch ( const AssertionFailure& e ) {
                 failure = e.what();
@@ -82,18 +106,29 @@ public:
                 failure = "unexpected non-std exception";
             }
 
-            if ( failure.empty() ) {
+            /*
+             * Flushed per case, not at the end. A hanging case is the most
+             * likely thing to want this output for, and a buffered stream
+             * loses exactly the last line -- the name of the case that hung.
+             */
+            if ( !skip.empty() ) {
+                ++skipped;
+                std::cout << "   skip " << c.name << "\n";
+                std::cout << "        " << skip << "\n";
+            } else if ( failure.empty() ) {
                 std::cout << "   ok   " << c.name << "\n";
             } else {
                 ++failures;
                 std::cout << "   FAIL " << c.name << "\n";
                 std::cout << failure << "\n";
             }
+            std::cout.flush();
         }
 
         std::cout << "== " << banner << ": "
                   << ( m_cases.size() - failures - skipped ) << " passed, "
-                  << failures << " failed\n";
+                  << failures << " failed, "
+                  << skipped << " skipped\n";
         return failures;
     }
 
@@ -133,6 +168,13 @@ inline std::string describe( const std::string& value )
         _ut_os << "        at " << __FILE__ << ":" << __LINE__ << "\n"        \
                << "        " << message;                                      \
         throw ::unify_test::AssertionFailure( _ut_os.str() );                 \
+    } while ( false )
+
+#define UT_SKIP( reason )                                                     \
+    do {                                                                      \
+        std::ostringstream _ut_os;                                            \
+        _ut_os << reason;                                                     \
+        throw ::unify_test::SkipCase( _ut_os.str() );                         \
     } while ( false )
 
 #define UT_CHECK( expression )                                                \
