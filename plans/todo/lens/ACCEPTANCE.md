@@ -4,6 +4,30 @@ Companion to [`../lens-text-mode-environment.md`](../lens-text-mode-environment.
 Plan requirement (e): development is test-driven, and progress is measured
 by gates whose criteria are executable.
 
+> **Progress note (2026-09-06, implementation machine).** G0 is partly
+> closed; see the per-criterion ticks below. The engine items G0 depends on
+> (E1, E2, E4, E10, E14) are in, `vault-unify-session.hpp` and the contract
+> suite exist, and the suite passes against `FakeSession` under two
+> policies. **G0 is NOT closed**: `LocalSession` does not exist yet, so
+> every criterion is currently discharged against the fake only, and G0.9's
+> TSan requirement is blocked on a race the plan did not scope (engine item
+> E16, recorded in `unify/ROADMAP.md`). The baseline the gates are measured
+> against is in [BASELINE.md](BASELINE.md).
+>
+> One deviation from G0.4, with reasons. The gate says the same unmodified
+> suite passes against a fake that "reorders independent replies, delays
+> them up to 500 ms, injects Failed, and disconnects mid-query". Reordering
+> and delay are applied to the WHOLE suite -- they must never change an
+> outcome, so every case must pass identically under both, and a case that
+> secretly depends on reply order fails in the reordered run only. Injected
+> failure and disconnection are DEDICATED cases instead, because they change
+> outcomes by definition: a suite running under them would have to weaken
+> every assertion to "either the right answer or a Failed", which is not an
+> assertion. The fake reorders logically rather than by sleeping, from a
+> seeded generator, so a failing interleaving is reproducible from the seed;
+> one case uses real wall-clock delay, which is the only obligation that is
+> about time rather than order.
+
 > **Revision note (2026-09-06, after architecture review).** Ten gates, not
 > nine (they were always G0–G9; the count was simply wrong). Three
 > composition gaps the first draft left open are now gated: edit-then-save
@@ -55,17 +79,17 @@ Three harnesses, all in the repo's established golden style
 
 | # | Criterion |
 | --- | --- |
-| G0.1 | `vault-unify-session.hpp` compiles against a translation unit that includes **no other unify header**. Checked by a dedicated compile target, so a stray `Clause*` cannot appear later. |
-| G0.2 | `grep` over the public session header finds no `Clause`, `UnifyContext`, `World`, `SolveJob`, `Engine`, `boost::`, or any raw pointer type in a signature. Automated. |
-| G0.3 | The full contract suite ([SESSION-API.md](SESSION-API.md) §7) passes against `LocalSession`. |
-| G0.4 | The same suite, unmodified, passes against `FakeSession` — which reorders independent replies, delays them up to 500 ms, injects `Failed`, and disconnects mid-query. |
-| G0.5 | Every test observes strictly increasing, gapless `seq`, and never a `Solution` after its query's terminal `QueryStatus`. |
-| G0.6 | `solve(goal, initialDemand=3)` on a 10-solution goal delivers exactly 3, then stops until `demand`. |
-| G0.7 | Engine items E1 (provenance), E2 (catalogue), E4 (output redirection), E10 (structured diagnostics) are in place: `listing` returns correct kinds with no `__` name-prefix heuristic; `print` arrives as an `Output` event with nothing on the process's stdout; a parse error arrives as a `Diagnostic` with structured file/line/column, not as text on stderr. |
-| G0.8 | **Query attribution.** Two queries run concurrently against `FakeSession`; every `Output` and `Diagnostic` they cause carries the right `QueryId`, and each query's `querySeq` is gapless. |
-| G0.9 | **Request during query.** `define`, `listing` and `source` issued while a query is running are answered in bounded time and the catalogue stays correct — the obligation of [ARCHITECTURE.md](ARCHITECTURE.md) §3.1. Engine item E14 (the ROADMAP 5.1 subset) is in place; the suite runs under TSan for this case. |
-| G0.10 | **Query lifetime.** After a terminal `QueryStatus`, `inspect` works while `retained`; `release` frees it; a subsequent `inspect` answers `Failed`; the core's retained-query count returns to zero. A suite that runs 1,000 queries and releases them ends with the same retained count it started with. |
-| G0.11 | **Debug is closed over its events.** `debug(SetTrace)` produces `TraceEvent`s; `demand(q, Stream::Trace, n)` bounds them; a core reporting `debug: false` answers `Failed` and never crashes. |
+| G0.1 **[done]** | `vault-unify-session.hpp` compiles against a translation unit that includes **no other unify header**. Checked by a dedicated compile target, so a stray `Clause*` cannot appear later. |
+| G0.2 **[done]** | `grep` over the public session header finds no `Clause`, `UnifyContext`, `World`, `SolveJob`, `Engine`, `boost::`, or any raw pointer type in a signature. Automated. |
+| G0.3 **[blocked: no LocalSession]** | The full contract suite ([SESSION-API.md](SESSION-API.md) §7) passes against `LocalSession`. |
+| G0.4 **[done, with the deviation noted above]** | The same suite, unmodified, passes against `FakeSession` — which reorders independent replies, delays them up to 500 ms, injects `Failed`, and disconnects mid-query. |
+| G0.5 **[done, vs. the fake]** | Every test observes strictly increasing, gapless `seq`, and never a `Solution` after its query's terminal `QueryStatus`. |
+| G0.6 **[done, vs. the fake]** | `solve(goal, initialDemand=3)` on a 10-solution goal delivers exactly 3, then stops until `demand`. |
+| G0.7 **[engine half done; boundary half blocked]** | Engine items E1 (provenance), E2 (catalogue), E4 (output redirection), E10 (structured diagnostics) are in place: `listing` returns correct kinds with no `__` name-prefix heuristic; `print` arrives as an `Output` event with nothing on the process's stdout; a parse error arrives as a `Diagnostic` with structured file/line/column, not as text on stderr. |
+| G0.8 **[done, vs. the fake]** | **Query attribution.** Two queries run concurrently against `FakeSession`; every `Output` and `Diagnostic` they cause carries the right `QueryId`, and each query's `querySeq` is gapless. |
+| G0.9 **[blocked: engine item E16]** | **Request during query.** `define`, `listing` and `source` issued while a query is running are answered in bounded time and the catalogue stays correct — the obligation of [ARCHITECTURE.md](ARCHITECTURE.md) §3.1. Engine item E14 (the ROADMAP 5.1 subset) is in place; the suite runs under TSan for this case. *(2026-09-06: the behavioural half passes against the fake. E14 is done and took TSan reports over the corpus from 164 to 13 — but the residual 13 are the unlocked clause-list reader racing `appendClause`'s `push_back`, which E14 as written did not cover. It is pre-existing, not introduced here: the same measurement at `39023de` reports 164. Recorded as engine item E16; this criterion stays open until it lands, because "runs under TSan" cannot honestly be ticked while TSan reports a race on the path this criterion exercises.)* |
+| G0.10 **[done, vs. the fake]** | **Query lifetime.** After a terminal `QueryStatus`, `inspect` works while `retained`; `release` frees it; a subsequent `inspect` answers `Failed`; the core's retained-query count returns to zero. A suite that runs 1,000 queries and releases them ends with the same retained count it started with. |
+| G0.11 **[done, vs. the fake]** | **Debug is closed over its events.** `debug(SetTrace)` produces `TraceEvent`s; `demand(q, Stream::Trace, n)` bounds them; a core reporting `debug: false` answers `Failed` and never crashes. |
 | **H** | `describe()` reports the core's builtin list; the help extraction step (UI §5.3) consumes it. |
 
 ## G1 — Shell
