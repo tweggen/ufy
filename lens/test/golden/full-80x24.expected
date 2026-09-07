@@ -1,0 +1,24 @@
+ File  Edit  World  Query  Image  Debug  Window  Help
+┌ Catalogue ───────┐┌ Source ──────────────────────────────────────────────────┐
+│module -> (name, a││the selected definition                                   │
+│awaiting listing (││awaiting source (G3)                                      │
+│                  ││                                                          │
+│                  ││                                                          │
+│                  ││                                                          │
+│                  ││                                                          │
+│                  ││                                                          │
+│                  │└──────────────────────────────────────────────────────────┘
+│                  │┌ Diagnostics ─────────────────────────────────────────────┐
+│                  ││(none)                                                    │
+│                  ││                                                          │
+│                  ││                                                          │
+└──────────────────┘└──────────────────────────────────────────────────────────┘
+┌ Transcript ──────────────────────────┐┌ Solutions ───────┐┌ Inspector ───────┐
+│?-                                    ││bindings, one row ││the selected bindi│
+│                                      ││awaiting solve (G5││awaiting inspect (│
+│                                      ││                  ││                  │
+│                                      ││                  ││                  │
+│                                      ││                  ││                  │
+└──────────────────────────────────────┘└──────────────────┘└──────────────────┘
+ gen 0 · 0 clauses · idle · no session · full
+F1 Help  F10 Menu

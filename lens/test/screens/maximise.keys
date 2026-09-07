@@ -1,0 +1,6 @@
+# G1.2, the destructive half: maximise discards the arrangement rather than
+# hiding it (Emacs C-x 1), so what this records is one tile filling the area.
+
+C-x 3
+C-x 2
+C-x 1

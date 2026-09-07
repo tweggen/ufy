@@ -108,16 +108,28 @@ Three harnesses, all in the repo's established golden style
 
 *A window manager and a help system, before any feature needs either.*
 
+> **Progress note (2026-09-07).** G1.1 through G1.7 are done; the "H"
+> criterion is half done and is what keeps the gate open. See the per-row
+> notes. FTXUI is in, pinned to v7.0.3, in one file behind `ITerminal`.
+>
+> One limitation stated rather than discovered later: the FTXUI backend is
+> compile- and link-verified but its INTERACTIVE behaviour is not tested,
+> because the machine this was written on has no tty. Everything a golden
+> can prove is proved through `--script` with no terminal at all, which is
+> why that mechanism was built first; what remains untested is one file,
+> deliberately kept as small as it is so that "we could not test it" covers
+> as little as possible. A first run on a real terminal is owed.
+
 | # | Criterion |
 | --- | --- |
-| G1.1 | Golden screens for all four stock layouts at **120×40** and **80×24**. |
-| G1.2 | A key script that splits, cycles focus, closes and maximises tiles reproduces its golden exactly; the tile solver always covers the tile area with no gap and no overlap (asserted structurally, not just visually). |
-| G1.3 | Resize from 120×40 to 80×24 and back restores the **pre-degradation layout tree**, not merely a valid one: the solver keeps demoted tiles' geometry rather than discarding it, and the criterion asserts tree equality. (Stated this way because the naive reading — "the model is identical" — is false for a lossy solver and would have been quietly weakened later.) |
-| G1.4 | Below 80×24, lens exits with the pinned message and a non-zero status; it does not render. |
-| G1.5 | FTXUI containment: no file outside `lens/src/term/` includes an FTXUI header. Automated grep, gating. |
-| G1.6 | `model/` and `panels/` include no engine header. Automated grep, gating. |
-| G1.7 | `--script FILE` runs headless, dumps the final grid and exits — the mechanism every later golden depends on. |
-| **H** | `F1` opens the Help panel from every focused region; the hint line is non-empty in every golden; `M-x` lists every registered command; the generated keymap page matches the live command table (asserted, not eyeballed); a command registered without help text fails the build. |
+| G1.1 **[done]** | Golden screens for all four stock layouts at **120×40** and **80×24**. *(2026-09-07: eight screens, recorded through `--script` so no terminal is involved. The four layouts are stances rather than box arrangements -- browse is the system-browser stance, run drives a program, debug asks why, full is for the person with 200 columns -- and none special-cases the small geometry: at 80×24 each degrades through the ordinary solver, so there is no second set of presets to keep in step.)* |
+| G1.2 **[done]** | A key script that splits, cycles focus, closes and maximises tiles reproduces its golden exactly; the tile solver always covers the tile area with no gap and no overlap (asserted structurally, not just visually). *(2026-09-07: three key-script goldens, and the structural half is a seeded property test walking every cell of the area over forty random layouts at five geometries. `checkCoverage()` is exported so the same invariant can be asserted on any frame, not only in the layout tests.)* |
+| G1.3 **[done]** | Resize from 120×40 to 80×24 and back restores the **pre-degradation layout tree**, not merely a valid one: the solver keeps demoted tiles' geometry rather than discarding it, and the criterion asserts tree equality. (Stated this way because the naive reading — "the model is identical" — is false for a lossy solver and would have been quietly weakened later.) *(2026-09-07: made true by construction rather than by care -- `solve()` is a pure function and never touches the tree, so degradation is a property of one call. Asserted twice: tree equality in the model tests, and on screen as an equivalence between two runs, since what a user notices is that the round trip leaves EXACTLY the screen they would have had without resizing.)* |
+| G1.4 **[done]** | Below 80×24, lens exits with the pinned message and a non-zero status; it does not render. *(2026-09-07: all three halves asserted separately, because each fails differently -- a zero exit makes a script think it worked, a missing message leaves the user with no idea why, and rendering anyway produces the illegible screen the rule exists to prevent. The test also asserts 80×24 itself WORKS, so the gate is not an off-by-one.)* |
+| G1.5 **[done]** | FTXUI containment: no file outside `lens/src/term/` includes an FTXUI header. Automated grep, gating. *(2026-09-07: FTXUI v7.0.3, pinned, in one file behind `ITerminal`. Verified the grep can FAIL on a deliberately bad tree, not merely pass on this one.)* |
+| G1.6 **[done]** | `model/` and `panels/` include no engine header. Automated grep, gating. *(2026-09-07: with one deliberate exemption -- `vault-unify-session.hpp` IS permitted, since it is the boundary, G0.1 proves it pure, and seeing it is the point of having drawn one. `layout/` and `modreg/` are held to the stricter rule of no dependencies at all.)* |
+| G1.7 **[done]** | `--script FILE` runs headless, dumps the final grid and exits — the mechanism every later golden depends on. *(2026-09-07: one step per line, spelled as the keymap spells it. `resize COLSxROWS` is a step too -- G1.3's claim is about what a resize does to a layout, and a script that could only type keys could not express it.)* |
+| **H** **[partly done]** | `F1` opens the Help panel from every focused region; the hint line is non-empty in every golden; `M-x` lists every registered command; the generated keymap page matches the live command table (asserted, not eyeballed); a command registered without help text fails the build. *(2026-09-07: the GENERATED half is done and asserted -- the hint line is non-empty in every golden and shows a held chord prefix rather than going stale, the keymap page is produced from the live table so it cannot disagree with the bindings, and a command with blank help is refused at registration. The INTERACTIVE half -- the Help panel `F1` opens and the `M-x` palette -- is outstanding: both need a panel and a minibuffer, so both are the first thing G2 brings. Until then `F1` and `M-x` say so in the status line rather than doing nothing. **G1 does not close until they exist.**)* |
 
 ## G2 — Transcript
 

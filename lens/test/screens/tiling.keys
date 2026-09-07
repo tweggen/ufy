@@ -1,0 +1,12 @@
+# ACCEPTANCE.md G1.2: "a key script that splits, cycles focus, closes and
+# maximises tiles reproduces its golden exactly".
+#
+# Every gesture UI.md section 2 binds, in one script, so a change to any of
+# them shows up here as well as in the model tests.
+
+C-x 3        # split side by side
+C-x 2        # split the new tile above/below
+Tab          # cycle focus forward
+Tab
+S-Tab        # and back
+C-x 0        # close the focused tile
