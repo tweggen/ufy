@@ -1,0 +1,7 @@
+# G2.1: against a real engine -- define a fact, query it, see the binding.
+type colour( red );
+Enter
+type colour( green );
+Enter
+type colour( $x )
+Enter

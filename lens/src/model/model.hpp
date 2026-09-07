@@ -28,6 +28,7 @@
 #include "../modreg/keymap.hpp"
 #include "cell-grid.hpp"
 #include "help-content.hpp"
+#include "transcript.hpp"
 
 #include <memory>
 
@@ -46,7 +47,8 @@ namespace lens {
 enum class PanelKind {
     Placeholder,   //!< a named box, until the real panel arrives
     Help,
-    Palette
+    Palette,
+    Transcript
 };
 
 /** The Help panel's own state (UI.md section 5.3). */
@@ -77,8 +79,9 @@ struct Buffer {
      */
     std::vector<std::string> lines;
 
-    HelpState    help;
-    PaletteState palette;
+    HelpState       help;
+    PaletteState    palette;
+    TranscriptState transcript;
 };
 
 /** Terminal events and session events, folded through one function. */
@@ -174,6 +177,32 @@ public:
     /** Commands matching the palette's current input, in table order. */
     std::vector<const Command*> paletteMatches() const;
 
+    // -- the transcript -----------------------------------------------------
+
+    /** The transcript buffer, or null if this layout has none. */
+    const Buffer* transcript() const;
+    Buffer*       transcript();
+
+    /**
+     * Fold one session event into the model.
+     *
+     * The other half of ARCHITECTURE section 4's state machine: terminal
+     * events and session events go through the same model, so "a solution
+     * arrived" and "a key was pressed" are the same kind of thing and the
+     * panels fan out from one fold rather than each polling.
+     */
+    void foldSession( const us::Event& event );
+
+    /** What the status line should say about the session right now. */
+    std::string sessionStatus() const;
+
+    /**
+     * What `describe()` reported, so the UI can tell the truth about what
+     * the core cannot do. Set once by the composition root.
+     */
+    void setCapabilities( const us::Capabilities& caps ) { m_caps = caps; }
+    const us::Capabilities& capabilities() const { return m_caps; }
+
     CommandTable&       commands()       { return m_commands; }
     const CommandTable& commands() const { return m_commands; }
 
@@ -227,6 +256,9 @@ private:
     TileId m_paletteTile = kNoTile;
     BufferId m_paletteBuffer = kNoBuffer;
     BufferId m_helpBuffer = kNoBuffer;
+    BufferId m_transcriptBuffer = kNoBuffer;
+
+    us::Capabilities m_caps;
 };
 
 /**
@@ -235,6 +267,16 @@ private:
  * Total: an unrecognised key is not an error, it is a key that is not bound.
  */
 std::vector<CommandRequest> fold( Model& model, const Event& event );
+
+/**
+ * Submit one transcript line, as Enter does.
+ *
+ * Exposed because `F5` re-runs a past line (G2.5) and must issue the
+ * IDENTICAL request -- routing it through the same function is the only way
+ * to be sure of that, rather than the only way that is convenient.
+ */
+std::vector<CommandRequest> submitTranscriptLine( Model& model, Buffer& buffer,
+                                                  const std::string& line );
 
 /** Register the shell's own commands. Called once, by the composition root. */
 void registerShellCommands( Model& model );

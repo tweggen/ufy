@@ -4,6 +4,8 @@
 
 #include "layouts.hpp"
 
+#include <string>
+
 namespace lens {
 
 namespace {
@@ -22,6 +24,15 @@ struct PanelSeed {
 
 BufferId seed( Model& model, const PanelSeed& panel )
 {
+    /*
+     * The transcript is a real panel now, so it gets no placeholder text:
+     * an empty transcript with a prompt is what a REPL looks like before you
+     * type, and inventing content for it would be inventing history.
+     */
+    if( std::string( panel.title ) == "Transcript" ) {
+        return model.addBuffer( panel.title, {}, PanelKind::Transcript );
+    }
+
     std::vector<std::string> lines;
     lines.push_back( panel.line1 );
     if( panel.line2 && *panel.line2 ) {

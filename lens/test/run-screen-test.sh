@@ -28,8 +28,8 @@
 
 set -u
 
-if [ "$#" -ne 5 ]; then
-    echo "usage: $0 <unify-lens> <geometry> <layout> <script> <expected>" >&2
+if [ "$#" -lt 5 ] || [ "$#" -gt 6 ]; then
+    echo "usage: $0 <unify-lens> <geometry> <layout> <script> <expected> [session]" >&2
     exit 2
 fi
 
@@ -38,6 +38,13 @@ GEOMETRY="$2"
 LAYOUT="$3"
 SCRIPT="$4"
 EXPECTED="$5"
+# A sixth argument of "session" starts a real engine. Off by default so a
+# shell golden stays a test of the shell: a screen recorded with an engine
+# attached moves whenever the engine's output moves.
+SESSION_FLAG="--no-session"
+if [ "${6:-}" = "session" ]; then
+    SESSION_FLAG="--session"
+fi
 
 if [ ! -x "$LENS_BIN" ]; then
     echo "run-screen-test.sh: '$LENS_BIN' is not executable." >&2
@@ -52,9 +59,27 @@ WORKDIR="$(mktemp -d)"
 trap 'rm -rf "$WORKDIR"' EXIT
 ACTUAL="$WORKDIR/actual"
 
-"$LENS_BIN" --geometry "$GEOMETRY" --layout "$LAYOUT" --script "$SCRIPT" \
-    > "$ACTUAL" 2>"$WORKDIR/stderr"
+"$LENS_BIN" --geometry "$GEOMETRY" --layout "$LAYOUT" "$SESSION_FLAG" \
+    --script "$SCRIPT" > "$ACTUAL" 2>"$WORKDIR/stderr"
 RC=$?
+
+# Engine item E4's user-visible proof (G2.3): a program's output belongs in
+# the transcript, so nothing may reach lens's own streams. The screen is
+# exactly as many lines as the geometry has rows -- an extra line means
+# something printed past the renderer.
+EXPECTED_ROWS="${GEOMETRY#*x}"
+ACTUAL_ROWS="$(wc -l < "$ACTUAL")"
+if [ "$ACTUAL_ROWS" -ne "$EXPECTED_ROWS" ]; then
+    echo "run-screen-test.sh: the screen is $ACTUAL_ROWS lines but the" >&2
+    echo "  geometry has $EXPECTED_ROWS rows -- something printed to stdout" >&2
+    echo "  outside the renderer (engine item E4 leaking?)." >&2
+    exit 1
+fi
+if [ -s "$WORKDIR/stderr" ]; then
+    echo "run-screen-test.sh: lens wrote to stderr:" >&2
+    sed 's/^/    /' "$WORKDIR/stderr" >&2
+    exit 1
+fi
 
 if [ "$RC" -ne 0 ]; then
     echo "run-screen-test.sh: unify-lens exited $RC" >&2

@@ -43,6 +43,9 @@ void drawStatusLine( CellGrid& grid, const Model& model )
      * information they can get back by doing nothing.
      */
     std::string text = model.message().empty() ? model.status() : model.message();
+    if( model.message().empty() && !model.capabilities().coreName.empty() ) {
+        text = model.sessionStatus();
+    }
     grid.drawText( 1, y, text, model.width() - 2, attr );
 }
 
@@ -185,6 +188,82 @@ void drawPalette( CellGrid& grid, const Model& model, const Buffer& buffer,
 }
 
 
+/** The Transcript: what happened, then the prompt at the bottom. */
+void drawTranscript( CellGrid& grid, const Buffer& buffer, const Rect& inner,
+                     bool focused )
+{
+    const TranscriptState& t = buffer.transcript;
+
+    /*
+     * The prompt owns the last row and the history fills upward from it, so
+     * the newest line is always adjacent to where you are typing. A
+     * transcript that scrolled the prompt off the bottom would be a log, not
+     * a REPL.
+     */
+    const int promptRow = inner.y + inner.h - 1;
+    const int historyRows = inner.h - 1;
+
+    const int total = (int) t.entries.size();
+    int first = total - historyRows - t.scrollBack;
+    if( first < 0 ) { first = 0; }
+
+    for( int row = 0; row < historyRows; ++row ) {
+        const int index = first + row;
+        if( index >= total ) { break; }
+
+        const TranscriptEntry& entry = t.entries[ (std::size_t) index ];
+
+        Attr attr;
+        switch( entry.kind ) {
+        case TranscriptEntry::Kind::Input:
+            attr.bold = true;
+            break;
+        case TranscriptEntry::Kind::Diagnostic:
+            /* Underlined as well as coloured: no meaning by colour alone. */
+            attr.colour = Colour::Error;
+            attr.underline = true;
+            break;
+        case TranscriptEntry::Kind::Status:
+        case TranscriptEntry::Kind::Info:
+            attr.colour = Colour::Dim;
+            break;
+        case TranscriptEntry::Kind::Output:
+        case TranscriptEntry::Kind::Solution:
+            break;
+        }
+
+        grid.drawText( inner.x, inner.y + row, entry.text, inner.w, attr );
+    }
+
+    /* The prompt, the input, and a block cursor when this tile has focus. */
+    Attr promptAttr;
+    promptAttr.bold = true;
+    const int promptWidth =
+        grid.drawText( inner.x, promptRow, kTranscriptPrompt, inner.w,
+                       promptAttr );
+
+    const std::string before = t.input.substr( 0, t.cursor );
+    const std::string after = t.input.substr( t.cursor );
+
+    int at = promptWidth;
+    at += grid.drawText( inner.x + at, promptRow, before, inner.w - at, Attr() );
+
+    if( focused ) {
+        Attr cursor;
+        cursor.reverse = true;
+        const std::string under = after.empty() ? " " : after.substr( 0, 1 );
+        at += grid.drawText( inner.x + at, promptRow, under, inner.w - at,
+                             cursor );
+        if( !after.empty() ) {
+            grid.drawText( inner.x + at, promptRow, after.substr( 1 ),
+                           inner.w - at, Attr() );
+        }
+    } else {
+        grid.drawText( inner.x + at, promptRow, after, inner.w - at, Attr() );
+    }
+}
+
+
 /** One tile: a titled box, with the buffer's placeholder lines inside. */
 void drawTile( CellGrid& grid, const Model& model, const Placement& placement,
                bool focused )
@@ -239,6 +318,9 @@ void drawTile( CellGrid& grid, const Model& model, const Placement& placement,
         return;
     case PanelKind::Palette:
         drawPalette( grid, model, *buffer, inner );
+        return;
+    case PanelKind::Transcript:
+        drawTranscript( grid, *buffer, inner, focused );
         return;
     case PanelKind::Placeholder:
         break;

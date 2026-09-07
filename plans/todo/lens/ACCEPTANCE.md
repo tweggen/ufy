@@ -136,15 +136,35 @@ Three harnesses, all in the repo's established golden style
 
 *The REPL, better.*
 
+> **Progress note (2026-09-07).** G2.1, G2.2, G2.3 and G2.7 are done, against
+> a real in-process engine through `LocalSession`. The transcript is a panel
+> like any other; the model sees `vault-unify-session.hpp` and nothing else
+> of the engine, so it still needs no engine to be tested.
+>
+> Outstanding: G2.4 (responsiveness under 10,000 solutions), G2.5 (`F5`
+> re-run in place -- `submitTranscriptLine()` is already factored out so the
+> re-run issues the identical request rather than a reconstruction), G2.6
+> (cancel), G2.8 (history file interop with `unify-run -i`), G2.9
+> (`transcript.write-file`), and the "H" criterion.
+>
+> Two things worth recording from doing it. `print` output really does
+> arrive as an `Output` EVENT and land in the transcript -- the screen runner
+> asserts it by counting lines, since a leak to lens's own stdout would make
+> the screen taller than its geometry, and it separately fails if anything
+> reaches stderr. And `LocalSession` was reporting an appended clause as
+> `replaced`, which told the user their first clause was gone; `replaced` is
+> now reserved for `ReplacePredicates`, which needs engine item E3 and
+> answers `Failed` rather than pretending.
+
 | # | Criterion |
 | --- | --- |
-| G2.1 | Against a real engine: define a fact, query it, see the binding. Golden screen. |
-| G2.2 | A parse error produces a `Diagnostic` rendered with file, line, column and the offending line — matching what `unify-run` already prints. |
-| G2.3 | `print`/`emit` output appears in the transcript and **not** on lens's stdout (this is E4's user-visible proof). |
+| G2.1 **[done]** | Against a real engine: define a fact, query it, see the binding. Golden screen. |
+| G2.2 **[done]** | A parse error produces a `Diagnostic` rendered with file, line, column and the offending line — matching what `unify-run` already prints. *(2026-09-07: `<session>:1:1: parse error`, the offending line and a caret. Arrives as data through E10's `DiagnosticSink`; lens's stderr stays empty, which the screen runner asserts.)* |
+| G2.3 **[done]** | `print`/`emit` output appears in the transcript and **not** on lens's stdout (this is E4's user-visible proof). *(2026-09-07: asserted structurally -- the rendered screen must be exactly as many lines as the geometry has rows, so anything printed past the renderer fails the test.)* |
 | G2.4 | A query producing 10,000 solutions leaves the UI responsive: the transcript holds `initialDemand` rows and the key-script continues to be serviced. Asserted by the script completing within a wall-clock bound. |
 | G2.5 | Re-running past input in place (`F5` on an old transcript line) re-issues the identical request. |
 | G2.6 | `cancel` on a running query always reaches `QueryStatus::Aborted` and the UI detaches — with the status line stating the v1 limitation (plan §6) when the engine cannot actually stop. |
-| G2.7 | The status line reports demand as `buffered` while engine item E11 is outstanding, rather than implying flow control that does not exist ([SESSION-API.md](SESSION-API.md) §3.1). |
+| G2.7 **[done]** | The status line reports demand as `buffered` while engine item E11 is outstanding, rather than implying flow control that does not exist ([SESSION-API.md](SESSION-API.md) §3.1). *(2026-09-07: read from `describe()` rather than hard-coded, so the day E11 lands the status line stops saying it without anyone editing that line. It also states the cancel limitation: `cancel detaches only`.)* |
 | G2.8 | History persists to `$HOME/.unify_history` in the existing REPL's format, and a history file written by `unify-run -i` loads in lens and vice versa. |
 | G2.9 | `M-x transcript.write-file` produces the transcript as text. |
 | **H** | Every transcript command has an `M-x` entry and a help topic; `F1` on a builtin name under the cursor opens that builtin's extracted topic. |

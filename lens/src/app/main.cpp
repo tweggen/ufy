@@ -13,6 +13,7 @@
  */
 
 #include "layouts.hpp"
+#include "session-bridge.hpp"
 
 #include "../model/model.hpp"
 #include "../model/view.hpp"
@@ -40,6 +41,16 @@ struct Options {
     std::string layout = "browse";
     std::string scriptPath;
     bool        help = false;
+
+    /**
+     * Start a real engine.
+     *
+     * On by default interactively, and OFF by default under `--script`, so
+     * that a shell golden stays a test of the shell. A screen recorded with
+     * an engine attached would move whenever the engine's output moved,
+     * which is exactly the coupling the golden corpus exists to avoid.
+     */
+    bool session = false;
 };
 
 void printUsage( std::FILE* out )
@@ -49,6 +60,8 @@ void printUsage( std::FILE* out )
         "  --layout NAME         start in a named layout (default: browse)\n"
         "  --geometry COLSxROWS  force geometry; required with --script\n"
         "  --script FILE         replay a key script, dump the screen, exit\n"
+        "  --session             start a Unify engine (default interactively)\n"
+        "  --no-session          do not start an engine\n"
         "  -h, --help            show this text\n"
         "\n"
         "Layouts: " );
@@ -116,6 +129,10 @@ bool parseArgs( int argc, char** argv, Options& out, std::string& out_error )
             const char* v = NULL;
             if( !takeValue( v ) ) { out_error = "--script needs a file"; return false; }
             out.scriptPath = v;
+        } else if( name == "--session" ) {
+            out.session = true;
+        } else if( name == "--no-session" ) {
+            out.session = false;
         } else {
             out_error = "unknown option '" + arg + "'";
             return false;
@@ -157,9 +174,17 @@ bool readKeyScript( const std::string& path, std::vector<ScriptStep>& out_steps,
     while( std::getline( in, line ) ) {
         ++lineNumber;
 
-        const std::string::size_type hash = line.find( '#' );
-        if( hash != std::string::npos ) {
-            line = line.substr( 0, hash );
+        {
+            const std::string::size_type lead = line.find_first_not_of( " \t\r" );
+            const bool isType =
+                lead != std::string::npos
+                && line.compare( lead, 5, "type " ) == 0;
+            if( !isType ) {
+                const std::string::size_type hash = line.find( '#' );
+                if( hash != std::string::npos ) {
+                    line = line.substr( 0, hash );
+                }
+            }
         }
         if( line.find_first_not_of( " \t\r" ) == std::string::npos ) {
             continue;
@@ -167,6 +192,30 @@ bool readKeyScript( const std::string& path, std::vector<ScriptStep>& out_steps,
 
         const std::string::size_type first = line.find_first_not_of( " \t\r" );
         const std::string trimmed = line.substr( first );
+
+        if( trimmed.compare( 0, 5, "type " ) == 0 ) {
+            /*
+             * Literal text, one key per character. Without this a script
+             * that types a goal is forty `U+0063` lines, which nobody can
+             * read and therefore nobody will maintain -- and an unreadable
+             * repro script is not a repro script.
+             *
+             * Note it deliberately does NOT strip a trailing `#`: a comment
+             * marker inside typed text is text. Comments are only stripped
+             * from lines that are not `type`.
+             */
+            const std::string text = line.substr( first + 5 );
+            ScriptStep step;
+            step.kind = ScriptStep::Kind::Keys;
+            const std::vector<char32_t> codepoints = decodeUtf8( text );
+            for( std::size_t i = 0; i < codepoints.size(); ++i ) {
+                step.keys.push_back( Key::character( codepoints[i] ) );
+            }
+            if( !step.keys.empty() ) {
+                out_steps.push_back( step );
+            }
+            continue;
+        }
 
         if( trimmed.compare( 0, 7, "resize " ) == 0 ) {
             ScriptStep step;
@@ -236,6 +285,32 @@ int runScript( const Options& options )
     Model model;
     buildModel( model, options, options.width, options.height );
 
+    SessionBridge bridge;
+    if( options.session ) {
+        const std::string error = bridge.start();
+        if( !error.empty() ) {
+            std::fprintf( stderr, "unify-lens: %s\n", error.c_str() );
+            return 2;
+        }
+        model.setCapabilities( bridge.capabilities() );
+    }
+
+    /*
+     * Everything the script does, then everything the engine has to say
+     * about it, before the next step. A golden screen has to be a function
+     * of the script rather than of how fast this machine is.
+     */
+    const auto settle = [ & ]() {
+        if( !options.session ) {
+            return;
+        }
+        bridge.settle();
+        const std::vector<us::Event> events = bridge.drain();
+        for( std::size_t i = 0; i < events.size(); ++i ) {
+            model.foldSession( events[i] );
+        }
+    };
+
     /* The layout name was validated in main() before anything was built. */
     std::vector<ScriptStep> script;
     std::string error;
@@ -266,12 +341,21 @@ int runScript( const Options& options )
             Event event;
             event.kind = Event::Kind::Key;
             event.key = step.keys[k];
-            ( void ) fold( model, event );
+
+            const std::vector<CommandRequest> requests = fold( model, event );
+            for( std::size_t r = 0; r < requests.size(); ++r ) {
+                bridge.issue( model, requests[r] );
+            }
+            if( !requests.empty() ) {
+                settle();
+            }
         }
         if( model.quitting() ) {
             break;
         }
     }
+
+    settle();
 
     const CellGrid grid = view( model );
     std::fputs( grid.toText().c_str(), stdout );
@@ -307,7 +391,28 @@ int runInteractive( const Options& options )
     Model model;
     buildModel( model, options, width, height );
 
+    SessionBridge bridge;
+    if( options.session ) {
+        const std::string sessionError = bridge.start();
+        if( !sessionError.empty() ) {
+            std::fprintf( stderr, "unify-lens: %s\n", sessionError.c_str() );
+            return 2;
+        }
+        model.setCapabilities( bridge.capabilities() );
+    }
+
     for( ;; ) {
+        /*
+         * Session events first, then the terminal. The UI thread NEVER
+         * blocks on the session -- it drains whatever has arrived and
+         * carries on, which is the rule the whole boundary was shaped
+         * around.
+         */
+        const std::vector<us::Event> events = bridge.drain();
+        for( std::size_t i = 0; i < events.size(); ++i ) {
+            model.foldSession( events[i] );
+        }
+
         terminal->draw( view( model ) );
 
         const TerminalEvent te = terminal->poll( 50 );
@@ -332,7 +437,11 @@ int runInteractive( const Options& options )
             continue;
         }
 
-        ( void ) fold( model, event );
+        const std::vector<CommandRequest> requests = fold( model, event );
+        for( std::size_t i = 0; i < requests.size(); ++i ) {
+            bridge.issue( model, requests[i] );
+        }
+
         if( model.quitting() ) {
             break;
         }
@@ -373,6 +482,18 @@ int main( int argc, char** argv )
 
     if( !options.scriptPath.empty() ) {
         return runScript( options );
+    }
+
+    /*
+     * Interactively an engine is the point, so it is the default; under
+     * --script it is opt-in, so a shell golden stays a test of the shell.
+     */
+    if( !options.session ) {
+        bool explicitlyOff = false;
+        for( int i = 1; i < argc; ++i ) {
+            if( std::string( argv[i] ) == "--no-session" ) { explicitlyOff = true; }
+        }
+        options.session = !explicitlyOff;
     }
 
 #if defined( LENS_HAVE_TERM )

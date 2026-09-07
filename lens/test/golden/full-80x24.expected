@@ -14,11 +14,11 @@
 │                  ││                                                          │
 └──────────────────┘└──────────────────────────────────────────────────────────┘
 ┌ Transcript ──────────────────────────┐┌ Solutions ───────┐┌ Inspector ───────┐
-│?-                                    ││bindings, one row ││the selected bindi│
+│                                      ││bindings, one row ││the selected bindi│
 │                                      ││awaiting solve (G5││awaiting inspect (│
 │                                      ││                  ││                  │
 │                                      ││                  ││                  │
-│                                      ││                  ││                  │
+│?-                                    ││                  ││                  │
 └──────────────────────────────────────┘└──────────────────┘└──────────────────┘
  gen 0 · 0 clauses · idle · no session · full
 F1 Help  F10 Menu

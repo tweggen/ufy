@@ -111,8 +111,9 @@ std::string Model::contextualTopicId() const
     }
 
     switch( focused->kind ) {
-    case PanelKind::Help:    return "help";
-    case PanelKind::Palette: return "keys";
+    case PanelKind::Help:       return "help";
+    case PanelKind::Palette:    return "keys";
+    case PanelKind::Transcript: return "getting-started";
     case PanelKind::Placeholder:
         break;
     }
@@ -133,6 +134,228 @@ std::string Model::contextualTopicId() const
         }
     }
     return "panels";
+}
+
+
+const Buffer* Model::transcript() const
+{
+    for( std::size_t i = 0; i < m_buffers.size(); ++i ) {
+        if( m_buffers[i].kind == PanelKind::Transcript ) {
+            return &m_buffers[i];
+        }
+    }
+    return NULL;
+}
+
+
+Buffer* Model::transcript()
+{
+    for( std::size_t i = 0; i < m_buffers.size(); ++i ) {
+        if( m_buffers[i].kind == PanelKind::Transcript ) {
+            return &m_buffers[i];
+        }
+    }
+    return NULL;
+}
+
+
+void Model::foldSession( const us::Event& event )
+{
+    Buffer* buffer = transcript();
+    if( !buffer ) {
+        return;
+    }
+    TranscriptState& t = buffer->transcript;
+
+    if( const us::Solution* solution = std::get_if<us::Solution>( &event.body ) ) {
+        TranscriptEntry entry;
+        entry.kind = TranscriptEntry::Kind::Solution;
+        entry.query = event.header.query ? *event.header.query : us::kNoQuery;
+        entry.text = renderBindings( solution->bindings );
+        if( entry.text.empty() ) {
+            /*
+             * A goal with no variables succeeded. `unify-run` prints nothing
+             * per solution and only a count; here the row still has to exist
+             * or the solutions would be invisible, so it says what happened.
+             */
+            entry.text = "yes";
+        }
+        t.entries.push_back( entry );
+        ++t.produced;
+        return;
+    }
+
+    if( const us::QueryStatus* status =
+            std::get_if<us::QueryStatus>( &event.body ) ) {
+        const bool terminal = status->state != us::QueryStatus::State::Running
+                           && status->state != us::QueryStatus::State::Blocked;
+        if( !terminal ) {
+            return;
+        }
+
+        t.finished = true;
+        t.liveQuery = us::kNoQuery;
+
+        TranscriptEntry entry;
+        entry.kind = TranscriptEntry::Kind::Status;
+        entry.query = event.header.query ? *event.header.query : us::kNoQuery;
+
+        std::ostringstream text;
+        switch( status->state ) {
+        case us::QueryStatus::State::Exhausted:
+        case us::QueryStatus::State::Complete:
+            if( 0 == status->produced ) {
+                text << "-- no solutions";
+            } else if( 1 == status->produced ) {
+                text << "-- 1 solution";
+            } else {
+                text << "-- " << status->produced << " solutions";
+            }
+            break;
+        case us::QueryStatus::State::Failed:
+            text << "-- failed";
+            if( !status->detail.empty() ) { text << ": " << status->detail; }
+            break;
+        case us::QueryStatus::State::Aborted:
+            text << "-- aborted";
+            if( !status->detail.empty() ) { text << " (" << status->detail << ")"; }
+            break;
+        default:
+            text << "-- done";
+            break;
+        }
+        entry.text = text.str();
+        t.entries.push_back( entry );
+        return;
+    }
+
+    if( const us::Output* output = std::get_if<us::Output>( &event.body ) ) {
+        /*
+         * Engine item E4's user-visible proof (G2.3): program output arrives
+         * as an EVENT and lands here, not on lens's stdout. Split on
+         * newlines because `print` ends every line with one and a transcript
+         * entry is a line.
+         */
+        std::string text = output->text;
+        std::string line;
+        for( std::size_t i = 0; i < text.size(); ++i ) {
+            if( text[i] == '\n' ) {
+                TranscriptEntry entry;
+                entry.kind = TranscriptEntry::Kind::Output;
+                entry.query = event.header.query ? *event.header.query : us::kNoQuery;
+                entry.text = line;
+                t.entries.push_back( entry );
+                line.clear();
+            } else {
+                line += text[i];
+            }
+        }
+        if( !line.empty() ) {
+            TranscriptEntry entry;
+            entry.kind = TranscriptEntry::Kind::Output;
+            entry.query = event.header.query ? *event.header.query : us::kNoQuery;
+            entry.text = line;
+            t.entries.push_back( entry );
+        }
+
+        if( output->droppedBytes > 0 ) {
+            TranscriptEntry elided;
+            elided.kind = TranscriptEntry::Kind::Info;
+            std::ostringstream os;
+            os << "… " << output->droppedBytes << " bytes elided";
+            elided.text = os.str();
+            t.entries.push_back( elided );
+        }
+        return;
+    }
+
+    if( const us::Diagnostic* diagnostic =
+            std::get_if<us::Diagnostic>( &event.body ) ) {
+        const std::vector<TranscriptEntry> rendered =
+            renderDiagnostic( *diagnostic );
+        for( std::size_t i = 0; i < rendered.size(); ++i ) {
+            TranscriptEntry entry = rendered[i];
+            entry.query = event.header.query ? *event.header.query : us::kNoQuery;
+            t.entries.push_back( entry );
+        }
+        return;
+    }
+
+    if( const us::Defined* defined = std::get_if<us::Defined>( &event.body ) ) {
+        if( defined->errorCount > 0 ) {
+            /* The diagnostics themselves already arrived as their own
+             * events; this is the summary, so the count is never silent. */
+            TranscriptEntry entry;
+            entry.kind = TranscriptEntry::Kind::Status;
+            std::ostringstream os;
+            os << "-- " << defined->errorCount
+               << ( defined->errorCount == 1 ? " error" : " errors" );
+            entry.text = os.str();
+            t.entries.push_back( entry );
+            return;
+        }
+
+        std::ostringstream os;
+        const std::size_t added = defined->added.size();
+        const std::size_t replaced = defined->replaced.size();
+        if( 0 == added && 0 == replaced ) {
+            return;
+        }
+        os << "-- defined";
+        for( std::size_t i = 0; i < defined->added.size(); ++i ) {
+            os << " " << defined->added[i].name << "/" << defined->added[i].arity;
+        }
+        for( std::size_t i = 0; i < defined->replaced.size(); ++i ) {
+            os << " " << defined->replaced[i].name << "/"
+               << defined->replaced[i].arity << " (replaced)";
+        }
+
+        TranscriptEntry entry;
+        entry.kind = TranscriptEntry::Kind::Status;
+        entry.text = os.str();
+        t.entries.push_back( entry );
+        return;
+    }
+
+    if( const us::Failed* failed = std::get_if<us::Failed>( &event.body ) ) {
+        TranscriptEntry entry;
+        entry.kind = TranscriptEntry::Kind::Diagnostic;
+        entry.text = std::string( "-- " ) + failed->reason;
+        t.entries.push_back( entry );
+        if( failed->fatal ) {
+            m_message = "the session has failed: " + failed->reason;
+        }
+        return;
+    }
+}
+
+
+std::string Model::sessionStatus() const
+{
+    const Buffer* buffer = transcript();
+
+    std::ostringstream os;
+    os << "gen 0 \xc2\xb7 ";
+
+    if( buffer && !buffer->transcript.finished ) {
+        os << "running \xc2\xb7 " << buffer->transcript.produced << " so far";
+    } else {
+        os << "idle";
+    }
+
+    /*
+     * G2.7: say "buffered" while engine item E11 is outstanding, rather than
+     * implying flow control that does not exist. The core reports this
+     * itself through describe(), so the day E11 lands the status line stops
+     * saying it without anyone editing this line.
+     */
+    os << " \xc2\xb7 " << ( m_caps.realDemand ? "demand" : "buffered" );
+    if( !m_caps.realCancel ) {
+        os << " \xc2\xb7 cancel detaches only";
+    }
+    os << " \xc2\xb7 " << ( m_caps.coreName.empty() ? "no session"
+                                              : m_caps.location );
+    return os.str();
 }
 
 
@@ -412,7 +635,152 @@ void foldHelp( Model& model, Buffer& help, const Key& key )
     }
 }
 
+/**
+ * The transcript's keys.
+ *
+ * Most keys in a transcript are text, so this runs for anything the global
+ * keymap did not claim -- which is why the shell binds chords and function
+ * keys and leaves the alphabet alone.
+ */
+std::vector<CommandRequest> foldTranscript( Model& model, Buffer& buffer,
+                                            const Key& key )
+{
+    std::vector<CommandRequest> requests;
+    TranscriptState& t = buffer.transcript;
+
+    if( key.code == Key::Code::Enter ) {
+        const std::string line = t.input;
+        if( line.find_first_not_of( " \t" ) == std::string::npos ) {
+            t.input.clear();
+            t.cursor = 0;
+            return requests;
+        }
+
+        return submitTranscriptLine( model, buffer, line );
+    }
+
+    if( key.code == Key::Code::Backspace ) {
+        if( t.cursor > 0 ) {
+            /* Back over a whole codepoint, not a byte: deleting half of a
+             * multi-byte character leaves the buffer holding invalid UTF-8. */
+            std::size_t at = t.cursor - 1;
+            while( at > 0 && ( (unsigned char) t.input[at] & 0xC0 ) == 0x80 ) {
+                --at;
+            }
+            t.input.erase( at, t.cursor - at );
+            t.cursor = at;
+        }
+        return requests;
+    }
+
+    if( key.code == Key::Code::Delete ) {
+        if( t.cursor < t.input.size() ) {
+            std::size_t end = t.cursor + 1;
+            while( end < t.input.size()
+                   && ( (unsigned char) t.input[end] & 0xC0 ) == 0x80 ) {
+                ++end;
+            }
+            t.input.erase( t.cursor, end - t.cursor );
+        }
+        return requests;
+    }
+
+    if( key.code == Key::Code::Left ) {
+        while( t.cursor > 0 ) {
+            --t.cursor;
+            if( ( (unsigned char) t.input[t.cursor] & 0xC0 ) != 0x80 ) { break; }
+        }
+        return requests;
+    }
+    if( key.code == Key::Code::Right ) {
+        while( t.cursor < t.input.size() ) {
+            ++t.cursor;
+            if( t.cursor >= t.input.size()
+                || ( (unsigned char) t.input[t.cursor] & 0xC0 ) != 0x80 ) {
+                break;
+            }
+        }
+        return requests;
+    }
+    if( key.code == Key::Code::Home ) { t.cursor = 0; return requests; }
+    if( key.code == Key::Code::End ) { t.cursor = t.input.size(); return requests; }
+
+    if( key.code == Key::Code::Up ) {
+        if( t.historyIndex > 0 ) {
+            --t.historyIndex;
+            t.input = t.history[ t.historyIndex ];
+            t.cursor = t.input.size();
+        }
+        return requests;
+    }
+    if( key.code == Key::Code::Down ) {
+        if( t.historyIndex < t.history.size() ) {
+            ++t.historyIndex;
+            t.input = ( t.historyIndex < t.history.size() )
+                          ? t.history[ t.historyIndex ]
+                          : std::string();
+            t.cursor = t.input.size();
+        }
+        return requests;
+    }
+
+    if( key.code == Key::Code::Char && !key.ctrl && !key.alt && key.ch >= 0x20 ) {
+        const std::string encoded = encodeUtf8( key.ch );
+        t.input.insert( t.cursor, encoded );
+        t.cursor += encoded.size();
+        return requests;
+    }
+
+    return requests;
+}
+
 } // namespace
+
+std::vector<CommandRequest> submitTranscriptLine( Model& model, Buffer& buffer,
+                                                  const std::string& line )
+{
+    ( void ) model;   /* the transcript's own state is all this needs today */
+
+    std::vector<CommandRequest> requests;
+    TranscriptState& t = buffer.transcript;
+
+    TranscriptEntry echo;
+    echo.kind = TranscriptEntry::Kind::Input;
+    echo.text = std::string( kTranscriptPrompt ) + line;
+    echo.source = line;
+    t.entries.push_back( echo );
+
+    /* Duplicate consecutive entries are not worth remembering. */
+    if( t.history.empty() || t.history.back() != line ) {
+        t.history.push_back( line );
+    }
+    t.historyIndex = t.history.size();
+    t.input.clear();
+    t.cursor = 0;
+
+    /*
+     * One ingestion path, two shapes. A line ending in `;` or containing
+     * `{` is a definition; anything else is a goal. That is a heuristic, and
+     * it is the same one the existing REPL uses -- `define` and `solve` are
+     * the same operation with different intent (SESSION-API section 2.1),
+     * and getting it wrong costs a diagnostic rather than a wrong answer.
+     */
+    CommandRequest request;
+    const bool looksLikeDefinition =
+        line.find( '{' ) != std::string::npos
+        || ( !line.empty() && line[ line.size() - 1 ] == ';' );
+
+    request.kind = looksLikeDefinition ? "define" : "solve";
+    request.text = line;
+    requests.push_back( request );
+
+    if( !looksLikeDefinition ) {
+        t.finished = false;
+        t.produced = 0;
+    }
+    return requests;
+}
+
 
 std::vector<CommandRequest> fold( Model& model, const Event& event )
 {
@@ -489,6 +857,9 @@ std::vector<CommandRequest> fold( Model& model, const Event& event )
     if( focused && focused->kind == PanelKind::Help ) {
         foldHelp( model, *focused, event.key );
         return requests;
+    }
+    if( focused && focused->kind == PanelKind::Transcript ) {
+        return foldTranscript( model, *focused, event.key );
     }
 
     /*

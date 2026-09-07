@@ -98,8 +98,15 @@ set_tests_properties(lens-modreg PROPERTIES TIMEOUT 120)
 add_library(lens-model STATIC
     "${CMAKE_CURRENT_SOURCE_DIR}/src/model/cell-grid.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/model/help-content.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/model/transcript.cpp"
 )
 target_link_libraries(lens-model PUBLIC lens-modreg)
+# The session boundary only -- a header of pure standard C++ (gate G0.1), so
+# this costs no link dependency and the model still needs no engine to be
+# tested. That is the whole point of having drawn a boundary.
+target_include_directories(lens-model PUBLIC
+    "${LENS_UNIFY_DIR}/include"
+)
 target_include_directories(lens-model PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 if(NOT MSVC)
     target_compile_options(lens-model PRIVATE -Wall -Wextra)
@@ -178,10 +185,13 @@ endif()
 add_executable(unify-lens
     "${CMAKE_CURRENT_SOURCE_DIR}/src/app/main.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/app/layouts.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/app/session-bridge.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/model/model.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/model/view.cpp"
 )
-target_link_libraries(unify-lens PRIVATE lens-model lens-modreg lens-layout)
+target_link_libraries(unify-lens PRIVATE lens-model lens-modreg lens-layout
+                                       vault-unify-core)
+target_include_directories(unify-lens PRIVATE "${LENS_UNIFY_DIR}/src")
 if(LENS_BUILD_TERM)
     target_link_libraries(unify-lens PRIVATE lens-term)
     target_compile_definitions(unify-lens PRIVATE LENS_HAVE_TERM=1)
@@ -230,6 +240,15 @@ if(BASH_PROGRAM)
         "palette-filtered|120x40|browse|palette-filtered"
     )
 
+    # Screens that need a real engine behind the transcript (gate G2). Kept
+    # in their own list because they carry the extra `session` argument --
+    # and because a shell golden must stay a test of the shell.
+    set(LENS_SESSION_SCREENS
+        "transcript-define-query|80x24|run|transcript-define-query"
+        "transcript-parse-error|80x24|run|transcript-parse-error"
+        "transcript-output|80x24|run|transcript-output"
+    )
+
     foreach(LENS_SCREEN ${LENS_SCREENS})
         string(REPLACE "|" ";" PARTS "${LENS_SCREEN}")
         list(GET PARTS 0 SCREEN_NAME)
@@ -249,6 +268,29 @@ if(BASH_PROGRAM)
         set_tests_properties("lens-screen-${SCREEN_NAME}" PROPERTIES
             SKIP_RETURN_CODE 77
             TIMEOUT 60
+        )
+    endforeach()
+
+    foreach(LENS_SCREEN ${LENS_SESSION_SCREENS})
+        string(REPLACE "|" ";" PARTS "${LENS_SCREEN}")
+        list(GET PARTS 0 SCREEN_NAME)
+        list(GET PARTS 1 SCREEN_GEOMETRY)
+        list(GET PARTS 2 SCREEN_LAYOUT)
+        list(GET PARTS 3 SCREEN_SCRIPT)
+
+        add_test(
+            NAME "lens-screen-${SCREEN_NAME}"
+            COMMAND "${BASH_PROGRAM}" "${LENS_SCREEN_RUNNER}"
+                    "$<TARGET_FILE:unify-lens>"
+                    "${SCREEN_GEOMETRY}"
+                    "${SCREEN_LAYOUT}"
+                    "${LENS_SCREEN_DIR}/${SCREEN_SCRIPT}.keys"
+                    "${LENS_GOLDEN_DIR}/${SCREEN_NAME}.expected"
+                    "session"
+        )
+        set_tests_properties("lens-screen-${SCREEN_NAME}" PROPERTIES
+            SKIP_RETURN_CODE 77
+            TIMEOUT 120
         )
     endforeach()
 

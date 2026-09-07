@@ -1,10 +1,10 @@
  File  Edit  World  Query  Image  Debug  Window  Help
 ┌ Transcript ────────────────────────────────────┐┌ Solutions ─────────────────┐
-│                                                ││bindings, one row per soluti│
-│                                                ││awaiting solve (G5)         │
-│                                                ││                            │
-│                                                ││                            │
-│                                                ││                            │
+│?- broken( $x ) { colour(                       ││bindings, one row per soluti│
+│<session>:1:1: parse error                      ││awaiting solve (G5)         │
+│broken( $x ) { colour(                          ││                            │
+│^                                               ││                            │
+│-- 1 error                                      ││                            │
 │                                                ││                            │
 │                                                ││                            │
 │                                                ││                            │
@@ -20,5 +20,5 @@
 │awaiting listing (G3)                                                         │
 │                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
- gen 0 · 0 clauses · idle · no session · run
+ gen 0 · idle · buffered · cancel detaches only · local
 F1 Help  F10 Menu

@@ -1,13 +1,13 @@
  File  Edit  World  Query  Image  Debug  Window  Help
 ┌ Transcript ────────────────────────────────────┐┌ Solutions ─────────────────┐
-│                                                ││bindings, one row per soluti│
-│                                                ││awaiting solve (G5)         │
-│                                                ││                            │
-│                                                ││                            │
-│                                                ││                            │
-│                                                ││                            │
-│                                                ││                            │
-│                                                ││                            │
+│?- colour( red );                               ││bindings, one row per soluti│
+│-- defined colour/1                             ││awaiting solve (G5)         │
+│?- colour( green );                             ││                            │
+│-- defined colour/1                             ││                            │
+│?- colour( $x )                                 ││                            │
+│$x = red                                        ││                            │
+│$x = green                                      ││                            │
+│-- 2 solutions                                  ││                            │
 │                                                ││                            │
 │                                                ││                            │
 │                                                ││                            │
@@ -20,5 +20,5 @@
 │awaiting listing (G3)                                                         │
 │                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
- gen 0 · 0 clauses · idle · no session · run
+ gen 0 · idle · buffered · cancel detaches only · local
 F1 Help  F10 Menu

@@ -740,10 +740,18 @@ void LocalSession::doDefine( RequestId req, std::string text, Origin origin,
         }
         std::map<vault::unify::PredicateKey, std::uint32_t>::const_iterator
             itBefore = countBefore.find( after[i].key );
-        if( itBefore == countBefore.end() ) {
+        if( itBefore == countBefore.end()
+            || itBefore->second != after[i].clauseCount ) {
+            /*
+             * `added`, not `replaced`, even when the predicate already
+             * existed. Under OverwritePolicy::Append a second `colour( x );`
+             * ADDS a clause -- reporting that as "replaced" tells the user
+             * their first clause is gone, which is the opposite of what
+             * happened. `replaced` is reserved for ReplacePredicates, which
+             * needs engine item E3 and currently answers Failed rather than
+             * pretending.
+             */
             defined.added.push_back( toPredicateKey( after[i].key ) );
-        } else if( itBefore->second != after[i].clauseCount ) {
-            defined.replaced.push_back( toPredicateKey( after[i].key ) );
         }
     }
 
