@@ -25,6 +25,7 @@
 #include "../layout/layout-tree.hpp"
 #include "../layout/solver.hpp"
 #include "../modreg/command.hpp"
+#include "../modreg/help.hpp"
 #include "../modreg/keymap.hpp"
 #include "cell-grid.hpp"
 #include "help-content.hpp"
@@ -48,6 +49,7 @@ enum class PanelKind {
     Placeholder,   //!< a named box, until the real panel arrives
     Help,
     Palette,
+    Menu,
     Transcript
 };
 
@@ -62,6 +64,18 @@ struct HelpState {
 /** The command palette's own state (UI.md section 4). */
 struct PaletteState {
     std::string input;
+    int selected = 0;
+};
+
+/** The menu's own state -- one flat, grouped list rather than a tree. */
+struct MenuState {
+    /**
+     * Index into the FLATTENED rows, headings included.
+     *
+     * Headings are rows too, so the list draws in one pass; navigation
+     * skips them, which is cheaper and less error-prone than keeping a
+     * second index that has to stay in step.
+     */
     int selected = 0;
 };
 
@@ -81,6 +95,7 @@ struct Buffer {
 
     HelpState       help;
     PaletteState    palette;
+    MenuState       menu;
     TranscriptState transcript;
 };
 
@@ -152,7 +167,30 @@ public:
      * Reuses an existing Help tile rather than opening a second, because
      * `F1` pressed twice should answer twice, not fill the screen with help.
      */
-    void openHelp( const std::string& topicId );
+    /**
+     * Show `topicId` in a Help tile, creating or reusing one, and focus it.
+     *
+     * @param takeLargestTile
+     *     When true, help BORROWS the largest tile -- it shows there
+     *     instead of what was in it -- rather than splitting one. That is
+     *     what makes the welcome page land at the size of the main working
+     *     area, which is where a reader's eye already is. Closing help gives
+     *     the tile back to whatever it was showing, so nothing is lost.
+     *
+     *     When false (F1 during work), help splits instead, so it sits
+     *     BESIDE what you were doing rather than covering it.
+     */
+    void openHelp( const std::string& topicId, bool takeLargestTile = false );
+
+    /**
+     * If the focused tile is a borrowed one, give it back and report true.
+     *
+     * Called by `window.close`, so C-x 0 on a borrowed help tile restores
+     * the panel that was there instead of destroying the tile. Without it,
+     * dismissing the welcome page would cost the user their Source pane --
+     * which is a surprising price for closing something they did not open.
+     */
+    bool returnBorrowedTile();
 
     /** The topic `F1` should open for whatever currently has focus. */
     std::string contextualTopicId() const;
@@ -170,9 +208,33 @@ public:
      */
     Split splitDirectionForNewPanel() const;
 
+    /**
+     * The biggest non-stub tile on screen.
+     *
+     * Where a new panel goes, so that opening help or the menu from a narrow
+     * side tile does not produce a narrow panel.
+     */
+    TileId largestTile() const;
+
     void openPalette();
     void closePalette();
     bool paletteActive() const { return m_paletteTile != kNoTile; }
+
+    // -- the menu ------------------------------------------------------------
+
+    void openMenu();
+    void closeMenu();
+    bool menuActive() const { return m_menuTile != kNoTile; }
+
+    /** One row of the menu: a heading, or a command under it. */
+    struct MenuRow {
+        std::string    heading;    //!< set on a heading row
+        const Command* command = NULL;
+        bool isHeading() const { return command == NULL; }
+    };
+
+    /** The menu, flattened: every heading, and the commands under each. */
+    std::vector<MenuRow> menuRows() const;
 
     /** Commands matching the palette's current input, in table order. */
     std::vector<const Command*> paletteMatches() const;
@@ -255,7 +317,13 @@ private:
      */
     TileId m_paletteTile = kNoTile;
     BufferId m_paletteBuffer = kNoBuffer;
+    TileId m_menuTile = kNoTile;
+    BufferId m_menuBuffer = kNoBuffer;
     BufferId m_helpBuffer = kNoBuffer;
+
+    /// The tile help borrowed, and what it was showing. See openHelp().
+    TileId   m_borrowedTile = kNoTile;
+    BufferId m_displacedBuffer = kNoBuffer;
     BufferId m_transcriptBuffer = kNoBuffer;
 
     us::Capabilities m_caps;

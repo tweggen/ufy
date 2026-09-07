@@ -157,6 +157,9 @@ unify-lens [options]
   --layout NAME         start in a named layout: browse, run, debug, full
   --geometry COLSxROWS  force geometry; required with --script
   --script FILE         replay a key script, dump the screen, exit
+  --session             start a Unify engine (default interactively)
+  --welcome             open help at startup (default interactively)
+  --no-session / --no-welcome
   -h, --help            show this text
 ```
 
@@ -238,7 +241,17 @@ Gate **G1** (the shell) is closed: tiling, the four stock layouts,
 degradation, `--script`, the command table, the generated help surfaces, the
 Help panel `F1` opens and the `M-x` command palette.
 
-**No panel exists yet.** What the layouts show is placeholder text naming
-what each panel will show and which gate brings it. That is deliberate: the
-shell is gated before the panels so that no panel has to invent a window
-manager, and so help exists before there is anything to explain.
+Gate **G2** (the transcript) is under way: define a fact, ask a question,
+see the binding, against a real engine. Parse errors and program output land
+in the transcript rather than on lens's streams.
+
+On a fresh start lens opens the **first-steps** help page in the main working
+area — the keys that matter, and a worked example to type. `C-x 0` dismisses
+it and hands the tile back to whatever it was showing; `--no-welcome` starts
+without it.
+
+**Most panels do not exist yet.** What the other tiles show is placeholder
+text naming what each will show and which gate brings it. That is
+deliberate: the shell is gated before the panels so that no panel has to
+invent a window manager, and so help exists before there is anything to
+explain.

@@ -67,6 +67,9 @@ std::string renderHintLine( const std::vector<Hint>& hints, int width );
 std::string generateKeymapPage( const CommandTable& table,
                                 const Keymap& keymap );
 
+/** The menu-bar headings, in the order UI.md section 1 draws them. */
+std::vector<std::string> menuCategories();
+
 } // namespace lens
 
 #endif // _LENS_MODREG_HELP_HPP

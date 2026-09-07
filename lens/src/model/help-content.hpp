@@ -61,6 +61,19 @@ public:
     static std::string defaultTopicId() { return "getting-started"; }
 
     /**
+     * The page lens opens on a fresh start.
+     *
+     * Keystrokes first, prose second. UI.md section 5.5 asked for four lines
+     * in the transcript instead, on the grounds that a splash screen is an
+     * imposition -- but the first person to actually run this could not tell
+     * how to open a menu, close a window or find a tutorial, which is the
+     * evidence that four lines were not enough. Recorded as a deliberate
+     * departure rather than an oversight; it is a tile like any other and
+     * C-x 0 dismisses it.
+     */
+    static std::string welcomeTopicId() { return "first-steps"; }
+
+    /**
      * Every `[[link]]` on one line, in order.
      *
      * Exposed so the panel can follow one and the test can assert that every

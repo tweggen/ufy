@@ -42,9 +42,11 @@ EXPECTED="$5"
 # shell golden stays a test of the shell: a screen recorded with an engine
 # attached moves whenever the engine's output moves.
 SESSION_FLAG="--no-session"
-if [ "${6:-}" = "session" ]; then
-    SESSION_FLAG="--session"
-fi
+WELCOME_FLAG="--no-welcome"
+case "${6:-}" in
+    session) SESSION_FLAG="--session" ;;
+    welcome) WELCOME_FLAG="--welcome" ;;
+esac
 
 if [ ! -x "$LENS_BIN" ]; then
     echo "run-screen-test.sh: '$LENS_BIN' is not executable." >&2
@@ -59,7 +61,8 @@ WORKDIR="$(mktemp -d)"
 trap 'rm -rf "$WORKDIR"' EXIT
 ACTUAL="$WORKDIR/actual"
 
-"$LENS_BIN" --geometry "$GEOMETRY" --layout "$LAYOUT" "$SESSION_FLAG" \
+"$LENS_BIN" --geometry "$GEOMETRY" --layout "$LAYOUT" \
+    "$SESSION_FLAG" "$WELCOME_FLAG" \
     --script "$SCRIPT" > "$ACTUAL" 2>"$WORKDIR/stderr"
 RC=$?
 

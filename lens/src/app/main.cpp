@@ -51,6 +51,16 @@ struct Options {
      * which is exactly the coupling the golden corpus exists to avoid.
      */
     bool session = false;
+
+    /**
+     * Open the help panel on the first-steps page at startup.
+     *
+     * On interactively, because the first person to run lens could not tell
+     * how to open a menu, close a window or find a tutorial -- and a screen
+     * that does not say is a screen you have to be told about. Off under
+     * `--script`, so a golden stays a test of what the script did.
+     */
+    bool welcome = false;
 };
 
 void printUsage( std::FILE* out )
@@ -61,6 +71,8 @@ void printUsage( std::FILE* out )
         "  --geometry COLSxROWS  force geometry; required with --script\n"
         "  --script FILE         replay a key script, dump the screen, exit\n"
         "  --session             start a Unify engine (default interactively)\n"
+        "  --welcome             open help at startup (default interactively)\n"
+        "  --no-welcome          start without the help panel\n"
         "  --no-session          do not start an engine\n"
         "  -h, --help            show this text\n"
         "\n"
@@ -129,6 +141,10 @@ bool parseArgs( int argc, char** argv, Options& out, std::string& out_error )
             const char* v = NULL;
             if( !takeValue( v ) ) { out_error = "--script needs a file"; return false; }
             out.scriptPath = v;
+        } else if( name == "--welcome" ) {
+            out.welcome = true;
+        } else if( name == "--no-welcome" ) {
+            out.welcome = false;
         } else if( name == "--session" ) {
             out.session = true;
         } else if( name == "--no-session" ) {
@@ -255,6 +271,10 @@ void buildModel( Model& model, const Options& options, int width, int height )
 
     /* After both, so the generated keymap page reflects real bindings. */
     model.rebuildHelp();
+
+    if( options.welcome ) {
+        model.openHelp( HelpBook::welcomeTopicId(), /* takeLargestTile */ true );
+    }
 
     std::ostringstream status;
     status << "gen 0 \xc2\xb7 0 clauses \xc2\xb7 idle \xc2\xb7 no session \xc2\xb7 "
@@ -488,12 +508,16 @@ int main( int argc, char** argv )
      * Interactively an engine is the point, so it is the default; under
      * --script it is opt-in, so a shell golden stays a test of the shell.
      */
-    if( !options.session ) {
-        bool explicitlyOff = false;
+    {
+        bool sessionOff = false;
+        bool welcomeOff = false;
         for( int i = 1; i < argc; ++i ) {
-            if( std::string( argv[i] ) == "--no-session" ) { explicitlyOff = true; }
+            const std::string arg = argv[i];
+            if( arg == "--no-session" ) { sessionOff = true; }
+            if( arg == "--no-welcome" ) { welcomeOff = true; }
         }
-        options.session = !explicitlyOff;
+        if( !options.session ) { options.session = !sessionOff; }
+        if( !options.welcome ) { options.welcome = !welcomeOff; }
     }
 
 #if defined( LENS_HAVE_TERM )

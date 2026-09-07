@@ -81,6 +81,18 @@ public:
     Command& helpTopic( std::string topic );
 
     /**
+     * Which menu-bar heading this belongs under -- UI.md section 1's
+     * File / Edit / World / Query / Image / Debug / Window / Help.
+     *
+     * Defaulted from the id's namespace rather than required, so a module
+     * that registers `query.cancel` lands under Query without being asked.
+     * A command whose namespace matches no heading falls to File, which is
+     * where a general-purpose action belongs.
+     */
+    const std::string& category() const { return m_category; }
+    Command& category( std::string category );
+
+    /**
      * Whether the command applies right now. Commands are never hidden --
      * a disabled command still appears in `M-x` and in help, greyed, so
      * discovering that something exists does not require it to be usable
@@ -97,6 +109,7 @@ private:
     std::string m_title;
     std::string m_help;
     std::string m_helpTopic;
+    std::string m_category;
     Predicate   m_enabled;
     Handler     m_run;
 };

@@ -22,11 +22,40 @@ bool isBlank( const std::string& text )
 
 } // namespace
 
+namespace {
+
+/** Menu heading for a command id, from its namespace. See Command::category. */
+std::string categoryForId( const std::string& id )
+{
+    const std::string::size_type dot = id.find( '.' );
+    const std::string space = ( dot == std::string::npos )
+                                  ? id : id.substr( 0, dot );
+
+    if( space == "window" ) { return "Window"; }
+    if( space == "help" )   { return "Help"; }
+    if( space == "world" || space == "module" ) { return "World"; }
+    if( space == "query" || space == "transcript" ) { return "Query"; }
+    if( space == "image" )  { return "Image"; }
+    if( space == "debug" || space == "trace" ) { return "Debug"; }
+    if( space == "edit" || space == "source" )  { return "Edit"; }
+    return "File";
+}
+
+} // namespace
+
 Command::Command( std::string id, std::string title, std::string help )
     : m_id( std::move( id ) )
     , m_title( std::move( title ) )
     , m_help( std::move( help ) )
+    , m_category( categoryForId( m_id ) )
 {
+}
+
+
+Command& Command::category( std::string category )
+{
+    m_category = std::move( category );
+    return *this;
 }
 
 

@@ -1,0 +1,5 @@
+# F10. The menu bar draws eight headings, so the menu shows all eight --
+# including the ones with nothing under them yet, which say so rather than
+# vanishing and making the bar look like a lie.
+C-x 0
+F10

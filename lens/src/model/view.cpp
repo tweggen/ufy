@@ -85,6 +85,70 @@ void drawHintLine( CellGrid& grid, const Model& model )
 }
 
 
+/**
+ * Wrap one line to `width` columns, keeping its indentation.
+ *
+ * A help panel that truncates its own text is broken however big it is, and
+ * the tile it lands in is the solver's decision rather than the help's. So
+ * the text bends. Continuation lines keep the original indent, which is what
+ * keeps a wrapped bullet looking like one bullet rather than two.
+ */
+std::vector<std::string> wrapLine( const std::string& text, int width )
+{
+    std::vector<std::string> out;
+    if( width <= 0 ) {
+        return out;
+    }
+    if( displayWidth( text ) <= width ) {
+        out.push_back( text );
+        return out;
+    }
+
+    const std::size_t indentSize = text.find_first_not_of( ' ' );
+    const std::string indent(
+        ( indentSize == std::string::npos ) ? 0 : indentSize, ' ' );
+
+    std::string current;
+    std::string word;
+
+    const auto flush = [ & ]() {
+        if( !current.empty() ) {
+            out.push_back( current );
+            current = indent;
+        }
+    };
+
+    current = std::string();
+    for( std::size_t i = 0; i <= text.size(); ++i ) {
+        const bool end = ( i == text.size() );
+        if( !end && text[i] != ' ' ) {
+            word += text[i];
+            continue;
+        }
+
+        if( !word.empty() ) {
+            const std::string candidate =
+                current.empty() ? word : current + " " + word;
+            if( displayWidth( candidate ) > width && !current.empty() ) {
+                flush();
+                current += word;
+            } else {
+                current = candidate;
+            }
+            word.clear();
+        } else if( !end && current.empty() ) {
+            current += ' ';
+        } else if( !end ) {
+            current += ' ';
+        }
+    }
+    if( !current.empty() ) {
+        out.push_back( current );
+    }
+    return out;
+}
+
+
 /** The Help panel: a small hypertext, scrolled to keep the cursor visible. */
 void drawHelp( CellGrid& grid, const Model& model, const Buffer& buffer,
                const Rect& inner )
@@ -99,22 +163,56 @@ void drawHelp( CellGrid& grid, const Model& model, const Buffer& buffer,
         return;
     }
 
-    /* Keep the cursor on screen without storing scroll state per frame. */
+    /*
+     * Wrap first, then scroll, so the cursor is still counted in SOURCE
+     * lines -- Up/Down and Enter address the topic's lines, not the
+     * accidents of how wide the tile happens to be.
+     */
+    struct Rendered {
+        std::string text;
+        int source;
+    };
+    std::vector<Rendered> rendered;
+    int cursorRow = 0;
+
+    for( std::size_t i = 0; i < topic->lines.size(); ++i ) {
+        const std::string display = HelpBook::stripLinkMarkup( topic->lines[i] );
+        const std::vector<std::string> wrapped = wrapLine( display, inner.w );
+
+        if( (int) i == buffer.help.cursor ) {
+            cursorRow = (int) rendered.size();
+        }
+        for( std::size_t k = 0; k < wrapped.size(); ++k ) {
+            Rendered row;
+            row.text = wrapped[k];
+            row.source = (int) i;
+            rendered.push_back( row );
+        }
+        if( wrapped.empty() ) {
+            Rendered row;
+            row.text.clear();
+            row.source = (int) i;
+            rendered.push_back( row );
+        }
+    }
+
     int scroll = 0;
-    if( buffer.help.cursor >= inner.h ) {
-        scroll = buffer.help.cursor - inner.h + 1;
+    if( cursorRow >= inner.h ) {
+        scroll = cursorRow - inner.h + 1;
     }
 
     for( int row = 0; row < inner.h; ++row ) {
         const int index = scroll + row;
-        if( index >= (int) topic->lines.size() ) {
+        if( index >= (int) rendered.size() ) {
             break;
         }
 
-        const std::string& raw = topic->lines[ (std::size_t) index ];
+        const Rendered& line = rendered[ (std::size_t) index ];
+        const std::string& raw =
+            topic->lines[ (std::size_t) line.source ];
 
         Attr attr;
-        if( index == buffer.help.cursor ) {
+        if( line.source == buffer.help.cursor ) {
             attr.reverse = true;
         } else if( !HelpBook::linksOn( raw ).empty() ) {
             /*
@@ -126,8 +224,38 @@ void drawHelp( CellGrid& grid, const Model& model, const Buffer& buffer,
             attr.colour = Colour::Accent;
         }
 
-        grid.drawText( inner.x, inner.y + row,
-                       HelpBook::stripLinkMarkup( raw ), inner.w, attr );
+        grid.drawText( inner.x, inner.y + row, line.text, inner.w, attr );
+    }
+
+    /*
+     * Say when there is more.
+     *
+     * At 80x24 the welcome page shows its first eight lines, and without
+     * this a first-time reader sees three keys, no sign of the rest, and no
+     * reason to press Down -- so they never find out how to quit. The
+     * marker is drawn over the right edge of the last row, which is the one
+     * place guaranteed not to be the start of a sentence.
+     */
+    const int shown = (int) rendered.size() - scroll;
+    if( shown > inner.h ) {
+        const std::string marker = " more \xe2\x96\xbe Down ";
+        const int markerWidth = displayWidth( marker );
+        if( markerWidth < inner.w ) {
+            Attr attr;
+            attr.reverse = true;
+            grid.drawText( inner.x + inner.w - markerWidth,
+                           inner.y + inner.h - 1, marker, markerWidth, attr );
+        }
+    }
+    if( scroll > 0 ) {
+        const std::string marker = " Up \xe2\x96\xb4 more ";
+        const int markerWidth = displayWidth( marker );
+        if( markerWidth < inner.w ) {
+            Attr attr;
+            attr.reverse = true;
+            grid.drawText( inner.x + inner.w - markerWidth, inner.y,
+                           marker, markerWidth, attr );
+        }
     }
 }
 
@@ -184,6 +312,67 @@ void drawPalette( CellGrid& grid, const Model& model, const Buffer& buffer,
         }
 
         grid.drawText( inner.x, inner.y + 1 + row, line, inner.w, attr );
+    }
+}
+
+
+/** The menu: the bar's headings, with the commands under each. */
+void drawMenu( CellGrid& grid, const Model& model, const Buffer& buffer,
+               const Rect& inner )
+{
+    const std::vector<Model::MenuRow> rows = model.menuRows();
+
+    int scroll = 0;
+    if( buffer.menu.selected >= inner.h ) {
+        scroll = buffer.menu.selected - inner.h + 1;
+    }
+
+    for( int row = 0; row < inner.h; ++row ) {
+        const int index = scroll + row;
+        if( index >= (int) rows.size() ) { break; }
+        const Model::MenuRow& entry = rows[ (std::size_t) index ];
+
+        if( entry.isHeading() ) {
+            Attr heading;
+            heading.bold = true;
+            heading.underline = true;
+            grid.drawText( inner.x, inner.y + row, entry.heading, inner.w,
+                           heading );
+            continue;
+        }
+
+        const KeySeq binding = model.keymap().bindingFor( entry.command->id() );
+        std::string line = "  " + entry.command->title();
+        if( !binding.empty() ) {
+            line += "   " + toString( binding );
+        }
+
+        Attr attr;
+        if( index == buffer.menu.selected ) {
+            attr.reverse = true;
+        } else if( !entry.command->enabled( model ) ) {
+            attr.colour = Colour::Dim;
+        }
+        grid.drawText( inner.x, inner.y + row, line, inner.w, attr );
+    }
+
+    /*
+     * A heading with nothing under it says so. The menu bar draws all eight
+     * headings, so a menu that silently omitted the empty ones would look
+     * like the bar was lying about what exists.
+     */
+    for( int row = 0; row < inner.h; ++row ) {
+        const int index = scroll + row;
+        if( index + 1 >= (int) rows.size() ) { break; }
+        if( !rows[ (std::size_t) index ].isHeading() ) { continue; }
+        if( !rows[ (std::size_t) index + 1 ].isHeading() ) { continue; }
+
+        Attr empty;
+        empty.colour = Colour::Dim;
+        const std::string heading = rows[ (std::size_t) index ].heading;
+        grid.drawText( inner.x + (int) heading.size() + 1, inner.y + row,
+                       "(nothing here yet)",
+                       inner.w - (int) heading.size() - 1, empty );
     }
 }
 
@@ -318,6 +507,9 @@ void drawTile( CellGrid& grid, const Model& model, const Placement& placement,
         return;
     case PanelKind::Palette:
         drawPalette( grid, model, *buffer, inner );
+        return;
+    case PanelKind::Menu:
+        drawMenu( grid, model, *buffer, inner );
         return;
     case PanelKind::Transcript:
         drawTranscript( grid, *buffer, inner, focused );

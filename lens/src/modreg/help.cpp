@@ -126,4 +126,23 @@ std::string generateKeymapPage( const CommandTable& table,
     return page.str();
 }
 
+std::vector<std::string> menuCategories()
+{
+    /*
+     * Fixed, and in the bar's order. Deriving them from the registered
+     * commands instead would make the menu's headings appear and disappear
+     * as modules load, so a user could not learn where anything lives.
+     */
+    std::vector<std::string> categories;
+    categories.push_back( "File" );
+    categories.push_back( "Edit" );
+    categories.push_back( "World" );
+    categories.push_back( "Query" );
+    categories.push_back( "Image" );
+    categories.push_back( "Debug" );
+    categories.push_back( "Window" );
+    categories.push_back( "Help" );
+    return categories;
+}
+
 } // namespace lens

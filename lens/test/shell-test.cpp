@@ -14,6 +14,7 @@
 
 #include "../src/app/layouts.hpp"
 #include "../src/model/model.hpp"
+#include "../src/modreg/help.hpp"
 #include "../src/model/view.hpp"
 
 namespace {
@@ -194,6 +195,222 @@ int main()
         const HelpTopic* topic = model.helpBook()->topic( "getting-started" );
         UT_CHECK( topic != NULL );
         UT_CHECK( model.helpBook()->topic( "no-such-topic" ) == NULL );
+    } );
+
+    registry.add( "H the welcome page advertises only keys that exist", []() {
+        /*
+         * The failure this prevents: help that tells a new user to press
+         * F10, when F10 does nothing. Every command the first-steps page
+         * names is checked to be registered AND bound -- so the page cannot
+         * drift ahead of the implementation, which is exactly what it did
+         * before the menu was built.
+         */
+        Model model = makeModel();
+
+        const char* advertised[] = {
+            "help.contextual", "menu.open", "command.palette",
+            "window.focus-next", "window.focus-prev", "window.close",
+            "window.maximise", "window.split-rows", "window.split-columns",
+            "app.quit"
+        };
+
+        for ( const char* id : advertised ) {
+            UT_CHECK_MSG( model.commands().find( id ) != NULL,
+                          "the welcome page names '" << id
+                              << "', which is not registered" );
+            UT_CHECK_MSG( !model.keymap().bindingFor( id ).empty(),
+                          "the welcome page names '" << id
+                              << "', which has no key bound" );
+        }
+    } );
+
+    registry.add( "the welcome page borrows the main tile and gives it back",
+                  []() {
+        Model model = makeModel();
+        const std::size_t before = model.layout().tileCount();
+
+        model.openHelp( HelpBook::welcomeTopicId(), true );
+
+        UT_CHECK_MSG( model.layout().tileCount() == before,
+                      "borrowing a tile should not create one: "
+                          << model.layout().tileCount() << " vs " << before );
+
+        const Buffer* help = findPanel( model, PanelKind::Help );
+        UT_CHECK( help != NULL );
+        UT_CHECK_EQ( help->help.topicId, HelpBook::welcomeTopicId() );
+
+        /* And it landed in the LARGEST tile, not wherever focus happened
+         * to be -- which is what makes it readable. */
+        const Solution solution = solve( model.layout(), model.tileArea() );
+        const Placement* placement = solution.find( model.layout().focused() );
+        UT_CHECK( placement != NULL );
+        for ( const Placement& other : solution.placements ) {
+            if ( other.stub ) { continue; }
+            UT_CHECK_MSG( other.rect.area() <= placement->rect.area(),
+                          "help did not take the largest tile" );
+        }
+
+        type( model, "C-x 0" );
+
+        UT_CHECK_MSG( model.layout().tileCount() == before,
+                      "dismissing borrowed help destroyed a tile" );
+        UT_CHECK_MSG( findPanel( model, PanelKind::Help ) == NULL,
+                      "dismissing help left it on screen" );
+    } );
+
+    registry.add( "help wraps rather than truncating", []() {
+        Model model = makeModel();
+        model.openHelp( HelpBook::welcomeTopicId(), true );
+
+        const CellGrid grid = view( model );
+
+        /*
+         * A distinctive phrase from the middle of a long line. If the panel
+         * truncated instead of wrapping, the tail would be missing from the
+         * screen entirely.
+         */
+        std::string screen;
+        for ( int y = 0; y < grid.height(); ++y ) {
+            for ( int x = 0; x < grid.width(); ++x ) {
+                const Cell& cell = grid.at( x, y );
+                if ( cell.ch != 0 ) { screen += encodeUtf8( cell.ch ); }
+            }
+            screen += "\n";
+        }
+
+        UT_CHECK_MSG( screen.find( "work inside it" ) != std::string::npos,
+                      "the tail of a long help line is missing from the "
+                      "screen -- the panel truncated instead of wrapping" );
+    } );
+
+    // -- the menu ----------------------------------------------------------
+
+    registry.add( "H F10 opens a menu that lists every command once", []() {
+        Model model = makeModel();
+        type( model, "F10" );
+
+        UT_CHECK_MSG( model.menuActive(), "F10 did not open the menu" );
+
+        const std::vector<Model::MenuRow> rows = model.menuRows();
+
+        std::size_t commandRows = 0;
+        for ( const Model::MenuRow& row : rows ) {
+            if ( !row.isHeading() ) { ++commandRows; }
+        }
+        UT_CHECK_MSG( commandRows == model.commands().size(),
+                      "the menu shows " << commandRows << " of "
+                          << model.commands().size() << " commands" );
+
+        /* Every heading the menu bar draws appears, even the empty ones --
+         * a heading that vanished would make the bar look like a lie. */
+        const std::vector<std::string> categories = menuCategories();
+        for ( const std::string& category : categories ) {
+            bool found = false;
+            for ( const Model::MenuRow& row : rows ) {
+                if ( row.isHeading() && row.heading == category ) { found = true; }
+            }
+            UT_CHECK_MSG( found, "the menu is missing the '" << category
+                                     << "' heading that the bar draws" );
+        }
+    } );
+
+    registry.add( "every command lands under a heading the bar draws", []() {
+        Model model = makeModel();
+        const std::vector<std::string> categories = menuCategories();
+
+        for ( const Command& command : model.commands().all() ) {
+            bool known = false;
+            for ( const std::string& category : categories ) {
+                if ( command.category() == category ) { known = true; }
+            }
+            UT_CHECK_MSG( known,
+                          "'" << command.id() << "' is in category '"
+                              << command.category()
+                              << "', which the menu bar does not draw -- it "
+                                 "would be unreachable from the menu" );
+        }
+    } );
+
+    registry.add( "the menu opens on a command, not on a heading", []() {
+        Model model = makeModel();
+        type( model, "F10" );
+
+        const Buffer* menu = findPanel( model, PanelKind::Menu );
+        UT_CHECK( menu != NULL );
+
+        const std::vector<Model::MenuRow> rows = model.menuRows();
+        UT_CHECK( menu->menu.selected >= 0
+                  && menu->menu.selected < (int) rows.size() );
+        UT_CHECK_MSG( !rows[ (std::size_t) menu->menu.selected ].isHeading(),
+                      "the menu opened with a heading selected, so Enter "
+                      "would do nothing" );
+    } );
+
+    registry.add( "menu navigation skips headings", []() {
+        Model model = makeModel();
+        type( model, "F10" );
+
+        const std::vector<Model::MenuRow> rows = model.menuRows();
+        for ( int i = 0; i < 20; ++i ) {
+            type( model, "Down" );
+            const Buffer* menu = findPanel( model, PanelKind::Menu );
+            if ( !menu ) { break; }
+            UT_CHECK_MSG(
+                !rows[ (std::size_t) menu->menu.selected ].isHeading(),
+                "menu navigation landed on a heading after " << i + 1
+                    << " steps down" );
+        }
+    } );
+
+    registry.add( "F10 closes the menu as well as opening it", []() {
+        Model model = makeModel();
+        type( model, "F10" );
+        UT_CHECK( model.menuActive() );
+        type( model, "F10" );
+        UT_CHECK_MSG( !model.menuActive(),
+                      "F10 must close the menu too, or pressing it by "
+                      "accident is a trap" );
+    } );
+
+    registry.add( "Esc closes the menu and leaves the layout as it was", []() {
+        Model model = makeModel();
+        const std::size_t before = model.layout().tileCount();
+        type( model, "F10" );
+        type( model, "Esc" );
+        UT_CHECK( !model.menuActive() );
+        UT_CHECK_EQ( model.layout().tileCount(), before );
+    } );
+
+    registry.add( "Enter in the menu runs the selected command", []() {
+        Model model = makeModel();
+        const std::size_t before = model.layout().tileCount();
+
+        type( model, "F10" );
+        /* Walk to a window command, which has a visible effect. */
+        const Command* target = model.commands().find( "window.split-rows" );
+        UT_CHECK( target != NULL );
+
+        const std::vector<Model::MenuRow> rows = model.menuRows();
+        int wanted = -1;
+        for ( std::size_t i = 0; i < rows.size(); ++i ) {
+            if ( rows[i].command && rows[i].command->id() == "window.split-rows" ) {
+                wanted = (int) i;
+            }
+        }
+        UT_CHECK( wanted >= 0 );
+
+        Buffer* menu = model.buffer(
+            model.layout().bufferOf( model.layout().focused() ) );
+        UT_CHECK( menu != NULL && menu->kind == PanelKind::Menu );
+        menu->menu.selected = wanted;
+
+        type( model, "Enter" );
+
+        UT_CHECK_MSG( !model.menuActive(), "running a command left the menu open" );
+        UT_CHECK_MSG( model.layout().tileCount() == before + 1,
+                      "the split ran against the wrong tile: "
+                          << model.layout().tileCount() << " vs "
+                          << before + 1 );
     } );
 
     // -- the palette -------------------------------------------------------

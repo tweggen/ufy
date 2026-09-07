@@ -113,6 +113,7 @@ std::string Model::contextualTopicId() const
     switch( focused->kind ) {
     case PanelKind::Help:       return "help";
     case PanelKind::Palette:    return "keys";
+    case PanelKind::Menu:       return "keys";
     case PanelKind::Transcript: return "getting-started";
     case PanelKind::Placeholder:
         break;
@@ -367,15 +368,64 @@ Split Model::splitDirectionForNewPanel() const
         return Split::Columns;
     }
 
-    const SolverLimits limits;
-    if( focused->rect.w >= limits.minWidth * 2 + 4 ) {
+    /*
+     * Chosen for READABILITY, not for fitting.
+     *
+     * The obvious rule -- split into columns whenever both halves clear the
+     * solver's 20-column minimum -- produces panels that are legal and
+     * unreadable: help beside a 84-column Source gives 51 columns, and the
+     * help text is written for about 70. So a column split has to leave the
+     * new panel genuinely wide enough for prose; otherwise a row split gives
+     * it the full width and takes the height instead, which for text is the
+     * better trade every time.
+     */
+    static const int kComfortableTextWidth = 60;
+    const int wouldGet = (int) ( focused->rect.w * 0.62 );
+    if( wouldGet >= kComfortableTextWidth ) {
         return Split::Columns;
     }
     return Split::Rows;
 }
 
 
-void Model::openHelp( const std::string& topicId )
+TileId Model::largestTile() const
+{
+    const Solution solution = solve( m_layout, tileArea() );
+
+    TileId best = m_layout.focused();
+    int bestArea = -1;
+    for( std::size_t i = 0; i < solution.placements.size(); ++i ) {
+        const Placement& placement = solution.placements[i];
+        if( placement.stub ) {
+            continue;
+        }
+        const int area = placement.rect.area();
+        if( area > bestArea ) {
+            bestArea = area;
+            best = placement.tile;
+        }
+    }
+    return best;
+}
+
+
+bool Model::returnBorrowedTile()
+{
+    if( kNoTile == m_borrowedTile || kNoBuffer == m_displacedBuffer ) {
+        return false;
+    }
+    if( m_layout.focused() != m_borrowedTile ) {
+        return false;
+    }
+
+    m_layout.setBuffer( m_borrowedTile, m_displacedBuffer );
+    m_borrowedTile = kNoTile;
+    m_displacedBuffer = kNoBuffer;
+    return true;
+}
+
+
+void Model::openHelp( const std::string& topicId, bool takeLargestTile )
 {
     if( kNoBuffer == m_helpBuffer ) {
         m_helpBuffer = addBuffer( "Help", {}, PanelKind::Help );
@@ -401,13 +451,96 @@ void Model::openHelp( const std::string& topicId )
     }
 
     /*
-     * Otherwise open one beside the work rather than over it -- the whole
-     * argument for tiling (UI.md section 5.3). Splitting into columns keeps
-     * the transcript's width when there is room and folds to a stub when
-     * there is not, which is the solver's business rather than this
-     * function's.
+     * Beside the work rather than over it -- the whole argument for tiling
+     * (UI.md section 5.3) -- but BIG. Help that arrives as a sliver is help
+     * nobody reads, and the first person to run lens said so.
+     *
+     * Two decisions make it big and keep it predictable. It splits the
+     * LARGEST tile rather than whichever happened to have focus, so opening
+     * help from a narrow catalogue does not produce a narrow help; and it
+     * takes the larger share of it, so it lands about the size of the main
+     * working area rather than half of something small.
      */
-    m_layout.splitFocused( splitDirectionForNewPanel(), m_helpBuffer, 0.5 );
+    const TileId host = largestTile();
+
+    if( takeLargestTile ) {
+        /*
+         * Borrow it outright. The welcome page is the main thing on screen
+         * when it is on screen, so it gets the main area rather than a share
+         * of it -- and C-x 0 hands the tile back (returnBorrowedTile).
+         */
+        m_displacedBuffer = m_layout.bufferOf( host );
+        m_borrowedTile = host;
+        m_layout.setBuffer( host, m_helpBuffer );
+        m_layout.focus( host );
+        return;
+    }
+
+    m_layout.focus( host );
+    m_layout.splitFocused( splitDirectionForNewPanel(), m_helpBuffer, 0.38 );
+}
+
+
+void Model::openMenu()
+{
+    if( menuActive() ) {
+        return;
+    }
+    if( kNoBuffer == m_menuBuffer ) {
+        m_menuBuffer = addBuffer( "Menu", {}, PanelKind::Menu );
+    }
+    Buffer* menu = buffer( m_menuBuffer );
+    if( menu ) {
+        menu->menu.selected = 0;
+        /* Start on the first real command, not on the File heading. */
+        const std::vector<MenuRow> rows = menuRows();
+        for( std::size_t i = 0; i < rows.size(); ++i ) {
+            if( !rows[i].isHeading() ) {
+                menu->menu.selected = (int) i;
+                break;
+            }
+        }
+    }
+
+    m_menuTile = m_layout.splitFocused( splitDirectionForNewPanel(),
+                                        m_menuBuffer, 0.5 );
+}
+
+
+void Model::closeMenu()
+{
+    if( !menuActive() ) {
+        return;
+    }
+    if( m_layout.focus( m_menuTile ) ) {
+        m_layout.closeFocused();
+    }
+    m_menuTile = kNoTile;
+}
+
+
+std::vector<Model::MenuRow> Model::menuRows() const
+{
+    std::vector<MenuRow> rows;
+
+    const std::vector<std::string> categories = menuCategories();
+    const std::vector<Command>& all = m_commands.all();
+
+    for( std::size_t c = 0; c < categories.size(); ++c ) {
+        MenuRow heading;
+        heading.heading = categories[c];
+        rows.push_back( heading );
+
+        for( std::size_t i = 0; i < all.size(); ++i ) {
+            if( all[i].category() != categories[c] ) {
+                continue;
+            }
+            MenuRow row;
+            row.command = &all[i];
+            rows.push_back( row );
+        }
+    }
+    return rows;
 }
 
 
@@ -573,6 +706,61 @@ std::vector<CommandRequest> foldPalette( Model& model, Buffer& palette,
     if( key.code == Key::Code::Char && !key.ctrl && !key.alt && key.ch >= 0x20 ) {
         palette.palette.input += encodeUtf8( key.ch );
         palette.palette.selected = 0;
+        return requests;
+    }
+
+    return requests;
+}
+
+
+/** The menu's keys. Modal while open, exactly like the palette. */
+std::vector<CommandRequest> foldMenu( Model& model, Buffer& menu, const Key& key )
+{
+    std::vector<CommandRequest> requests;
+    const std::vector<Model::MenuRow> rows = model.menuRows();
+
+    if( isCancel( key ) || key.code == Key::Code::F10 ) {
+        /* F10 closes as well as opens: a menu key that only opened would
+         * make the menu a trap for anyone who pressed it by accident. */
+        model.closeMenu();
+        return requests;
+    }
+
+    const auto step = [ & ]( int direction ) {
+        int at = menu.menu.selected;
+        for( int guard = 0; guard < (int) rows.size(); ++guard ) {
+            at += direction;
+            if( at < 0 || at >= (int) rows.size() ) {
+                return;   /* stop at the ends rather than wrapping past a
+                           * heading, which reads as skipping an entry */
+            }
+            if( !rows[ (std::size_t) at ].isHeading() ) {
+                menu.menu.selected = at;
+                return;
+            }
+        }
+    };
+
+    if( key.code == Key::Code::Down ) { step( 1 ); return requests; }
+    if( key.code == Key::Code::Up )   { step( -1 ); return requests; }
+
+    if( key.code == Key::Code::Enter ) {
+        const Command* chosen = NULL;
+        if( menu.menu.selected >= 0 && menu.menu.selected < (int) rows.size() ) {
+            chosen = rows[ (std::size_t) menu.menu.selected ].command;
+        }
+
+        /* Closed before the command runs, for the same reason the palette
+         * is: otherwise a layout command operates on the menu's own tile. */
+        model.closeMenu();
+
+        if( chosen ) {
+            if( !chosen->enabled( model ) ) {
+                model.setMessage( chosen->title() + " is not available here" );
+                return requests;
+            }
+            return chosen->run( model );
+        }
         return requests;
     }
 
@@ -810,6 +998,12 @@ std::vector<CommandRequest> fold( Model& model, const Event& event )
             return foldPalette( model, *palette, event.key );
         }
     }
+    if( model.menuActive() ) {
+        Buffer* menu = model.buffer( model.m_menuBuffer );
+        if( menu ) {
+            return foldMenu( model, *menu, event.key );
+        }
+    }
 
     KeySeq attempt = model.m_pending;
     attempt.push_back( event.key );
@@ -899,6 +1093,10 @@ void registerShellCommands( Model& model )
                         "Close the focused tile and give its space to its "
                         "neighbour. The last tile cannot be closed." )
                    .onRun( []( Model& m ) {
+                       /* A borrowed tile is given back, not destroyed. */
+                       if( m.returnBorrowedTile() ) {
+                           return std::vector<CommandRequest>();
+                       }
                        if( !m.layout().closeFocused() ) {
                            m.setMessage( "the last tile cannot be closed" );
                        }
@@ -944,8 +1142,7 @@ void registerShellCommands( Model& model )
                         "Open the menu bar. Every menu entry is a command "
                         "from this same table." )
                    .onRun( []( Model& m ) {
-                       m.setMessage( "the menu arrives with the shell's "
-                                     "dialogs (G2)" );
+                       m.openMenu();
                        return std::vector<CommandRequest>();
                    } ) );
 

@@ -238,6 +238,14 @@ if(BASH_PROGRAM)
         "help-80x24|80x24|browse|help"
         "palette-120x40|120x40|browse|palette"
         "palette-filtered|120x40|browse|palette-filtered"
+        "menu-120x40|120x40|browse|menu"
+    )
+
+    # The welcome page, which needs --welcome. Its own list for the same
+    # reason the session screens have one: the extra argument.
+    set(LENS_WELCOME_SCREENS
+        "welcome-120x40|120x40|browse|welcome"
+        "welcome-80x24|80x24|browse|welcome"
     )
 
     # Screens that need a real engine behind the transcript (gate G2). Kept
@@ -264,6 +272,29 @@ if(BASH_PROGRAM)
                     "${SCREEN_LAYOUT}"
                     "${LENS_SCREEN_DIR}/${SCREEN_SCRIPT}.keys"
                     "${LENS_GOLDEN_DIR}/${SCREEN_NAME}.expected"
+        )
+        set_tests_properties("lens-screen-${SCREEN_NAME}" PROPERTIES
+            SKIP_RETURN_CODE 77
+            TIMEOUT 60
+        )
+    endforeach()
+
+    foreach(LENS_SCREEN ${LENS_WELCOME_SCREENS})
+        string(REPLACE "|" ";" PARTS "${LENS_SCREEN}")
+        list(GET PARTS 0 SCREEN_NAME)
+        list(GET PARTS 1 SCREEN_GEOMETRY)
+        list(GET PARTS 2 SCREEN_LAYOUT)
+        list(GET PARTS 3 SCREEN_SCRIPT)
+
+        add_test(
+            NAME "lens-screen-${SCREEN_NAME}"
+            COMMAND "${BASH_PROGRAM}" "${LENS_SCREEN_RUNNER}"
+                    "$<TARGET_FILE:unify-lens>"
+                    "${SCREEN_GEOMETRY}"
+                    "${SCREEN_LAYOUT}"
+                    "${LENS_SCREEN_DIR}/${SCREEN_SCRIPT}.keys"
+                    "${LENS_GOLDEN_DIR}/${SCREEN_NAME}.expected"
+                    "welcome"
         )
         set_tests_properties("lens-screen-${SCREEN_NAME}" PROPERTIES
             SKIP_RETURN_CODE 77

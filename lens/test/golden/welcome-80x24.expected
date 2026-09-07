@@ -1,13 +1,13 @@
  File  Edit  World  Query  Image  Debug  Window  Help
-┌ Catalogue ─────────┐┌ Source ────────────────────────────────────────────────┐
-│module -> (name, ari││the selected definition                                 │
-│awaiting listing (G3││awaiting source (G3)                                    │
+┌ Catalogue ─────────┐┌ Help ──────────────────────────────────────────────────┐
+│module -> (name, ari││unify-lens -- a place to keep a Unify world open and    │
+│awaiting listing (G3││work inside it.                                         │
 │                    ││                                                        │
-│                    │└────────────────────────────────────────────────────────┘
-│                    │┌ Help ──────────────────────────────────────────────────┐
-│                    ││Each tile shows a panel. None of them is privileged in  │
-│                    ││the code --                                             │
-│                    ││the shell knows about tiles, not about what more ▾ Down │
+│                    ││THE KEYS THAT MATTER                                    │
+│                    ││                                                        │
+│                    ││  F1          help on whatever has focus. You are here. │
+│                    ││  F10         the menu.                                 │
+│                    ││  M-x         every command there is, searc more ▾ Down │
 │                    │└────────────────────────────────────────────────────────┘
 │                    │┌ Diagnostics ───────────────────────────────────────────┐
 │                    ││(none)                                                  │
