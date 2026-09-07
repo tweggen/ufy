@@ -182,8 +182,25 @@ $ unify-lens --geometry 120x40 --layout browse --script repro.keys
 ```
 
 One step per line, spelled exactly as the keymap spells it; `#` comments and
-blank lines are ignored; `resize COLSxROWS` is a step too. The final screen
-goes to stdout.
+blank lines are ignored; `type <text>` types literal text and
+`resize COLSxROWS` is a step too. The final screen goes to stdout.
+
+### `--trace`, for interaction bugs
+
+The screen dump records characters, not attributes — so a selection that
+moves changes nothing you can see in it. `--trace` prints what a user
+perceives after *every* step instead of the final frame:
+
+```sh
+$ unify-lens --geometry 80x24 --script repro.keys --trace=model
+Down           focus=Help line=15 top=13 row=2 rows=3 of=20 tiles=5
+Up             focus=Help line=14 top=13 row=1 rows=3 of=20 tiles=5
+```
+
+`line` is the selection, `top` the first line shown, `row` where the
+highlight lands. A key that should move the selection and leaves `row` and
+`top` both unchanged is a key that did nothing. `--trace=screen` prints the
+whole grid per step when you need the film rather than the summary.
 
 ## Tests
 
@@ -193,6 +210,7 @@ goes to stdout.
 | `lens-modreg` | The command table, keymaps, and the help surfaces generated from them. |
 | `lens-grid` | The character grid: UTF-8, display width, clipping, boxes. |
 | `lens-shell` | `fold`, the Help panel and the `M-x` palette: contextual help, no dead links, palette modality and filtering. |
+| `lens-interaction` | What happens *between* frames: that a keystroke visibly does something, that scrolling is minimal, that a modal panel gives focus back — plus a seeded random walk asserting those invariants after every key. See the file's comment for why the other two categories cannot see these bugs. |
 | `lens-screen-*` | Seventeen golden screens: four stock layouts at 120×40 and 80×24, plus tiling gestures, maximise, a resize round trip, an unfinished chord, help at both geometries, and the palette open and filtered. |
 | `lens-too-small` | That lens refuses below 80×24 — and renders at exactly 80×24, so the gate is not an off-by-one. |
 | `lens-resize-roundtrip` | That shrinking to 80×24 and back restores the screen *exactly*, not merely to something valid. |

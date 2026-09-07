@@ -3,6 +3,7 @@
  */
 
 #include "model.hpp"
+#include "text-wrap.hpp"
 
 #include <cctype>
 #include <sstream>
@@ -360,6 +361,79 @@ std::string Model::sessionStatus() const
 }
 
 
+Rect Model::innerRectOf( TileId tile ) const
+{
+    const Solution solution = solve( m_layout, tileArea() );
+    const Placement* placement = solution.find( tile );
+    if( !placement || placement->stub ) {
+        return Rect();
+    }
+    /* One cell of border on every side. */
+    return Rect( placement->rect.x + 1, placement->rect.y + 1,
+                 placement->rect.w - 2, placement->rect.h - 2 );
+}
+
+
+ScrollView Model::observeFocusedScroll( bool& out_valid ) const
+{
+    out_valid = false;
+    ScrollView view;
+
+    const Buffer* buffer = focusedBuffer();
+    if( !buffer ) {
+        return view;
+    }
+
+    const Rect inner = innerRectOf( m_layout.focused() );
+    if( inner.w <= 0 || inner.h <= 0 ) {
+        return view;
+    }
+
+    switch( buffer->kind ) {
+    case PanelKind::Help: {
+        const HelpTopic* topic =
+            m_helpBook ? m_helpBook->topic( buffer->help.topicId ) : NULL;
+        if( !topic ) { return view; }
+
+        /* Rendered rows, matching followCursor() and the renderer. If these
+         * three disagreed the tests would assert something the user never
+         * sees, which is worse than not testing at all. */
+        const WrapMap map = wrapMap( topic->lines, inner.w );
+        view.cursorLine =
+            ( buffer->help.cursor >= 0
+              && buffer->help.cursor < (int) map.rowOfLine.size() )
+                ? map.rowOfLine[ (std::size_t) buffer->help.cursor ] : 0;
+        view.topLine = buffer->help.top;
+        view.viewportRows = inner.h;
+        view.totalLines = map.totalRows;
+        out_valid = true;
+        return view;
+    }
+    case PanelKind::Menu: {
+        view.cursorLine = buffer->menu.selected;
+        view.topLine = buffer->menu.top;
+        view.viewportRows = inner.h;
+        view.totalLines = (int) menuRows().size();
+        out_valid = true;
+        return view;
+    }
+    case PanelKind::Palette: {
+        view.cursorLine = buffer->palette.selected;
+        view.topLine = buffer->palette.top;
+        /* One row is the prompt; the rest is the list. */
+        view.viewportRows = inner.h - 1;
+        view.totalLines = (int) paletteMatches().size();
+        out_valid = true;
+        return view;
+    }
+    case PanelKind::Placeholder:
+    case PanelKind::Transcript:
+        break;
+    }
+    return view;
+}
+
+
 Split Model::splitDirectionForNewPanel() const
 {
     const Solution solution = solve( m_layout, tileArea() );
@@ -438,7 +512,7 @@ void Model::openHelp( const std::string& topicId, bool takeLargestTile )
         }
         help->help.topicId = topicId;
         help->help.cursor = 0;
-        help->help.scroll = 0;
+        help->help.top = 0;
     }
 
     /* Reuse the tile already showing help, if there is one. */
@@ -613,6 +687,10 @@ std::vector<const Command*> Model::paletteMatches() const
 
 namespace {
 
+/** Defined below; used by every panel's key handler. */
+void followCursor( Model& model, Buffer& buffer );
+
+
 bool isCancel( const Key& key )
 {
     /* UI.md section 4: Esc cancels the innermost thing, C-g aborts. */
@@ -665,12 +743,14 @@ std::vector<CommandRequest> foldPalette( Model& model, Buffer& palette,
 
     if( key.code == Key::Code::Up ) {
         if( palette.palette.selected > 0 ) { --palette.palette.selected; }
+        followCursor( model, palette );
         return requests;
     }
     if( key.code == Key::Code::Down ) {
         if( palette.palette.selected + 1 < (int) matches.size() ) {
             ++palette.palette.selected;
         }
+        followCursor( model, palette );
         return requests;
     }
 
@@ -678,6 +758,7 @@ std::vector<CommandRequest> foldPalette( Model& model, Buffer& palette,
         if( !palette.palette.input.empty() ) {
             palette.palette.input.resize( palette.palette.input.size() - 1 );
             palette.palette.selected = 0;
+            palette.palette.top = 0;
         }
         return requests;
     }
@@ -698,6 +779,7 @@ std::vector<CommandRequest> foldPalette( Model& model, Buffer& palette,
             if( prefix.size() > palette.palette.input.size() ) {
                 palette.palette.input = prefix;
                 palette.palette.selected = 0;
+                palette.palette.top = 0;
             }
         }
         return requests;
@@ -706,10 +788,65 @@ std::vector<CommandRequest> foldPalette( Model& model, Buffer& palette,
     if( key.code == Key::Code::Char && !key.ctrl && !key.alt && key.ch >= 0x20 ) {
         palette.palette.input += encodeUtf8( key.ch );
         palette.palette.selected = 0;
+        palette.palette.top = 0;
         return requests;
     }
 
     return requests;
+}
+
+
+/**
+ * Bring the focused panel's viewport back onto its cursor.
+ *
+ * Called after every key that moves a selection. `top` is model state, not
+ * a number the renderer invents, precisely so this can be MINIMAL: it needs
+ * to know where the view was in order to decide whether it has to move at
+ * all. See scroll.hpp for what happens when it cannot.
+ */
+void followCursor( Model& model, Buffer& buffer )
+{
+    const Rect inner = model.innerRectOf( model.layout().focused() );
+    if( inner.w <= 0 || inner.h <= 0 ) {
+        return;
+    }
+
+    switch( buffer.kind ) {
+    case PanelKind::Help: {
+        const HelpBook* book = model.helpBook();
+        const HelpTopic* topic = book ? book->topic( buffer.help.topicId ) : NULL;
+        if( !topic ) { return; }
+
+        /*
+         * In SCREEN rows, not source lines: a wrapped line is three rows
+         * tall, and a viewport measured in source lines would let the
+         * cursor slide off the bottom of a topic full of long paragraphs.
+         */
+        const WrapMap map = wrapMap( topic->lines, inner.w );
+        const int cursorRow =
+            ( buffer.help.cursor >= 0
+              && buffer.help.cursor < (int) map.rowOfLine.size() )
+                ? map.rowOfLine[ (std::size_t) buffer.help.cursor ] : 0;
+
+        buffer.help.top = ensureVisible( cursorRow, map.totalRows, inner.h,
+                                         buffer.help.top );
+        return;
+    }
+    case PanelKind::Menu:
+        buffer.menu.top = ensureVisible( buffer.menu.selected,
+                                         (int) model.menuRows().size(),
+                                         inner.h, buffer.menu.top );
+        return;
+    case PanelKind::Palette:
+        /* One row is the prompt; the rest is the list. */
+        buffer.palette.top = ensureVisible( buffer.palette.selected,
+                                            (int) model.paletteMatches().size(),
+                                            inner.h - 1, buffer.palette.top );
+        return;
+    case PanelKind::Placeholder:
+    case PanelKind::Transcript:
+        return;
+    }
 }
 
 
@@ -741,8 +878,16 @@ std::vector<CommandRequest> foldMenu( Model& model, Buffer& menu, const Key& key
         }
     };
 
-    if( key.code == Key::Code::Down ) { step( 1 ); return requests; }
-    if( key.code == Key::Code::Up )   { step( -1 ); return requests; }
+    if( key.code == Key::Code::Down ) {
+        step( 1 );
+        followCursor( model, menu );
+        return requests;
+    }
+    if( key.code == Key::Code::Up ) {
+        step( -1 );
+        followCursor( model, menu );
+        return requests;
+    }
 
     if( key.code == Key::Code::Enter ) {
         const Command* chosen = NULL;
@@ -780,10 +925,12 @@ void foldHelp( Model& model, Buffer& help, const Key& key )
 
     if( key.code == Key::Code::Down ) {
         if( help.help.cursor + 1 < lineCount ) { ++help.help.cursor; }
+        followCursor( model, help );
         return;
     }
     if( key.code == Key::Code::Up ) {
         if( help.help.cursor > 0 ) { --help.help.cursor; }
+        followCursor( model, help );
         return;
     }
 
@@ -795,7 +942,7 @@ void foldHelp( Model& model, Buffer& help, const Key& key )
         help.help.topicId = help.help.history.back();
         help.help.history.pop_back();
         help.help.cursor = 0;
-        help.help.scroll = 0;
+        help.help.top = 0;
         return;
     }
 
@@ -818,7 +965,7 @@ void foldHelp( Model& model, Buffer& help, const Key& key )
         help.help.history.push_back( help.help.topicId );
         help.help.topicId = links[0];
         help.help.cursor = 0;
-        help.help.scroll = 0;
+        help.help.top = 0;
         return;
     }
 }
@@ -970,7 +1117,8 @@ std::vector<CommandRequest> submitTranscriptLine( Model& model, Buffer& buffer,
 }
 
 
-std::vector<CommandRequest> fold( Model& model, const Event& event )
+std::vector<CommandRequest> Model::foldInner( Model& model,
+                                              const Event& event )
 {
     std::vector<CommandRequest> requests;
 
@@ -1061,6 +1209,34 @@ std::vector<CommandRequest> fold( Model& model, const Event& event )
      * message: in a transcript most keys are text, and complaining about
      * every one of them would make the status line useless.
      */
+    return requests;
+}
+
+
+std::vector<CommandRequest> fold( Model& model, const Event& event )
+{
+    const std::vector<CommandRequest> requests =
+        Model::foldInner( model, event );
+
+    /*
+     * Re-follow the cursor on the way out, whatever the key did.
+     *
+     * Moving a selection is not the only thing that can put the cursor off
+     * screen: splitting a tile halves the viewport, closing one doubles it,
+     * a resize changes it, and moving focus lands on a panel whose stored
+     * viewport was computed for a different geometry. Handling those
+     * one by one is how three of them get forgotten -- so it happens once,
+     * here, at the single exit.
+     *
+     * Found by the interaction suite's random walk: `C-x 2` with the help
+     * cursor at row 4 left it off the bottom of a 3-row tile, and no
+     * hand-written case would have thought to split a tile while a help
+     * page was scrolled.
+     */
+    Buffer* focused = model.focusedBuffer();
+    if( focused ) {
+        followCursor( model, *focused );
+    }
     return requests;
 }
 

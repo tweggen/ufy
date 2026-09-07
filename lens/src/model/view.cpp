@@ -7,6 +7,7 @@
 #include "view.hpp"
 
 #include "../modreg/help.hpp"
+#include "text-wrap.hpp"
 
 #include <sstream>
 
@@ -85,70 +86,6 @@ void drawHintLine( CellGrid& grid, const Model& model )
 }
 
 
-/**
- * Wrap one line to `width` columns, keeping its indentation.
- *
- * A help panel that truncates its own text is broken however big it is, and
- * the tile it lands in is the solver's decision rather than the help's. So
- * the text bends. Continuation lines keep the original indent, which is what
- * keeps a wrapped bullet looking like one bullet rather than two.
- */
-std::vector<std::string> wrapLine( const std::string& text, int width )
-{
-    std::vector<std::string> out;
-    if( width <= 0 ) {
-        return out;
-    }
-    if( displayWidth( text ) <= width ) {
-        out.push_back( text );
-        return out;
-    }
-
-    const std::size_t indentSize = text.find_first_not_of( ' ' );
-    const std::string indent(
-        ( indentSize == std::string::npos ) ? 0 : indentSize, ' ' );
-
-    std::string current;
-    std::string word;
-
-    const auto flush = [ & ]() {
-        if( !current.empty() ) {
-            out.push_back( current );
-            current = indent;
-        }
-    };
-
-    current = std::string();
-    for( std::size_t i = 0; i <= text.size(); ++i ) {
-        const bool end = ( i == text.size() );
-        if( !end && text[i] != ' ' ) {
-            word += text[i];
-            continue;
-        }
-
-        if( !word.empty() ) {
-            const std::string candidate =
-                current.empty() ? word : current + " " + word;
-            if( displayWidth( candidate ) > width && !current.empty() ) {
-                flush();
-                current += word;
-            } else {
-                current = candidate;
-            }
-            word.clear();
-        } else if( !end && current.empty() ) {
-            current += ' ';
-        } else if( !end ) {
-            current += ' ';
-        }
-    }
-    if( !current.empty() ) {
-        out.push_back( current );
-    }
-    return out;
-}
-
-
 /** The Help panel: a small hypertext, scrolled to keep the cursor visible. */
 void drawHelp( CellGrid& grid, const Model& model, const Buffer& buffer,
                const Rect& inner )
@@ -196,10 +133,14 @@ void drawHelp( CellGrid& grid, const Model& model, const Buffer& buffer,
         }
     }
 
-    int scroll = 0;
-    if( cursorRow >= inner.h ) {
-        scroll = cursorRow - inner.h + 1;
-    }
+    /*
+     * The viewport is MODEL state (buffer.help.top), maintained by fold.
+     * The view only clamps it, so that a resize between keystrokes cannot
+     * leave the cursor off screen -- it never decides where the view should
+     * be, because that decision needs to know where it was.
+     */
+    const int scroll = ensureVisible( cursorRow, (int) rendered.size(),
+                                      inner.h, buffer.help.top );
 
     for( int row = 0; row < inner.h; ++row ) {
         const int index = scroll + row;
@@ -281,10 +222,9 @@ void drawPalette( CellGrid& grid, const Model& model, const Buffer& buffer,
 
     /* Scroll so the selection stays visible in a short tile. */
     const int rows = inner.h - 1;
-    int scroll = 0;
-    if( rows > 0 && buffer.palette.selected >= rows ) {
-        scroll = buffer.palette.selected - rows + 1;
-    }
+    const int scroll = ensureVisible( buffer.palette.selected,
+                                      (int) matches.size(), rows,
+                                      buffer.palette.top );
 
     for( int row = 0; row < rows; ++row ) {
         const int index = scroll + row;
@@ -322,10 +262,9 @@ void drawMenu( CellGrid& grid, const Model& model, const Buffer& buffer,
 {
     const std::vector<Model::MenuRow> rows = model.menuRows();
 
-    int scroll = 0;
-    if( buffer.menu.selected >= inner.h ) {
-        scroll = buffer.menu.selected - inner.h + 1;
-    }
+    const int scroll = ensureVisible( buffer.menu.selected,
+                                      (int) rows.size(), inner.h,
+                                      buffer.menu.top );
 
     for( int row = 0; row < inner.h; ++row ) {
         const int index = scroll + row;

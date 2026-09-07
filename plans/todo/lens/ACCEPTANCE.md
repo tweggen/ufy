@@ -76,6 +76,30 @@ by gates whose criteria are executable.
    [ARCHITECTURE.md](ARCHITECTURE.md) §4.
 7. **A gate criterion that cannot fail is deleted.** "Help exists" is
    testable; "help cannot drift" is not, and is not claimed.
+8. **Assert on sequences, not only on states.** *(Added 2026-09-07, after
+   the first real user.)* Rules 1–7 produce two kinds of test: model tests,
+   which assert one state, and golden screens, which assert one final frame.
+   Every defect a user has actually reported in lens lived in neither —
+   they lived in the TRANSITION between frames. "Pressing Up after Down does
+   nothing the first time" leaves a final screen that is perfectly
+   self-consistent and would pass any golden; what was wrong was that the
+   highlight did not move when the key was pressed.
+
+   So a third category: **interaction tests** (`lens/test/interaction-test.cpp`).
+   They still assert on the model rather than on pixels, so rule 6 stands
+   — they add the dimension neither other category has. Two obligations
+   come with them:
+
+   - **Invariants are written once and applied to every panel.** Three
+     copies of the same scroll arithmetic is how the bug happened; one
+     shared rule with one set of invariants is how it stops happening, for
+     the panels that do not exist yet as much as for the three that do.
+   - **A seeded random walk.** The layout suite's property test found a
+     real bug no hand-written case would have; the same technique pointed
+     at interaction immediately found a second one — splitting a tile
+     while a help page was scrolled left the cursor off screen, because
+     only cursor movement re-followed the cursor and geometry changes did
+     not.
 
 Three harnesses, all in the repo's established golden style
 (`test/run-golden-test.sh`, regenerate with `UNIFY_UPDATE_GOLDEN=1`):

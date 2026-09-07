@@ -28,6 +28,7 @@
 #include "../modreg/help.hpp"
 #include "../modreg/keymap.hpp"
 #include "cell-grid.hpp"
+#include "scroll.hpp"
 #include "help-content.hpp"
 #include "transcript.hpp"
 
@@ -58,17 +59,29 @@ struct HelpState {
     std::string topicId;
     std::vector<std::string> history;   //!< for Backspace
     int cursor = 0;                     //!< line the cursor is on
-    int scroll = 0;
+
+    /**
+     * The first line rendered.
+     *
+     * Model state, not a number the view recomputes. The view cannot own it
+     * because "should the view move?" depends on where it was last frame,
+     * and a pure function of the current cursor has no way to know. See
+     * scroll.hpp.
+     */
+    int top = 0;
 };
 
 /** The command palette's own state (UI.md section 4). */
 struct PaletteState {
     std::string input;
     int selected = 0;
+    int top = 0;      //!< see HelpState::top
 };
 
 /** The menu's own state -- one flat, grouped list rather than a tree. */
 struct MenuState {
+    int top = 0;      //!< see HelpState::top
+
     /**
      * Index into the FLATTENED rows, headings included.
      *
@@ -195,6 +208,29 @@ public:
     /** The topic `F1` should open for whatever currently has focus. */
     std::string contextualTopicId() const;
 
+    // -- interaction, observed ----------------------------------------------
+
+    /**
+     * The content rectangle of a tile: where a panel actually draws.
+     *
+     * Needed by `fold`, not only by `view`: scrolling is a response to a
+     * keystroke and has to know how many rows there are to scroll within.
+     * Solving the layout to find out is cheap and keeps the geometry in one
+     * place rather than passing it down every call.
+     */
+    Rect innerRectOf( TileId tile ) const;
+
+    /**
+     * Where the focused panel's viewport sits, as the four numbers an
+     * interaction test asserts on.
+     *
+     * `valid` is false for a panel that does not scroll. This is the
+     * projection the interaction suite watches frame by frame -- see
+     * test/interaction-test.cpp for why neither the model tests nor the
+     * golden screens could see the bug it was written for.
+     */
+    ScrollView observeFocusedScroll( bool& out_valid ) const;
+
     // -- the command palette ------------------------------------------------
 
     /**
@@ -292,6 +328,16 @@ public:
 
 private:
     friend std::vector<CommandRequest> fold( Model&, const Event& );
+
+    /**
+     * The body of fold().
+     *
+     * A member so it keeps the access fold() has; fold() itself is then a
+     * thin wrapper whose only job is to do the one thing that must happen
+     * however the body returned -- see its definition.
+     */
+    static std::vector<CommandRequest> foldInner( Model& model,
+                                                  const Event& event );
 
     int m_width = 0;
     int m_height = 0;

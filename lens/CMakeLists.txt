@@ -99,6 +99,7 @@ add_library(lens-model STATIC
     "${CMAKE_CURRENT_SOURCE_DIR}/src/model/cell-grid.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/model/help-content.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/model/transcript.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/model/text-wrap.cpp"
 )
 target_link_libraries(lens-model PUBLIC lens-modreg)
 # The session boundary only -- a header of pure standard C++ (gate G0.1), so
@@ -127,6 +128,22 @@ if(NOT MSVC)
 endif()
 add_test(NAME lens-shell COMMAND lens-shell-test)
 set_tests_properties(lens-shell PROPERTIES TIMEOUT 120)
+
+# The third test category: what happens BETWEEN frames. See the file's own
+# comment for why neither the model tests nor the golden screens could see
+# the bug it was written for.
+add_executable(lens-interaction-test
+    "${CMAKE_CURRENT_SOURCE_DIR}/test/interaction-test.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/app/layouts.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/model/model.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/model/view.cpp"
+)
+target_link_libraries(lens-interaction-test PRIVATE lens-model lens-modreg lens-layout)
+if(NOT MSVC)
+    target_compile_options(lens-interaction-test PRIVATE -Wall -Wextra)
+endif()
+add_test(NAME lens-interaction COMMAND lens-interaction-test)
+set_tests_properties(lens-interaction PROPERTIES TIMEOUT 120)
 
 add_executable(lens-grid-test "${CMAKE_CURRENT_SOURCE_DIR}/test/grid-test.cpp")
 target_link_libraries(lens-grid-test PRIVATE lens-model)

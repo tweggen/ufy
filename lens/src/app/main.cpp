@@ -61,6 +61,20 @@ struct Options {
      * `--script`, so a golden stays a test of what the script did.
      */
     bool welcome = false;
+
+    /**
+     * Emit an observation after every step instead of the final screen.
+     *
+     * "model" is the compact projection an interaction bug lives in --
+     * which line is selected, where the viewport is, where the highlight
+     * lands. "screen" is the whole grid per step, for when you need the film.
+     *
+     * This exists because the highlight is an ATTRIBUTE, and the screen dump
+     * records characters only. A selection that moves changes nothing a
+     * golden can see -- so without this there is no way to show, from
+     * outside the program, that a key did what it should.
+     */
+    std::string trace;
 };
 
 void printUsage( std::FILE* out )
@@ -73,6 +87,9 @@ void printUsage( std::FILE* out )
         "  --session             start a Unify engine (default interactively)\n"
         "  --welcome             open help at startup (default interactively)\n"
         "  --no-welcome          start without the help panel\n"
+        "  --trace=model         after each step print where the selection\n"
+        "                        and viewport are, instead of the screen\n"
+        "  --trace=screen        after each step print the whole screen\n"
         "  --no-session          do not start an engine\n"
         "  -h, --help            show this text\n"
         "\n"
@@ -141,6 +158,17 @@ bool parseArgs( int argc, char** argv, Options& out, std::string& out_error )
             const char* v = NULL;
             if( !takeValue( v ) ) { out_error = "--script needs a file"; return false; }
             out.scriptPath = v;
+        } else if( name == "--trace" ) {
+            const char* v = NULL;
+            if( !takeValue( v ) ) {
+                out_error = "--trace needs model or screen";
+                return false;
+            }
+            out.trace = v;
+            if( out.trace != "model" && out.trace != "screen" ) {
+                out_error = "--trace must be 'model' or 'screen'";
+                return false;
+            }
         } else if( name == "--welcome" ) {
             out.welcome = true;
         } else if( name == "--no-welcome" ) {
@@ -283,6 +311,33 @@ void buildModel( Model& model, const Options& options, int width, int height )
 }
 
 
+/** One `--trace=model` record: what a user would perceive right now. */
+std::string traceLine( const Model& model, const std::string& what )
+{
+    std::ostringstream os;
+    os << what;
+    while( os.str().size() < 14 ) { os << ' '; }
+
+    const Buffer* focused = model.focusedBuffer();
+    os << " focus=" << ( focused ? focused->title : std::string( "-" ) );
+
+    bool valid = false;
+    const ScrollView scroll = model.observeFocusedScroll( valid );
+    if( valid ) {
+        os << " line=" << scroll.cursorLine
+           << " top=" << scroll.topLine
+           << " row=" << scroll.cursorScreenRow()
+           << " rows=" << scroll.viewportRows
+           << " of=" << scroll.totalLines;
+    }
+    os << " tiles=" << model.layout().tileCount();
+    if( !model.message().empty() ) {
+        os << " msg=\"" << model.message() << "\"";
+    }
+    return os.str();
+}
+
+
 int runScript( const Options& options )
 {
     /*
@@ -339,6 +394,16 @@ int runScript( const Options& options )
         return 2;
     }
 
+    const auto emitTrace = [ & ]( const std::string& what ) {
+        if( options.trace == "model" ) {
+            std::printf( "%s\n", traceLine( model, what ).c_str() );
+        } else if( options.trace == "screen" ) {
+            std::printf( "--- %s\n%s", what.c_str(),
+                         view( model ).toText().c_str() );
+        }
+    };
+    emitTrace( "<start>" );
+
     for( std::size_t i = 0; i < script.size(); ++i ) {
         const ScriptStep& step = script[i];
 
@@ -354,6 +419,11 @@ int runScript( const Options& options )
             event.width = step.width;
             event.height = step.height;
             ( void ) fold( model, event );
+            {
+                std::ostringstream what;
+                what << "resize " << step.width << "x" << step.height;
+                emitTrace( what.str() );
+            }
             continue;
         }
 
@@ -369,6 +439,7 @@ int runScript( const Options& options )
             if( !requests.empty() ) {
                 settle();
             }
+            emitTrace( step.keys[k].toString() );
         }
         if( model.quitting() ) {
             break;
@@ -376,6 +447,10 @@ int runScript( const Options& options )
     }
 
     settle();
+
+    if( !options.trace.empty() ) {
+        return 0;   /* you asked for the film, not the frame */
+    }
 
     const CellGrid grid = view( model );
     std::fputs( grid.toText().c_str(), stdout );
