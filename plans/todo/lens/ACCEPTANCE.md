@@ -108,9 +108,10 @@ Three harnesses, all in the repo's established golden style
 
 *A window manager and a help system, before any feature needs either.*
 
-> **Progress note (2026-09-07).** G1.1 through G1.7 are done; the "H"
-> criterion is half done and is what keeps the gate open. See the per-row
-> notes. FTXUI is in, pinned to v7.0.3, in one file behind `ITerminal`.
+> **Progress note (2026-09-07). G1 IS CLOSED.** All seven numbered criteria
+> and the "H" criterion pass. FTXUI is in, pinned to v7.0.3, in one file
+> behind `ITerminal`. Seventeen golden screens, all recorded through
+> `--script` with no terminal involved.
 >
 > One limitation stated rather than discovered later: the FTXUI backend is
 > compile- and link-verified but its INTERACTIVE behaviour is not tested,
@@ -118,7 +119,7 @@ Three harnesses, all in the repo's established golden style
 > can prove is proved through `--script` with no terminal at all, which is
 > why that mechanism was built first; what remains untested is one file,
 > deliberately kept as small as it is so that "we could not test it" covers
-> as little as possible. A first run on a real terminal is owed.
+> as little as possible. **A first run on a real terminal is owed.**
 
 | # | Criterion |
 | --- | --- |
@@ -129,7 +130,7 @@ Three harnesses, all in the repo's established golden style
 | G1.5 **[done]** | FTXUI containment: no file outside `lens/src/term/` includes an FTXUI header. Automated grep, gating. *(2026-09-07: FTXUI v7.0.3, pinned, in one file behind `ITerminal`. Verified the grep can FAIL on a deliberately bad tree, not merely pass on this one.)* |
 | G1.6 **[done]** | `model/` and `panels/` include no engine header. Automated grep, gating. *(2026-09-07: with one deliberate exemption -- `vault-unify-session.hpp` IS permitted, since it is the boundary, G0.1 proves it pure, and seeing it is the point of having drawn one. `layout/` and `modreg/` are held to the stricter rule of no dependencies at all.)* |
 | G1.7 **[done]** | `--script FILE` runs headless, dumps the final grid and exits — the mechanism every later golden depends on. *(2026-09-07: one step per line, spelled as the keymap spells it. `resize COLSxROWS` is a step too -- G1.3's claim is about what a resize does to a layout, and a script that could only type keys could not express it.)* |
-| **H** **[partly done]** | `F1` opens the Help panel from every focused region; the hint line is non-empty in every golden; `M-x` lists every registered command; the generated keymap page matches the live command table (asserted, not eyeballed); a command registered without help text fails the build. *(2026-09-07: the GENERATED half is done and asserted -- the hint line is non-empty in every golden and shows a held chord prefix rather than going stale, the keymap page is produced from the live table so it cannot disagree with the bindings, and a command with blank help is refused at registration. The INTERACTIVE half -- the Help panel `F1` opens and the `M-x` palette -- is outstanding: both need a panel and a minibuffer, so both are the first thing G2 brings. Until then `F1` and `M-x` say so in the status line rather than doing nothing. **G1 does not close until they exist.**)* |
+| **H** **[done]** | `F1` opens the Help panel from every focused region; the hint line is non-empty in every golden; `M-x` lists every registered command; the generated keymap page matches the live command table (asserted, not eyeballed); a command registered without help text fails the build. *(2026-09-07: `F1` opens help BESIDE the work rather than over it -- the whole argument for tiling -- reuses its tile rather than filling the screen, and is contextual (from inside help it opens the help topic). `M-x` is a tile, not an overlay, so it obeys the same solver and cannot clip at 80×24; it lists every command including unbound ones, since discovering a command exists must not require it to have a key, and it is modal, so typing `x` filters rather than beginning a `C-x` chord. The command table refuses blank help at registration. Two bugs the tests caught immediately: the help contained the literal text `[[link]]` as prose, which parses as a link to a topic that does not exist -- a dead link in the first help page anyone reads -- and the palette had to be closed BEFORE running a command, or a layout command would split the palette's own tile instead of the user's.)* |
 
 ## G2 — Transcript
 

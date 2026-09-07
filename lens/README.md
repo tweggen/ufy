@@ -101,7 +101,8 @@ goes to stdout.
 | `lens-layout` | The tiling tree and the geometry solver, including a seeded property test that asserts the coverage invariant cell by cell over random layouts at five geometries. |
 | `lens-modreg` | The command table, keymaps, and the help surfaces generated from them. |
 | `lens-grid` | The character grid: UTF-8, display width, clipping, boxes. |
-| `lens-screen-*` | Thirteen golden screens: four stock layouts at 120×40 and 80×24, plus tiling gestures, maximise, a resize round trip, and an unfinished chord. |
+| `lens-shell` | `fold`, the Help panel and the `M-x` palette: contextual help, no dead links, palette modality and filtering. |
+| `lens-screen-*` | Seventeen golden screens: four stock layouts at 120×40 and 80×24, plus tiling gestures, maximise, a resize round trip, an unfinished chord, help at both geometries, and the palette open and filtered. |
 | `lens-too-small` | That lens refuses below 80×24 — and renders at exactly 80×24, so the gate is not an off-by-one. |
 | `lens-resize-roundtrip` | That shrinking to 80×24 and back restores the screen *exactly*, not merely to something valid. |
 | `lens-layering` | That FTXUI stays inside `src/term/`, and that `model/` and `panels/` include no engine header. |
@@ -145,10 +146,9 @@ than by convention.
 
 Gate **G0** (the session boundary) is closed; see
 [`../plans/todo/lens/ACCEPTANCE.md`](../plans/todo/lens/ACCEPTANCE.md).
-Gate **G1** (the shell) is substantially done — tiling, the four stock
-layouts, degradation, `--script`, the command table and the generated help
-surfaces — with the interactive half of its help criterion (the Help panel
-that `F1` opens, and the `M-x` palette) still outstanding.
+Gate **G1** (the shell) is closed: tiling, the four stock layouts,
+degradation, `--script`, the command table, the generated help surfaces, the
+Help panel `F1` opens and the `M-x` command palette.
 
 **No panel exists yet.** What the layouts show is placeholder text naming
 what each panel will show and which gate brings it. That is deliberate: the

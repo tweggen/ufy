@@ -1,0 +1,40 @@
+ File  Edit  World  Query  Image  Debug  Window  Help
+┌ Catalogue ─────────────────────┐┌ Source ────────────────────────────────────────────────────────────────────────────┐
+│module -> (name, arity)         ││the selected definition                                                             │
+│awaiting listing (G3)           ││awaiting source (G3)                                                                │
+│                                ││                                                                                    │
+│                                ││                                                                                    │
+│                                ││                                                                                    │
+│                                ││                                                                                    │
+│                                ││                                                                                    │
+│                                ││                                                                                    │
+│                                ││                                                                                    │
+│                                ││                                                                                    │
+│                                ││                                                                                    │
+│                                ││                                                                                    │
+└────────────────────────────────┘│                                                                                    │
+┌ Help ──────────────────────────┐│                                                                                    │
+│Each tile shows a panel. None of││                                                                                    │
+│the shell knows about tiles, not││                                                                                    │
+│                                ││                                                                                    │
+│  Transcript    the REPL: goals,│└────────────────────────────────────────────────────────────────────────────────────┘
+│  Catalogue     module -> (name,│┌ Diagnostics ───────────────────────────────────────────────────────────────────────┐
+│  Source        the selected def││(none)                                                                              │
+│  Diagnostics   parse and runtim││                                                                                    │
+│  Solutions     the current quer││                                                                                    │
+│  Inspector     one binding as a││                                                                                    │
+│  Trace         goal stack, brea││                                                                                    │
+│  Image         the current imag││                                                                                    │
+└────────────────────────────────┘└────────────────────────────────────────────────────────────────────────────────────┘
+┌ Transcript ──────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│?-                                                                                                                    │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+ gen 0 · 0 clauses · idle · no session · browse
+F1 Help  F10 Menu

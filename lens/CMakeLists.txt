@@ -97,11 +97,29 @@ set_tests_properties(lens-modreg PROPERTIES TIMEOUT 120)
 
 add_library(lens-model STATIC
     "${CMAKE_CURRENT_SOURCE_DIR}/src/model/cell-grid.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/model/help-content.cpp"
 )
+target_link_libraries(lens-model PUBLIC lens-modreg)
 target_include_directories(lens-model PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 if(NOT MSVC)
     target_compile_options(lens-model PRIVATE -Wall -Wextra)
 endif()
+
+# The shell's own behaviour needs the model, the view and the layouts, so it
+# links the same sources the app does rather than a library -- they are not
+# worth a library of their own until a second consumer appears.
+add_executable(lens-shell-test
+    "${CMAKE_CURRENT_SOURCE_DIR}/test/shell-test.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/app/layouts.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/model/model.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/model/view.cpp"
+)
+target_link_libraries(lens-shell-test PRIVATE lens-model lens-modreg lens-layout)
+if(NOT MSVC)
+    target_compile_options(lens-shell-test PRIVATE -Wall -Wextra)
+endif()
+add_test(NAME lens-shell COMMAND lens-shell-test)
+set_tests_properties(lens-shell PROPERTIES TIMEOUT 120)
 
 add_executable(lens-grid-test "${CMAKE_CURRENT_SOURCE_DIR}/test/grid-test.cpp")
 target_link_libraries(lens-grid-test PRIVATE lens-model)
@@ -206,6 +224,10 @@ if(BASH_PROGRAM)
         "maximise-120x40|120x40|browse|maximise"
         "resize-roundtrip|120x40|browse|resize-roundtrip"
         "chord-pending|120x40|browse|chord-pending"
+        "help-120x40|120x40|browse|help"
+        "help-80x24|80x24|browse|help"
+        "palette-120x40|120x40|browse|palette"
+        "palette-filtered|120x40|browse|palette-filtered"
     )
 
     foreach(LENS_SCREEN ${LENS_SCREENS})

@@ -1,0 +1,24 @@
+ File  Edit  World  Query  Image  Debug  Window  Help
+┌ Catalogue ─────────┐┌ Source ────────────────────────────────────────────────┐
+│module -> (name, ari││the selected definition                                 │
+│awaiting listing (G3││awaiting source (G3)                                    │
+│                    ││                                                        │
+│                    ││                                                        │
+│                    ││                                                        │
+│                    ││                                                        │
+└────────────────────┘│                                                        │
+┌ Help ──────────────┐│                                                        │
+│Each tile shows a pa│└────────────────────────────────────────────────────────┘
+│the shell knows abou│┌ Diagnostics ───────────────────────────────────────────┐
+│                    ││(none)                                                  │
+│  Transcript    the ││                                                        │
+│  Catalogue     modu││                                                        │
+└────────────────────┘└────────────────────────────────────────────────────────┘
+┌ Transcript ──────────────────────────────────────────────────────────────────┐
+│?-                                                                            │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+ gen 0 · 0 clauses · idle · no session · browse
+F1 Help  F10 Menu

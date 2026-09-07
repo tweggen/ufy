@@ -204,6 +204,9 @@ void buildModel( Model& model, const Options& options, int width, int height )
     model.keymap() = defaultKeymap();
     applyStockLayout( model, options.layout );
 
+    /* After both, so the generated keymap page reflects real bindings. */
+    model.rebuildHelp();
+
     std::ostringstream status;
     status << "gen 0 \xc2\xb7 0 clauses \xc2\xb7 idle \xc2\xb7 no session \xc2\xb7 "
            << options.layout;
