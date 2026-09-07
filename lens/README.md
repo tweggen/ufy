@@ -18,11 +18,14 @@ works today; the short version is that the shell exists, no panel does yet.
 ## Requirements
 
 - **CMake** ≥ 3.16
-- **A C++17 compiler.**
+- **A C++17 compiler.** GCC and Clang on Linux and macOS; MSVC or MinGW-w64
+  on Windows (see [Windows 11, with vcpkg](#windows-11-with-vcpkg)).
 - **Boost** — inherited from the engine, which lens builds as a subproject.
-  See [`../unify/README.md`](../unify/README.md).
+  See [`../unify/README.md`](../unify/README.md). On Windows this comes from
+  vcpkg via `VCPKG_ROOT`.
 - **bash** — for the golden-screen and layering harnesses. CMake skips
-  those tests with a warning if it is missing; the C++ tests still run.
+  those tests with a warning if it is missing; the C++ tests still run. Git
+  Bash counts.
 - **Network access at configure time**, once, to fetch FTXUI — unless you
   build with `-DLENS_BUILD_TERM=OFF` (see below).
 
@@ -37,6 +40,91 @@ ctest --test-dir build/lens --output-on-failure
 lens builds the engine as a subproject, so this one command builds both and
 `ctest` runs both suites. There is no top-level CMake file in this
 repository; each module builds on its own, the way `unify/` does.
+
+### Windows 11, with vcpkg
+
+> **Untested.** CI runs on Linux only, and everything below was written for
+> Windows rather than verified on it. Treat it as a starting point, not as a
+> recipe known to work — and please correct this section when you find out
+> what actually happens.
+
+Boost comes from vcpkg. `VCPKG_ROOT` is not read by CMake on its own, so
+point `CMAKE_TOOLCHAIN_FILE` at it explicitly:
+
+```sh
+"$VCPKG_ROOT/vcpkg" install boost-spirit boost-thread boost-filesystem
+
+cmake -S lens -B build/lens \
+      -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
+      -DCMAKE_BUILD_TYPE=RelWithDebInfo
+cmake --build build/lens --config RelWithDebInfo --parallel
+ctest --test-dir build/lens -C RelWithDebInfo --output-on-failure
+```
+
+This works from Git Bash, PowerShell or `cmd`; only the quoting changes. In
+Git Bash a Windows-style `VCPKG_ROOT` (`C:\vcpkg`) is fine — CMake accepts
+mixed separators — but quote the variable, because a path containing
+`Program Files` will otherwise split.
+
+vcpkg's Boost is modular, so if a header turns up missing, install the
+matching `boost-<lib>` port rather than reaching for anything larger. The
+sledgehammer, `vcpkg install boost`, works and takes a long time.
+
+Two things specific to this codebase on Windows:
+
+- **`UNIFY_BUILD_XDEBUG` already defaults to `OFF`** off UNIX. The xdebug TCP
+  backend has a POSIX `::access()` call, so it is excluded rather than
+  patched. Nothing else in the engine needs it.
+- **Boost.Spirit Qi and MSVC object limits.** The parser is a Qi grammar,
+  and Qi grammars are notorious for exhausting MSVC's object-file limits. If
+  you get `C1128`, add `/bigobj`:
+
+  ```sh
+  cmake -S lens -B build/lens \
+        -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
+        -DCMAKE_CXX_FLAGS="/bigobj"
+  ```
+
+  This is a predicted failure, not an observed one.
+
+The same toolchain file builds the engine on its own, if that is all you
+want: `cmake -S unify -B build/unify -DCMAKE_TOOLCHAIN_FILE=…`.
+
+#### MSYS2, if you would rather have GCC
+
+Git Bash ships no compiler — it is a cut-down MSYS2 with no `pacman` — so a
+GCC build means installing MSYS2 separately and using **its** MINGW64 shell:
+
+```sh
+pacman -S --needed mingw-w64-x86_64-gcc mingw-w64-x86_64-cmake \
+                   mingw-w64-x86_64-boost
+
+cmake -S lens -B build/lens -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=RelWithDebInfo
+cmake --build build/lens --parallel
+```
+
+No vcpkg, no `/bigobj` question, and a `bash` the test harnesses can use.
+
+#### Running it, which is the part that will not work under Git Bash
+
+Building from Git Bash is fine. *Running* `unify-lens` there is not, and this
+was known in advance — [`ARCHITECTURE.md`](../plans/todo/lens/ARCHITECTURE.md)
+§6.3: mintty is a pty front end, not a Win32 console, so a native console
+application gets no console handle. lens detects that and prints one line
+naming the problem and the `winpty` workaround rather than drawing a broken
+screen.
+
+**Windows Terminal, PowerShell and `cmd` are the supported path.** Under Git
+Bash, use `winpty unify-lens`, or `unify-run -i` for the plain REPL, or
+`--script` for anything headless.
+
+One caveat, and it is a weakness in lens rather than in Windows: that
+detection currently uses `_isatty`, which is very likely the *wrong* test
+here. Under `winpty` the standard streams are proxied through pipes, so
+`_isatty` may report false even though a real console exists — meaning lens
+could refuse to start in exactly the situation `winpty` was meant to rescue.
+The right test is `GetConsoleMode` on the actual handle. Nobody has run it
+either way yet.
 
 ### FTXUI, and doing without it
 
