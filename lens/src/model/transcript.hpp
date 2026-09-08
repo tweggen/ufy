@@ -110,8 +110,13 @@ extern const char* const kTranscriptPrompt;
  * Deliberately duplicated rather than shared with the engine's
  * `toDisplayString()`: sharing it would make `model/` link the engine, and
  * the model being link-free from the engine is what lets the whole UI be
- * tested without one. It is twenty lines, and the two will not drift because
- * a golden screen pins this one.
+ * tested without one. It is twenty lines.
+ *
+ * The two have since diverged, on purpose and in two places -- this one
+ * leaves `Str` unquoted, and marks a cut with U+2026 rather than "..." --
+ * each argued where it happens. So do not "resynchronise" them, and do not
+ * rely on a golden screen to notice: one golden reaches one arm, and it is
+ * `shell-test.cpp` that pins all eight.
  */
 std::string renderValue( const us::Value& value );
 

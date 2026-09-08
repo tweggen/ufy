@@ -8,12 +8,18 @@
  * topic, M-x lists every command, the palette is modal, no help link is dead
  * -- is all assertable without rendering anything, which is the point of the
  * fold/view split.
+ *
+ * It also pins `renderValue`, which is model code with the same property and
+ * had no test at all: the only thing reaching it was one golden screen, and
+ * that screen exercises exactly one of its eight arms. See the section at the
+ * end.
  */
 
 #include "../../unify/test/session/test-harness.hpp"
 
 #include "../src/app/layouts.hpp"
 #include "../src/model/model.hpp"
+#include "../src/model/transcript.hpp"
 #include "../src/modreg/help.hpp"
 #include "../src/model/view.hpp"
 
@@ -58,6 +64,96 @@ void typeText( Model& model, const std::string& text )
         ( void ) fold( model, event );
     }
 }
+
+/*
+ * Value builders. Written out rather than reached for through a session,
+ * because half of these kinds no session in this tree can produce: `Str` and
+ * `Float` are unreachable from the engine by construction (quoting is lost in
+ * the parser, and there are no floats), and `Var` waits on engine item E7.4.
+ * A hand-built tree is the only way to pin the arms that render them, and a
+ * remote core or the fake session will send them long before lens's own
+ * engine does.
+ */
+us::Value vAtom( const char* name )
+{
+    us::Value v;
+    v.kind = us::Value::Kind::Atom;
+    v.name = name;
+    return v;
+}
+
+us::Value vInt( std::int64_t i )
+{
+    us::Value v;
+    v.kind = us::Value::Kind::Int;
+    v.i = i;
+    return v;
+}
+
+us::Value vFloat( double f )
+{
+    us::Value v;
+    v.kind = us::Value::Kind::Float;
+    v.f = f;
+    return v;
+}
+
+us::Value vStr( const char* text )
+{
+    us::Value v;
+    v.kind = us::Value::Kind::Str;
+    v.name = text;
+    return v;
+}
+
+us::Value vVar( const char* name )
+{
+    us::Value v;
+    v.kind = us::Value::Kind::Var;
+    v.name = name;
+    return v;
+}
+
+us::Value vCons( const char* functor, std::vector<us::Value> args )
+{
+    us::Value v;
+    v.kind = us::Value::Kind::Cons;
+    v.name = functor;
+    v.args = args;
+    return v;
+}
+
+us::Value vArray( std::vector<us::Value> args )
+{
+    us::Value v;
+    v.kind = us::Value::Kind::Array;
+    v.args = args;
+    return v;
+}
+
+us::Value vMap( std::vector<std::pair<std::string, us::Value>> pairs )
+{
+    us::Value v;
+    v.kind = us::Value::Kind::Map;
+    v.pairs = pairs;
+    return v;
+}
+
+/** Mark it truncated, as `applyBudget` would after cutting children. */
+us::Value cut( us::Value v )
+{
+    v.truncated = true;
+    return v;
+}
+
+/**
+ * The cut mark `renderValue` uses, spelled the same way it is spelled there.
+ *
+ * Escaped, not written as a glyph: this string is the assertion, and an
+ * assertion that depends on the test file's own encoding surviving a
+ * checkout would fail for reasons that have nothing to do with the code.
+ */
+const std::string kCutMark = "\u2026";
 
 const Buffer* findPanel( const Model& model, PanelKind kind )
 {
@@ -570,6 +666,141 @@ int main()
         const Buffer* palette = findPanel( model, PanelKind::Palette );
         UT_CHECK( palette != NULL );
         UT_CHECK_EQ( palette->palette.input, std::string( "spli" ) );
+    } );
+
+    // -- rendering values --------------------------------------------------
+    //
+    // Engine item E7 turns every binding from a flat `Str` into a real tree,
+    // so seven of these eight arms are about to start firing for the first
+    // time. They are pinned here rather than through a golden screen because
+    // a screen can only show what the engine of the day can produce, and
+    // `Str`, `Float` and `Var` are each unproducible by this engine for a
+    // different reason.
+
+    registry.add( "renderValue renders every leaf kind", []() {
+        UT_CHECK_EQ( renderValue( vAtom( "red" ) ), std::string( "red" ) );
+        UT_CHECK_EQ( renderValue( vInt( -7 ) ), std::string( "-7" ) );
+        UT_CHECK_EQ( renderValue( vFloat( 2.5 ) ), std::string( "2.5" ) );
+        UT_CHECK_EQ( renderValue( vStr( "hello" ) ), std::string( "hello" ) );
+        UT_CHECK_EQ( renderValue( vVar( "$p" ) ), std::string( "$p" ) );
+    } );
+
+    registry.add( "renderValue does not quote a Str", []() {
+        /*
+         * Not an oversight and not a stopgap. Quoting would be lens asserting
+         * that a foreign core's Str means "text rather than a number", which
+         * lens cannot know -- and this engine never sends one at all, since
+         * `red` and `"red"` are byte-identical after parsing. The engine's
+         * own toDisplayString() DOES quote; the divergence is deliberate and
+         * this is the test that stops someone re-aligning them.
+         */
+        const std::string rendered = renderValue( vStr( "1" ) );
+        UT_CHECK_MSG( rendered.find( '"' ) == std::string::npos,
+                      "renderValue quoted a Str, rendering '" << rendered
+                          << "'; a quoted `1` claims a type lens cannot know" );
+        UT_CHECK_EQ( rendered, std::string( "1" ) );
+    } );
+
+    registry.add( "renderValue renders every compound kind", []() {
+        UT_CHECK_EQ( renderValue( vCons( "point", { vInt( 1 ), vInt( 2 ) } ) ),
+                     std::string( "point( 1, 2 )" ) );
+        UT_CHECK_EQ( renderValue( vArray( { vInt( 1 ), vAtom( "red" ) } ) ),
+                     std::string( "[ 1, red ]" ) );
+        UT_CHECK_EQ( renderValue( vMap( { { "a", vInt( 1 ) },
+                                          { "b", vAtom( "red" ) } } ) ),
+                     std::string( "{ a: 1, b: red }" ) );
+
+        /*
+         * A Cons with no arguments and nothing cut is a bare name -- and it
+         * must stay one, or the case below stops distinguishing anything.
+         * The engine never sends this shape (a 0-arity term becomes an
+         * Atom), but the wire format permits it.
+         */
+        UT_CHECK_EQ( renderValue( vCons( "nil", {} ) ), std::string( "nil" ) );
+    } );
+
+    registry.add( "renderValue nests", []() {
+        const us::Value value = vMap( {
+            { "here", vArray( { vCons( "point", { vInt( 1 ), vInt( 2 ) } ),
+                                vVar( "$rest" ) } ) } } );
+        UT_CHECK_EQ( renderValue( value ),
+                     std::string( "{ here: [ point( 1, 2 ), $rest ] }" ) );
+    } );
+
+    registry.add( "a truncated leaf says so", []() {
+        UT_CHECK_EQ( renderValue( cut( vAtom( "verylongatom" ) ) ),
+                     "verylongatom" + kCutMark );
+        UT_CHECK_EQ( renderValue( cut( vStr( "verylongtext" ) ) ),
+                     "verylongtext" + kCutMark );
+    } );
+
+    registry.add( "a truncated compound cannot be mistaken for a whole one",
+                  []() {
+        /*
+         * THE case. `applyBudget` cuts children breadth-first, so a compound
+         * whose whole argument list did not fit arrives with `args` empty and
+         * `truncated` set. Rendering that on the strength of `args.empty()`
+         * alone printed `point` -- a term that exists, that is not this term,
+         * and that carries no sign it was ever cut. SESSION-API section 3
+         * calls showing a wrong term rather than a shortened one the failure
+         * the flag exists to prevent; this is that failure, and it is why the
+         * assertion below is written as an inequality first.
+         */
+        const std::string rendered = renderValue( cut( vCons( "point", {} ) ) );
+        UT_CHECK_MSG( rendered != "point",
+                      "a Cons that lost every argument to the budget rendered "
+                      "as the bare atom 'point' -- a different term, shown as "
+                      "a whole one" );
+        UT_CHECK_EQ( rendered, "point( " + kCutMark + " )" );
+    } );
+
+    registry.add( "a truncated compound marks the cut inside its brackets",
+                  []() {
+        us::Value cons = vCons( "point", { vInt( 1 ) } );
+        cons.truncated = true;
+        UT_CHECK_EQ( renderValue( cons ), "point( 1, " + kCutMark + " )" );
+
+        us::Value array = vArray( { vInt( 1 ) } );
+        array.truncated = true;
+        UT_CHECK_EQ( renderValue( array ), "[ 1, " + kCutMark + " ]" );
+        UT_CHECK_EQ( renderValue( cut( vArray( {} ) ) ),
+                     "[ " + kCutMark + " ]" );
+
+        us::Value map = vMap( { { "a", vInt( 1 ) } } );
+        map.truncated = true;
+        UT_CHECK_EQ( renderValue( map ), "{ a: 1, " + kCutMark + " }" );
+        UT_CHECK_EQ( renderValue( cut( vMap( {} ) ) ),
+                     "{ " + kCutMark + " }" );
+    } );
+
+    registry.add( "truncation is marked where it happened, not at the top",
+                  []() {
+        /*
+         * The depth rule marks the node it stopped at, which is usually deep
+         * inside an otherwise complete term. A renderer that hoisted the mark
+         * to the end of the line would say the wrong thing about which part
+         * of the answer is missing.
+         */
+        const us::Value value =
+            vCons( "outer", { vInt( 1 ), cut( vCons( "inner", {} ) ) } );
+        UT_CHECK_EQ( renderValue( value ),
+                     "outer( 1, inner( " + kCutMark + " ) )" );
+    } );
+
+    registry.add( "renderBindings joins one solution's bindings", []() {
+        std::vector<std::pair<std::string, us::Value>> bindings;
+        bindings.push_back( { "$x", vAtom( "red" ) } );
+        bindings.push_back( { "$y", vCons( "point", { vInt( 1 ), vInt( 2 ) } ) } );
+        UT_CHECK_EQ( renderBindings( bindings ),
+                     std::string( "$x = red, $y = point( 1, 2 )" ) );
+
+        /*
+         * Empty, not "yes": a solution with no bindings is the model's
+         * business (model.cpp says "yes"), and renderBindings saying it too
+         * would put the word in the line twice the day E7.4 starts emitting
+         * unbound Var rows.
+         */
+        UT_CHECK_EQ( renderBindings( {} ), std::string( "" ) );
     } );
 
     // -- the frame ---------------------------------------------------------
