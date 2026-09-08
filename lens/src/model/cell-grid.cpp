@@ -68,6 +68,26 @@ bool inRanges( char32_t ch, const Range* ranges, std::size_t count )
 
 const Cell kBlankCell = Cell();
 
+/*
+ * Box drawing, as escapes rather than as literal glyphs.
+ *
+ * Two reasons, and the second is the one that bit. A named constant says
+ * which corner it is, where the glyph itself renders ambiguously in many
+ * editors and identically to its neighbours at small sizes. And an escape
+ * means nothing about this file depends on the compiler agreeing that the
+ * source is UTF-8 -- MSVC assumes the system codepage unless told otherwise,
+ * and read `U'\u250C'` as several characters, which is error C2015.
+ *
+ * The build passes /utf-8 to MSVC as well, because string literals elsewhere
+ * still need it. This makes the character constants correct even without it.
+ */
+const char32_t kBoxHorizontal = U'\u2500';   /* -- */
+const char32_t kBoxVertical   = U'\u2502';   /* |  */
+const char32_t kBoxTopLeft    = U'\u250C';
+const char32_t kBoxTopRight   = U'\u2510';
+const char32_t kBoxBottomLeft = U'\u2514';
+const char32_t kBoxBottomRight= U'\u2518';
+
 } // namespace
 
 int displayWidth( char32_t ch )
@@ -271,18 +291,18 @@ void CellGrid::drawBox( int x, int y, int w, int h, const std::string& title,
     }
 
     for( int col = x + 1; col < x + w - 1; ++col ) {
-        put( col, y, U'─', attr );
-        put( col, y + h - 1, U'─', attr );
+        put( col, y, kBoxHorizontal, attr );
+        put( col, y + h - 1, kBoxHorizontal, attr );
     }
     for( int row = y + 1; row < y + h - 1; ++row ) {
-        put( x, row, U'│', attr );
-        put( x + w - 1, row, U'│', attr );
+        put( x, row, kBoxVertical, attr );
+        put( x + w - 1, row, kBoxVertical, attr );
     }
 
-    put( x, y, U'┌', attr );
-    put( x + w - 1, y, U'┐', attr );
-    put( x, y + h - 1, U'└', attr );
-    put( x + w - 1, y + h - 1, U'┘', attr );
+    put( x, y, kBoxTopLeft, attr );
+    put( x + w - 1, y, kBoxTopRight, attr );
+    put( x, y + h - 1, kBoxBottomLeft, attr );
+    put( x + w - 1, y + h - 1, kBoxBottomRight, attr );
 
     if( title.empty() ) {
         return;

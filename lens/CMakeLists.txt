@@ -26,6 +26,28 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# ---------------------------------------------------------------------------
+# MSVC needs telling two things that GCC and Clang infer.
+#
+#   /utf-8   The sources are UTF-8 and so are their literals. MSVC otherwise
+#            reads them in the system codepage, which turns a box-drawing
+#            character constant into "error C2015: too many characters in
+#            constant" and silently corrupts non-ASCII string literals that
+#            do compile.
+#
+#   /bigobj  Boost.Spirit Qi grammars generate enormous numbers of template
+#            instantiations, and the parser exceeds MSVC's default per-object
+#            section limit (error C1128). Harmless everywhere else -- it only
+#            raises a ceiling.
+#
+# Set directory-wide rather than per target, so tests and any target added
+# later inherit them; a translation unit that needs one of these and does not
+# get it fails in a way that names neither.
+# ---------------------------------------------------------------------------
+if(MSVC)
+    add_compile_options(/utf-8 /bigobj)
+endif()
+
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "Build type" FORCE)
 endif()

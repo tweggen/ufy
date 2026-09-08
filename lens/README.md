@@ -98,17 +98,21 @@ Three things specific to this codebase on Windows:
 - **`UNIFY_BUILD_XDEBUG` already defaults to `OFF`** off UNIX. The xdebug TCP
   backend has a POSIX `::access()` call, so it is excluded rather than
   patched. Nothing else in the engine needs it.
-- **Boost.Spirit Qi and MSVC object limits.** The parser is a Qi grammar,
-  and Qi grammars are notorious for exhausting MSVC's object-file limits. If
-  you get `C1128`, add `/bigobj`:
+- **`/utf-8` and `/bigobj` are set for you.** Both CMakeLists pass them
+  under MSVC, so neither is something you need to remember. `/utf-8` because
+  the sources and their literals are UTF-8 and MSVC otherwise reads them in
+  the system codepage — which turns a box-drawing character constant into
+  `error C2015: too many characters in constant` and silently corrupts
+  non-ASCII string literals that *do* compile. `/bigobj` because Boost.Spirit
+  Qi generates enough template instantiations to exceed MSVC's default
+  per-object section limit (`C1128`).
 
-  ```sh
-  cmake -S lens -B build/lens \
-        -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
-        -DCMAKE_CXX_FLAGS="/bigobj"
-  ```
-
-  This is a predicted failure, not an observed one.
+- **vcpkg's Boost is modular, and a missing port looks like a broken
+  source file.** `boost-format` is only needed for the xdebug backend, which
+  is off by default away from UNIX. If a `boost/*.hpp` genuinely cannot be
+  found, install the matching `boost-<lib>` port rather than assuming the
+  include is wrong — but check first that the include is not simply
+  unnecessary, which is what two of them turned out to be.
 
 The same toolchain file builds the engine on its own, if that is all you
 want: `cmake -S unify -B build/unify -DCMAKE_TOOLCHAIN_FILE=…`.

@@ -14,7 +14,6 @@
 #include <sstream>
 
 #include <boost/lexical_cast.hpp>
-#include <boost/format.hpp>
 
 #include <vault-unify.hpp>
 #include "vault-unify-xdebug.hpp"
