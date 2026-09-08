@@ -30,6 +30,7 @@
 
 #include "../../unify/test/session/test-harness.hpp"
 
+#include "../src/app/driver.hpp"
 #include "../src/app/layouts.hpp"
 #include "../src/model/model.hpp"
 #include "../src/model/view.hpp"
@@ -42,113 +43,20 @@ namespace {
 using namespace unify_test;
 using namespace lens;
 
-/**
- * Drives a model with keys and records what the user would perceive after
- * each one.
- *
- * Deliberately not a subprocess: the point is to run thousands of key
- * sequences, and an interaction bug that needs a pty to reproduce is an
- * interaction bug nobody will write a test for.
+/*
+ * The Driver used to live here. It moved to src/app/driver.hpp when the
+ * `--spec` runner needed the same apparatus: two callers with two ideas of
+ * what "the cursor is on line 3" means would let a spec case and a C++ case
+ * with the same words in them disagree, and nobody would know which was
+ * right. So there is one Driver, and `press` reports a bad key sequence by
+ * returning false rather than by knowing about this harness.
  */
-class Driver {
-public:
-    struct Step {
-        std::string key;
-        ScrollView  scroll;
-        bool        scrollValid = false;
-        std::size_t tiles = 0;
-        std::string focusedPanel;
-        std::string message;
-    };
-
-    Driver( const char* layout = "browse", int w = 120, int h = 40 )
-    {
-        m_model.setGeometry( w, h );
-        registerShellCommands( m_model );
-        m_model.keymap() = defaultKeymap();
-        applyStockLayout( m_model, layout );
-        m_model.rebuildHelp();
-        record( "<start>" );
+void pressOrFail( Driver& driver, const std::string& keys )
+{
+    if ( !driver.press( keys ) ) {
+        UT_FAIL( "the test has a bad key sequence: '" << keys << "'" );
     }
-
-    Model& model() { return m_model; }
-
-    /** Feed one key sequence, recording an observation per KEY. */
-    void press( const std::string& keys )
-    {
-        KeySeq seq;
-        if ( !parseKeySeq( keys, seq ) ) {
-            UT_FAIL( "the test has a bad key sequence: '" << keys << "'" );
-        }
-        for ( const Key& key : seq ) {
-            Event event;
-            event.kind = Event::Kind::Key;
-            event.key = key;
-            ( void ) fold( m_model, event );
-            record( keys );
-        }
-    }
-
-    void pressChar( char32_t ch )
-    {
-        Event event;
-        event.kind = Event::Kind::Key;
-        event.key = Key::character( ch );
-        ( void ) fold( m_model, event );
-        record( encodeUtf8( ch ) );
-    }
-
-    const std::vector<Step>& steps() const { return m_steps; }
-    const Step& last() const { return m_steps.back(); }
-    const Step& previous() const { return m_steps[ m_steps.size() - 2 ]; }
-
-    /** A readable film of the run, for a failure message. */
-    std::string trace( std::size_t tail = 8 ) const
-    {
-        std::ostringstream os;
-        const std::size_t from =
-            m_steps.size() > tail ? m_steps.size() - tail : 0;
-        for ( std::size_t i = from; i < m_steps.size(); ++i ) {
-            const Step& step = m_steps[i];
-            os << "\n          " << i << "  " << step.key
-               << "  panel=" << step.focusedPanel
-               << " tiles=" << step.tiles;
-            if ( step.scrollValid ) {
-                os << " line=" << step.scroll.cursorLine
-                   << " top=" << step.scroll.topLine
-                   << " row=" << step.scroll.cursorScreenRow()
-                   << " rows=" << step.scroll.viewportRows
-                   << " of=" << step.scroll.totalLines;
-            }
-        }
-        return os.str();
-    }
-
-private:
-    void record( const std::string& key )
-    {
-        Step step;
-        step.key = key;
-        step.scroll = m_model.observeFocusedScroll( step.scrollValid );
-        step.tiles = m_model.layout().tileCount();
-        step.message = m_model.message();
-
-        const Buffer* focused = m_model.focusedBuffer();
-        if ( focused ) {
-            switch ( focused->kind ) {
-            case PanelKind::Help:        step.focusedPanel = "Help"; break;
-            case PanelKind::Menu:        step.focusedPanel = "Menu"; break;
-            case PanelKind::Palette:     step.focusedPanel = "Palette"; break;
-            case PanelKind::Transcript:  step.focusedPanel = "Transcript"; break;
-            case PanelKind::Placeholder: step.focusedPanel = focused->title; break;
-            }
-        }
-        m_steps.push_back( step );
-    }
-
-    Model m_model;
-    std::vector<Driver::Step> m_steps;
-};
+}
 
 
 /**
@@ -237,18 +145,18 @@ int main()
 
     registry.add( "reversing direction takes effect on the first press", []() {
         Driver driver;
-        driver.press( "F1" );
+        pressOrFail( driver, "F1" );
 
         /* Far enough down that the list is definitely scrolled. */
         for ( int i = 0; i < 25; ++i ) {
-            driver.press( "Down" );
+            pressOrFail( driver, "Down" );
         }
         const Driver::Step scrolled = driver.last();
         UT_CHECK_MSG( scrolled.scrollValid, "help is not reporting a viewport" );
         UT_CHECK_MSG( scrolled.scroll.topLine > 0,
                       "the case needs a scrolled list; top is still 0" );
 
-        driver.press( "Up" );
+        pressOrFail( driver, "Up" );
 
         const Driver::Step& after = driver.last();
         UT_CHECK_MSG( after.scroll.cursorLine == scrolled.scroll.cursorLine - 1,
@@ -263,28 +171,28 @@ int main()
 
     registry.add( "every keystroke in a long walk keeps the invariants", []() {
         Driver driver;
-        driver.press( "F1" );
+        pressOrFail( driver, "F1" );
 
         for ( int i = 0; i < 40; ++i ) {
-            driver.press( "Down" );
+            pressOrFail( driver, "Down" );
             checkScrollInvariants( driver, "walking down" );
         }
         for ( int i = 0; i < 40; ++i ) {
-            driver.press( "Up" );
+            pressOrFail( driver, "Up" );
             checkScrollInvariants( driver, "walking back up" );
         }
     } );
 
     registry.add( "down then up returns to exactly where it started", []() {
         Driver driver;
-        driver.press( "F1" );
+        pressOrFail( driver, "F1" );
 
         bool valid = false;
         const ScrollView start = driver.model().observeFocusedScroll( valid );
         UT_CHECK( valid );
 
-        for ( int i = 0; i < 12; ++i ) { driver.press( "Down" ); }
-        for ( int i = 0; i < 12; ++i ) { driver.press( "Up" ); }
+        for ( int i = 0; i < 12; ++i ) { pressOrFail( driver, "Down" ); }
+        for ( int i = 0; i < 12; ++i ) { pressOrFail( driver, "Up" ); }
 
         const ScrollView end = driver.model().observeFocusedScroll( valid );
         UT_CHECK_MSG( end == start,
@@ -296,28 +204,28 @@ int main()
 
     registry.add( "the menu obeys the scrolling invariants", []() {
         Driver driver( "browse", 80, 24 );   /* small, so it must scroll */
-        driver.press( "F10" );
+        pressOrFail( driver, "F10" );
 
         for ( int i = 0; i < 20; ++i ) {
-            driver.press( "Down" );
+            pressOrFail( driver, "Down" );
             checkScrollInvariants( driver, "menu down" );
         }
         for ( int i = 0; i < 20; ++i ) {
-            driver.press( "Up" );
+            pressOrFail( driver, "Up" );
             checkScrollInvariants( driver, "menu up" );
         }
     } );
 
     registry.add( "the palette obeys the scrolling invariants", []() {
         Driver driver( "browse", 80, 24 );
-        driver.press( "M-x" );
+        pressOrFail( driver, "M-x" );
 
         for ( int i = 0; i < 20; ++i ) {
-            driver.press( "Down" );
+            pressOrFail( driver, "Down" );
             checkScrollInvariants( driver, "palette down" );
         }
         for ( int i = 0; i < 20; ++i ) {
-            driver.press( "Up" );
+            pressOrFail( driver, "Up" );
             checkScrollInvariants( driver, "palette up" );
         }
     } );
@@ -349,7 +257,7 @@ int main()
 
             for ( int step = 0; step < 60; ++step ) {
                 const std::size_t which = rng() % keyCount;
-                driver.press( keys[which] );
+                pressOrFail( driver, keys[which] );
 
                 std::ostringstream what;
                 what << "seed " << seed << " step " << step
@@ -383,7 +291,7 @@ int main()
             Driver driver;
 
             for ( int step = 0; step < 50; ++step ) {
-                driver.press( keys[ rng() % keyCount ] );
+                pressOrFail( driver, keys[ rng() % keyCount ] );
 
                 std::ostringstream what;
                 what << "seed " << seed << " step " << step;
@@ -421,8 +329,8 @@ int main()
             const TileId focused = driver.model().layout().focused();
 
             for ( int repeat = 0; repeat < 5; ++repeat ) {
-                driver.press( opener );
-                driver.press( "Esc" );
+                pressOrFail( driver, opener );
+                pressOrFail( driver, "Esc" );
 
                 UT_CHECK_MSG( driver.model().layout().tileCount() == tiles,
                               opener << " leaked a tile after " << repeat + 1

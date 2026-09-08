@@ -156,6 +156,7 @@ set_tests_properties(lens-shell PROPERTIES TIMEOUT 120)
 # the bug it was written for.
 add_executable(lens-interaction-test
     "${CMAKE_CURRENT_SOURCE_DIR}/test/interaction-test.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/app/driver.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/app/layouts.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/model/model.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/model/view.cpp"
@@ -225,6 +226,8 @@ add_executable(unify-lens
     "${CMAKE_CURRENT_SOURCE_DIR}/src/app/main.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/app/layouts.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/app/session-bridge.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/app/driver.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/app/spec.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/model/model.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/model/view.cpp"
 )
@@ -237,6 +240,36 @@ if(LENS_BUILD_TERM)
 endif()
 if(NOT MSVC)
     target_compile_options(unify-lens PRIVATE -Wall -Wextra)
+endif()
+
+# ---------------------------------------------------------------------------
+# The interaction cases lens states in Unify -- src/app/spec.hpp.
+#
+# Runs through the shipped binary rather than a test harness, because that
+# is the claim: a user can write a case for the bug they hit, in the
+# language this project documents, and run it with the program they already
+# have. Portable -- no pty, no bash -- so it runs everywhere unify-lens does.
+# ---------------------------------------------------------------------------
+add_test(
+    NAME lens-spec
+    COMMAND unify-lens --spec
+            "${CMAKE_CURRENT_SOURCE_DIR}/test/spec/interaction.ufy"
+)
+set_tests_properties(lens-spec PROPERTIES TIMEOUT 120)
+
+# And the runner's own gate: a spec runner that quietly passes everything is
+# worse than none, because it looks like coverage. Each fixture in
+# test/spec/bad/ is a way the suite could be wrong; this asserts each one is
+# still caught, with the right exit code and a message that names it.
+if(BASH_PROGRAM)
+    add_test(
+        NAME lens-spec-runner
+        COMMAND "${BASH_PROGRAM}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/test/check-spec-runner.sh"
+                "$<TARGET_FILE:unify-lens>"
+                "${CMAKE_CURRENT_SOURCE_DIR}/test/spec/bad"
+    )
+    set_tests_properties(lens-spec-runner PROPERTIES TIMEOUT 120)
 endif()
 
 # ---------------------------------------------------------------------------

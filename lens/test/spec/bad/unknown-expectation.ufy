@@ -1,0 +1,5 @@
+// A misspelled expectation. Must FAIL rather than pass: a vocabulary that
+// ignored what it did not understand would turn every typo green.
+case( typo, "an expectation nobody defined" );
+press(  typo, 1, "F1" );
+expect( typo, 1, cursur, 0 );

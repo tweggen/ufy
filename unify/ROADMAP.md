@@ -415,6 +415,32 @@ not be filed under Phase 4 tooling.
       question "has everything been delivered?", which is not the same as
       "is the queue empty", since an event is popped before its callback
       runs.)*
+- [ ] **E17 — Structured solution values.** *(Added 2026-09-08, found by
+      writing lens's `--spec` runner.)* `vault-unify-session.hpp` defines a
+      full `Value` (Atom, Int, Float, Str, Var, Cons, Array, Map) and
+      documents it as mirroring the engine's term kinds one for one. Nothing
+      fills it: `SolveJob::getSolutionList()` calls `toString()` on each
+      bound term and `LocalSession::onJobFinished()` wraps the resulting
+      text as `Value::Kind::Str`, so every binding crosses the boundary as a
+      string no matter what it is. A front end that wants the structure has
+      to re-parse the engine's own syntax, which is a second parser for one
+      language living in the wrong module — lens's spec files are flat facts
+      today for exactly this reason (`lens/test/spec/interaction.ufy` says
+      so at length). The work: expose the resolved terms from the finish
+      callback, where the arena is still alive, and walk them into `Value`.
+      Note the leaves are textual in the engine too — an integer literal is
+      an `Atom`-named `ConsTerm` — so Int/Float/Str classification is a
+      lexical decision this item has to make and document.
+- [ ] **A negative literal in a data position loses its sign.** *(Found
+      2026-09-08.)* `d( [ x, -1, 2 ] );` is stored as `d( [x, ( 1 ), 2] )`.
+      The parser reads the `-` as something other than part of the number
+      and silently drops it — silently is the bad part; a term that means
+      something else than it says is worse than a parse error.
+- [ ] **An empty list literal does not parse.** *(Found 2026-09-08.)*
+      `f( [] );` is a parse error, although `findall` produces `[]` as a
+      value and prints it. The language can therefore write a value it
+      cannot read back, which breaks the round trip an image writer (E6)
+      will need.
 - [ ] **E3, E5, E6, E7, E9, E11, E12, E13, E15** — not started. E9 (world
       reset) and E12 (staged parse and commit) are the two the lens plan
       calls out as larger than they look; `RuntimeContext` binds one Engine

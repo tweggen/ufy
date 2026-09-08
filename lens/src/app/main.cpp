@@ -13,6 +13,7 @@
  */
 
 #include "layouts.hpp"
+#include "spec.hpp"
 #include "session-bridge.hpp"
 
 #include "../model/model.hpp"
@@ -41,6 +42,17 @@ struct Options {
     int         height = 0;
     std::string layout = "browse";
     std::string scriptPath;
+
+    /**
+     * A test spec written in Unify -- see src/app/spec.hpp.
+     *
+     * Not a debugging aid bolted on: lens ships the engine, and the cases
+     * that say what a keystroke must do are data, so they are stated in the
+     * language the product exists to run and shipped in the binary that
+     * runs them.
+     */
+    std::string specPath;
+
     bool        help = false;
 
     /**
@@ -85,6 +97,7 @@ void printUsage( std::FILE* out )
         "  --layout NAME         start in a named layout (default: browse)\n"
         "  --geometry COLSxROWS  force geometry; required with --script\n"
         "  --script FILE         replay a key script, dump the screen, exit\n"
+        "  --spec FILE.ufy       run interaction cases written in Unify, exit\n"
         "  --session             start a Unify engine (default interactively)\n"
         "  --welcome             open help at startup (default interactively)\n"
         "  --no-welcome          start without the help panel\n"
@@ -103,7 +116,12 @@ void printUsage( std::FILE* out )
         "\n"
         "A key script is one key sequence per line, spelled as in the keymap\n"
         "(`C-x 2`, `Tab`, `F1`); blank lines and lines starting with # are\n"
-        "ignored. The final screen is written to stdout.\n" );
+        "ignored. The final screen is written to stdout.\n"
+        "\n"
+        "A spec is a Unify program stating `case( Name, Steps )` -- a key\n"
+        "sequence and what must hold after each step. See\n"
+        "lens/test/spec/interaction.ufy for the vocabulary, and\n"
+        "src/app/spec.hpp for why the cases are written in Unify at all.\n" );
 }
 
 
@@ -155,6 +173,10 @@ bool parseArgs( int argc, char** argv, Options& out, std::string& out_error )
                 out_error = std::string( "cannot parse geometry '" ) + v + "'";
                 return false;
             }
+        } else if( name == "--spec" ) {
+            const char* v = NULL;
+            if( !takeValue( v ) ) { out_error = "--spec needs a file"; return false; }
+            out.specPath = v;
         } else if( name == "--script" ) {
             const char* v = NULL;
             if( !takeValue( v ) ) { out_error = "--script needs a file"; return false; }
@@ -574,6 +596,10 @@ int main( int argc, char** argv )
             printUsage( stderr );
             return 2;
         }
+    }
+
+    if( !options.specPath.empty() ) {
+        return runSpec( options.specPath, std::cout );
     }
 
     if( !options.scriptPath.empty() ) {

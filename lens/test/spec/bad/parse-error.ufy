@@ -1,0 +1,3 @@
+// Does not parse. Must be a setup error (exit 2) reported with the line the
+// author can act on.
+case( broken, "unclosed

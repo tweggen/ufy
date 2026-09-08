@@ -212,6 +212,43 @@ One step per line, spelled exactly as the keymap spells it; `#` comments and
 blank lines are ignored; `type <text>` types literal text and
 `resize COLSxROWS` is a step too. The final screen goes to stdout.
 
+### `--spec`, test cases written in Unify
+
+```
+unify-lens --spec lens/test/spec/interaction.ufy
+```
+
+lens is the front end for a logic engine and ships with one linked in, so a
+test case — a key sequence and what must hold after each step — is stated in
+the language the product exists to run:
+
+```prolog
+case( reversal, "reversing direction takes effect on the first press" );
+
+press(  reversal, 1, "F1" );
+expect( reversal, 1, panel, "Help" );
+
+press(  reversal, 2, "Down", 25 );
+expect( reversal, 2, visible );
+
+press(  reversal, 3, "Up" );
+expect( reversal, 3, moved, cursor, up, 1 );
+expect( reversal, 3, moved, row, up, 1 );
+```
+
+The runner loads the file into the engine, queries for every case, replays
+each against the real model, and checks what it observes. The vocabulary is
+in `lens/test/spec/interaction.ufy`, which is also the suite; the reasoning
+behind it — including why the facts are flat rather than one nested term per
+case — is in `src/app/spec.hpp`.
+
+Exit codes: `0` all passed, `1` a case failed, `2` the spec could not run at
+all (unreadable, unparsable, or stating no cases — a suite that silently runs
+nothing is worse than one that is red).
+
+If you hit a bug in lens, this is the shortest way to hand it over: write the
+keys and what you expected, send the file.
+
 ### `--trace`, for interaction bugs
 
 The screen dump records characters, not attributes — so a selection that
@@ -239,6 +276,8 @@ whole grid per step when you need the film rather than the summary.
 | `lens-shell` | `fold`, the Help panel and the `M-x` palette: contextual help, no dead links, palette modality and filtering. |
 | `lens-interaction` | What happens *between* frames: that a keystroke visibly does something, that scrolling is minimal, that a modal panel gives focus back — plus a seeded random walk asserting those invariants after every key. See the file's comment for why the other two categories cannot see these bugs. |
 | `lens-pty-interaction` | The real `unify-lens` binary on a real pseudo-terminal: that a keystroke produces a frame *without* a second keystroke, and that `C-x C-c` leaves cleanly. The only test that exercises `src/term/`; POSIX only, skipped where no pty can be opened. |
+| `lens-spec` | The interaction cases lens states in Unify — `test/spec/interaction.ufy`, run through the shipped binary's `--spec`. |
+| `lens-spec-runner` | That `--spec` still fails when it should: one fixture per way a spec can be wrong (a false expectation, a misspelled one, an orphan id, no cases, a parse error, keys that are not keys). |
 | `lens-screen-*` | Seventeen golden screens: four stock layouts at 120×40 and 80×24, plus tiling gestures, maximise, a resize round trip, an unfinished chord, help at both geometries, and the palette open and filtered. |
 | `lens-too-small` | That lens refuses below 80×24 — and renders at exactly 80×24, so the gate is not an off-by-one. |
 | `lens-resize-roundtrip` | That shrinking to 80×24 and back restores the screen *exactly*, not merely to something valid. |

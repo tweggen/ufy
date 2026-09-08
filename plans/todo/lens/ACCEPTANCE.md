@@ -101,6 +101,49 @@ by gates whose criteria are executable.
      only cursor movement re-followed the cursor and geometry changes did
      not.
 
+9. **The seam the tests cannot cross is where the next bug lives.**
+   *(Added 2026-09-08, after the second and third real user reports.)* Rule
+   8's interaction tests drive the model directly, which is what makes a
+   thousand key sequences cost milliseconds — and it means `src/term/` was
+   the one file nothing exercised. Two user-visible bugs then turned up
+   inside exactly that gap: a frame computed and never presented (FTXUI
+   skips a redraw when none of its own events fired, and lens changes the
+   grid out of band), and Ctrl-C killing the process instead of completing
+   the `C-x C-c` chord. Neither was reachable from any test above.
+
+   So a fourth category, deliberately tiny: **terminal tests**
+   (`lens/test/pty-interaction-test.cpp`) run the real binary on a real
+   pseudo-terminal and read the bytes back. Three cases, seconds to run.
+   The rule that keeps it tiny is that it asserts only what no other
+   category *can* — that a keystroke produces a frame, and that quitting
+   quits — and never behaviour, which belongs one layer down where it is
+   cheap. POSIX only; the bug class is not platform-specific, so catching
+   it on one platform catches it.
+
+10. **The interaction cases are written in Unify.** *(Added 2026-09-08.)*
+    lens is the front end for a logic engine and ships one linked in, so
+    the cases that say what a keystroke must do — sequence plus
+    expectations, which is data — are stated in the language the product
+    exists to run and executed by the shipped binary (`--spec`,
+    `lens/test/spec/interaction.ufy`). This is dogfooding that pays twice:
+    a user can send a failing case as a file rather than a description, and
+    the engine's own gaps become visible to the people who can fix them
+    (writing the runner turned up three, now recorded as ROADMAP items —
+    the unfilled structured `Value`, a negative literal that loses its
+    sign, and an empty list literal that will not parse).
+
+    Two obligations:
+
+    - **The vocabulary is closed.** An expectation the runner does not
+      recognise fails the case. A spec language that ignored what it did
+      not understand would turn every typo green, which is the one outcome
+      a suite must never have — as would a stray case id whose facts are
+      silently dropped.
+    - **The runner is itself tested for failing.** `test/spec/bad/` holds
+      one fixture per way a spec can be wrong and `check-spec-runner.sh`
+      asserts each is still caught. A runner that quietly passes everything
+      is worse than no runner: it looks like coverage.
+
 Three harnesses, all in the repo's established golden style
 (`test/run-golden-test.sh`, regenerate with `UNIFY_UPDATE_GOLDEN=1`):
 **contract suite** (D7, parameterised over `Session` implementations),
