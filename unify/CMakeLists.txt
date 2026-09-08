@@ -80,9 +80,16 @@ find_package(Threads REQUIRED)
 # Everything in src/ is the pure engine core and needs only Boost +
 # Threads.
 #
-# The xdebug-* files are pure Boost.Asio/Boost.Thread except for one POSIX
-# ::access() call in vault-unify-xdebug.cpp, so they are split out behind
-# UNIFY_BUILD_XDEBUG instead of being patched for portability.
+# The xdebug-* files are pure Boost.Asio/Boost.Thread. They used to carry one
+# POSIX ::access() call, which is why they are split out behind
+# UNIFY_BUILD_XDEBUG; that call is gone (2026-09-08, replaced by simply
+# opening the stream, which is portable and has no check-then-open race), so
+# nothing in them is POSIX-only any more.
+#
+# The option still defaults OFF away from UNIX, deliberately: the reason is
+# now "nobody has run this backend on Windows" rather than "it cannot
+# compile there". Turning it on is a decision for whoever tests it, not a
+# default we assume on their behalf.
 # ---------------------------------------------------------------------------
 
 file(GLOB UNIFY_ALL_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp")

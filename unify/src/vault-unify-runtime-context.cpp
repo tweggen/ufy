@@ -2,9 +2,15 @@
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <unistd.h>
+/*
+ * No <sys/types.h>, <sys/stat.h> or <unistd.h> here.
+ *
+ * They were included and never used: every file operation in this file goes
+ * through boost::filesystem. They cost nothing on a POSIX host and stopped
+ * the first Windows build dead, since MSVC has no <unistd.h> -- an
+ * unnecessary include is not free, it is a portability constraint nobody
+ * chose.
+ */
 
 #include <string>
 #include <vector>

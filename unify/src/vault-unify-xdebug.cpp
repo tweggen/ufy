@@ -2,7 +2,6 @@
 #include <list>
 #include <ctype.h>
 #include <string.h>
-#include <unistd.h>
 
 #include <iostream>
 #include <fstream>
@@ -434,8 +433,16 @@ static std::atomic<int> fakeBreakpointId( 10000 );
             // TXWTODO: Check for partial read.
             if( !strFilename.compare( 0, 7, "file://" ) ) {
                 strFilename = strFilename.substr( 7 );
-                if( 0==::access( strFilename.c_str(), R_OK ) ) {
-                    std::ifstream t( strFilename );
+                /*
+                 * Just open it. This used to call ::access( ..., R_OK )
+                 * first, which is POSIX-only -- the one thing keeping this
+                 * backend off Windows -- and was also a check-then-open
+                 * race: the answer could change between the two calls.
+                 * Whether the stream opened is the same question, asked
+                 * once, portably.
+                 */
+                std::ifstream t( strFilename.c_str() );
+                if( t ) {
                     std::string str(
                         (std::istreambuf_iterator<char>(t)),
                         std::istreambuf_iterator<char>());
