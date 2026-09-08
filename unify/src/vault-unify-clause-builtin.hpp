@@ -5,13 +5,42 @@ namespace vault {
 namespace unify {
 
 /**
+ * Parse s as a signed int64 -- the engine's ONE definition of "is this text
+ * a number", and the reason it is declared here rather than kept file-local
+ * in an anonymous namespace, this module's usual per-file style: it is now
+ * read from two directions. The builtins ask it whether an atom may be
+ * arithmetic (evaluateArith() below, and the comparison builtin), and
+ * engine item E7's term-to-Value walker
+ * (src/vault-unify-term-value.hpp) asks it whether a 0-arity atom should
+ * leave the engine as `Kind::Int` -- so a second copy would let a front end
+ * show as a number something the engine refuses to add, or the reverse.
+ * Implemented in vault-unify-clause-builtin-arith.cpp.
+ *
+ * v1 semantics: no floats; a leading '-' is accepted here even though
+ * m_ruleNumber -- src/vault-unify-parser.hpp -- never produces one itself,
+ * since an evaluated result CAN be negative, e.g. `3 - 10;`, and its atom
+ * text ("-7") must itself be readable back as a number by a later
+ * expression. Rejects empty strings, anything with trailing garbage after
+ * the digits (strtoll only requires a PREFIX to be numeric; a manual
+ * full-string check is required to actually reject something like
+ * "12abc"), and out-of-range values. Returns false (and leaves out_value
+ * untouched) on any failure.
+ *
+ * What it does NOT reject, because strtoll does not: leading whitespace, a
+ * leading '+', and leading zeros -- so " 7", "+7" and "007" are all the
+ * number 7 here. Harmless for arithmetic, where such an atom can only have
+ * been written by hand; noted because E7's walker inherits it.
+ */
+bool parseInt64( const std::string& s, int64_t& out_value );
+
+
+/**
  * Recursively evaluate an arithmetic expression term (a `__builtin_arith`
  * tree, a VarTerm bound to one/a number, or a plain 0-arity numeric atom)
  * to an int64. Implemented in vault-unify-clause-builtin-arith.cpp (see
  * that file's own comment on evaluateArith() for the full contract);
- * declared here -- rather than kept file-local in an anonymous namespace,
- * this module's usual per-file style (e.g. that same file's parseInt64())
- * -- specifically so vault-unify-clause-builtin-string.cpp's concat/strlen
+ * declared here -- rather than kept file-local in an anonymous namespace --
+ * specifically so vault-unify-clause-builtin-string.cpp's concat/strlen
  * argument resolution can reuse this SAME evaluator for a `__builtin_arith`
  * argument (e.g. `$s = concat($a, 1 + 2);`) instead of duplicating the
  * recursive tree walk.

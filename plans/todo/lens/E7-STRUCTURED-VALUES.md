@@ -3,7 +3,9 @@
 An implementation roadmap, written 2026-09-08 to be executed by agents one
 phase at a time.
 
-Every claim below carries a `file:line`. They were read at `765ac31` and
+Every claim below carries a `file:line`; `vault-unify.hpp` and
+`vault-unify-session.hpp` live in `unify/include/`, everything else named
+without a directory in `unify/src/`. They were read at `765ac31` and
 **none of the code described here has been written**; treat each anchor as
 verified-by-reading and each design decision as a decision, not a discovery.
 
@@ -133,7 +135,13 @@ E7.1 and E7.2 can run in parallel; they touch disjoint files.
 
 ---
 
-### E7.0 — Nested variables resolve in the strings we already ship
+### E7.0 — Nested variables resolve in the strings we already ship — **DONE**
+
+> Landed. One consequence the plan did not predict:
+> `ConsTerm::toString()` renders `point( 1, 2 )` and `toContextString()`
+> renders `point(1,2)`, so every compound binding string from
+> `LocalSession` and `unify-repl` lost its spaces. Nothing pins it, and
+> E7.3 deletes this string path, so it was deliberately left unpinned.
 
 **Independent of everything else. One line of code. Do it first.**
 
@@ -155,9 +163,8 @@ with the context-aware form, passing `uc` as the stack top and
 `spInstance->getUnifyContext()` as the term's scope — the same two arguments
 `VarTerm::toContextString` threads (`vault-unify-term-var.cpp:21-61`).
 
-**Test:** a new case in `unify/test/engine/` (new file, e.g.
-`solution-values-test.cpp`, registered in `unify/test/engine/CMakeLists.txt`
-alongside `unify-engine-provenance`): define `p( f( $y ) ) :- ...` such that
+**Test:** `unify/test/engine/nested-binding-test.cpp`, already registered.
+Define `p( f( $y ) ) :- ...` such that
 a query binds `$x` to a term containing a bound variable, run it through
 `LocalSession`, and assert the delivered string contains the resolved value
 and **not** `VT`.
@@ -181,7 +188,25 @@ touching, both are cheap, neither changes behaviour):
 
 ---
 
-### E7.1 — The walker: a grounded term becomes a `Value`
+### E7.1 — The walker: a grounded term becomes a `Value` — **DONE**
+
+> Landed. `toSessionValue()` in `unify/src/vault-unify-term-value.{hpp,cpp}`,
+> 14 cases in `unify/test/engine/term-value-test.cpp`. The choices the plan
+> left open were settled as: `"007"` → `Int 7` and `" 7"`/`"+7"` likewise,
+> because `parseInt64` is `strtoll` and reusing the engine's one rule
+> matters more than tightening it here; `"12x"` → `Atom`; `""` → an empty
+> `Atom`, *not* truncated, so it stays distinguishable from a NULL term,
+> which is an empty `Atom` that *is* marked truncated; a fifth term kind
+> logs through `VAULT_UNIFY_DI` and carries on, matching its two sibling
+> walkers rather than asserting; depth cap `kMaxTermValueDepth = 1000`,
+> exported so the test can assert the boundary. `parseInt64` now has one
+> definition, declared in `vault-unify-clause-builtin.hpp`.
+>
+> One trap for later phases, found while writing the tests: `~MapTerm()`
+> frees the `Atom*` keys it was constructed with but **not** its value
+> terms (`vault-unify-term-map.cpp:305`). A hand-built MapTerm whose keys
+> you also register for freeing is a double free; one whose values you do
+> not free is a leak.
 
 **New files.** `unify/src/vault-unify-term-value.hpp` / `.cpp`.
 
@@ -219,8 +244,7 @@ Requirements:
   `applyBudget` is a separate, later stage (see E7.3).
 - No truncation logic. `applyBudget` already runs downstream.
 
-**Test:** in `unify/test/engine/solution-values-test.cpp` (the file E7.0
-created). Build terms by hand — `ConsTerm`, `ArrayTerm`, `MapTerm`, `VarTerm`
+**Test:** `unify/test/engine/term-value-test.cpp`. Build terms by hand — `ConsTerm`, `ArrayTerm`, `MapTerm`, `VarTerm`
 constructors are all public and in-header — and assert the resulting `Value`
 tree. Cover every row of §2's table, plus: a nested `Cons` inside an `Array`
 inside a `Map`; a `ConsTerm` named `"-7"` (arithmetic produces these,
@@ -283,7 +307,7 @@ Requirements:
   would work and it would reintroduce the `m_lsZombieJobs` leak the ownership
   work removed (`vault-unify-engine.cpp:149-163`).
 
-**Test:** extend `unify/test/engine/solution-values-test.cpp`. Run a real
+**Test:** extend `unify/test/engine/nested-binding-test.cpp`. Run a real
 query through `RuntimeContext`, take `getGroundedSolutions()` inside the
 `onFinished` callback, let the job die, and *then* read the terms — that is
 the whole point, and it is the assertion that would have caught a
