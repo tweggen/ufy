@@ -12,6 +12,7 @@
 
 #include "vault-unify-debug.hpp"
 #include "vault-unify-solvejob.hpp"
+#include "vault-unify-term-value.hpp"
 
 #include <algorithm>
 
@@ -70,17 +71,38 @@ bool isInternalVarName( const std::string& strName )
 }
 
 /*
- * A note on how thin the solutions are, since it is not obvious from the
- * code that flattens them below.
+ * A note on what the solutions ARE, since the shape of onJobFinished()
+ * below no longer says it on its own.
  *
- * Engine item E7 (structured solutions) is open: SolveJob::SolutionMap is
- * map<string,string>, so every binding arrives ALREADY RENDERED and the
- * best this adapter can produce is a Str leaf -- never a Cons, never a
- * Map, never a Var with its own name. That is a real degradation and it is
- * declared rather than hidden: Capabilities::structuredSolutions is false,
- * and inspect() therefore has nothing below the root to expand. When E7
- * lands, only the flattening in onJobFinished() and the inspector's
- * richness change; the wire format does not.
+ * Every binding crosses this boundary as a TREE. onJobFinished() takes
+ * SolveJob::getGroundedSolutions() -- clones of the bound terms that own
+ * themselves and outlive the job's arena (engine item E7.2) -- and runs
+ * each one through toSessionValue() (E7.1), so a binding to `point( 1, 2 )`
+ * arrives as a Cons with two Int children and not as nine characters
+ * somebody downstream has to re-parse. Capabilities::structuredSolutions
+ * is true, and it is true because of these two calls; if either is ever
+ * backed out, that flag goes with it.
+ *
+ * Two consequences worth knowing before reading further:
+ *
+ *  - Kind::Str and Kind::Float never appear from THIS session. The engine
+ *    has no types at term level -- `1`, `red` and `"red"` are byte-
+ *    identical after parsing -- so toSessionValue() decides Int by
+ *    parseInt64() and calls everything else Atom. Both kinds stay in the
+ *    wire format for remote cores and for the fake session, which does
+ *    produce them. The full table is in vault-unify-term-value.hpp; do not
+ *    reconstruct it from the switch statements here.
+ *  - inspect() now has something below the root to expand, because
+ *    QueryState::solutions keeps the UNTRUNCATED value and only the copy
+ *    handed to a subscriber goes through applyBudget(). See the budget
+ *    note at pump()'s applyBudget() call for what that costs and why the
+ *    limits are where they are.
+ *
+ * What has NOT changed: unbound variables are still omitted from a
+ * solution entirely rather than emitted as Kind::Var rows. That is
+ * SolveJob's behaviour (vault-unify-solvejob.cpp logs and falls through),
+ * it is visible in binding CARDINALITY and therefore in the UI, and it is
+ * engine item E7.4's to change -- not something to sneak in here.
  */
 
 } // namespace
@@ -410,9 +432,10 @@ Capabilities LocalSession::describe() const
 
     // Stated as they actually are, not as we would like them. Every one of
     // these falses is an engine item the plan names, and a front end reads
-    // them to decide what to promise the user.
+    // them to decide what to promise the user. structuredSolutions is the
+    // one that has been earned: see the note at the top of this file.
     caps.debug = false;                 // xdebug not wired to this boundary
-    caps.structuredSolutions = false;   // E7: SolutionMap is map<string,string>
+    caps.structuredSolutions = true;    // E7.3: bindings arrive as term trees
     caps.realDemand = false;            // E11: solutions materialise at once
     caps.realCancel = false;            // E8: no bounded slices, no stop
     caps.images = false;                // E5/E6/E9/E12/E13
@@ -582,28 +605,40 @@ void LocalSession::onJobFinished( QueryId qid, boost::shared_ptr<Job> spJob )
         // reading it later is use-after-free.
         errorCount = (std::uint32_t) pSolveJob->getErrorCount();
 
-        vault::unify::SolveJob::SolutionListPtr spSolutions =
-            pSolveJob->getSolutionList();
-        if( spSolutions ) {
-            vault::unify::SolveJob::SolutionList::const_iterator it;
-            for( it = spSolutions->begin(); it != spSolutions->end(); ++it ) {
-                const vault::unify::SolveJob::SolutionMapPtr& spMap = *it;
-                if( !spMap ) {
+        /*
+         * getGroundedSolutions() rather than getSolutionList(): the latter
+         * renders every binding with toString() and hands back text, which
+         * is exactly the loss engine item E7 exists to undo. The grounded
+         * form clones each bound term with resolveTermGrounded(), so the
+         * pointers below do NOT aim into the arena that is about to die --
+         * they aim into `grounded`, which owns them.
+         *
+         * `grounded` is move-only and it frees what it holds, so it is a
+         * local and it dies at the closing brace of this block, after every
+         * term has been copied into a Value. Do not stash it in
+         * QueryState, do not put it in the lambda below: the values are the
+         * durable form, the terms are not.
+         */
+        vault::unify::SolveJob::GroundedSolutions grounded =
+            pSolveJob->getGroundedSolutions();
+
+        solutions.reserve( grounded.size() );
+        for( size_t idx = 0; idx < grounded.size(); ++idx ) {
+            const vault::unify::SolveJob::GroundedSolutions::BindingMap&
+                mapBindings = grounded.at( idx );
+
+            Bindings bindings;
+            vault::unify::SolveJob::GroundedSolutions::BindingMap::const_iterator
+                itVar;
+            for( itVar = mapBindings.begin(); itVar != mapBindings.end();
+                 ++itVar ) {
+                if( isInternalVarName( itVar->first ) ) {
                     continue;
                 }
-                Bindings bindings;
-                vault::unify::SolveJob::SolutionMap::const_iterator itVar;
-                for( itVar = spMap->begin(); itVar != spMap->end(); ++itVar ) {
-                    if( isInternalVarName( itVar->first ) ) {
-                        continue;
-                    }
-                    Value v;
-                    v.kind = Value::Kind::Str;
-                    v.name = itVar->second;
-                    bindings.push_back( std::make_pair( itVar->first, v ) );
-                }
-                solutions.push_back( bindings );
+                bindings.push_back( std::make_pair(
+                    itVar->first, toSessionValue( itVar->second ) ) );
             }
+            solutions.push_back( bindings );
         }
     }
 
@@ -1028,6 +1063,47 @@ void LocalSession::pump( QueryId qid, std::uint32_t n )
         emitStatus = true;
     }
 
+    /*
+     * THE BUDGET DECISION (engine item E7.3), recorded here because this is
+     * the line that spends it.
+     *
+     * applyBudget() has always run on every emitted binding, but until E7.3
+     * only its maxStringBytes rule could fire: a Str leaf has no children,
+     * so childCount() returned 0 and maxDepth/maxNodes were dead letters
+     * (vault-unify-session-value.cpp). Bindings are trees now, so
+     * QueryOptions::budget's defaults -- maxDepth 8, maxNodes 512,
+     * maxStringBytes 4096 (include/vault-unify-session.hpp) -- start biting
+     * real values for the first time.
+     *
+     * They are KEPT as they are, and deliberately, for four reasons:
+     *
+     *  1. The budget bounds what crosses the BOUNDARY, not what fits a
+     *     transcript line. Those are different jobs and the second one is
+     *     the renderer's: deciding to show `point( 1, ... )` rather than
+     *     `point( ... )` needs the whole term in hand. A core that pre-cut
+     *     to a line's worth would take that choice away permanently, and
+     *     over a socket it would take it away irrecoverably.
+     *  2. 8 and 512 sit well above anything the front end legitimately
+     *     shows today -- lens's transcript values are atoms and one- or
+     *     two-level compounds -- so this change is behaviour-neutral for
+     *     existing callers. The limits earn their keep only against a
+     *     runaway term, a findall array of ten thousand elements say, which
+     *     is exactly the case a ceiling is for.
+     *  3. Truncation here is RECOVERABLE. QueryState::solutions keeps the
+     *     untruncated value, and inspect() re-serves any node under a
+     *     budget the caller picks (doInspect() below). A tighter core
+     *     default would push every ordinary value through that round trip;
+     *     a looser one would buy nothing, since nothing reaches it.
+     *  4. Neither lens/src/app/session-bridge.cpp nor lens/src/app/spec.cpp
+     *     sets a budget, so both get these numbers. That is the intended
+     *     outcome, not an oversight: a front end should have to think about
+     *     a budget only when it knows something this layer does not.
+     *
+     * The number to revisit is maxDepth, and the trigger is a concrete
+     * program whose values are legitimately deeper than 8 -- a recursive
+     * list encoding would be one. Raise it then, with that program as the
+     * evidence; do not raise it on the suspicion that 8 sounds small.
+     */
     for( size_t i = 0; i < toEmit.size(); ++i ) {
         Solution solution;
         solution.index = firstIndex + i;
@@ -1220,6 +1296,12 @@ void LocalSession::doInspect( RequestId req, QueryId qid, std::uint64_t index,
         return;
     }
 
+    /*
+     * The value read out of QueryState above is the UNTRUNCATED one -- only
+     * the copy pump() emitted was cut -- so this is where a front end gets
+     * back what a tight query budget took, under whatever budget it asks
+     * for now. See the budget decision in pump().
+     */
     Expanded expanded;
     expanded.req = req;
     expanded.path = path;

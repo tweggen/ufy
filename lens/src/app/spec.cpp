@@ -7,6 +7,7 @@
 #include "driver.hpp"
 
 #include "vault-unify-local-session.hpp"
+#include "vault-unify-session-value.hpp"
 #include "vault-unify-session.hpp"
 
 #include <algorithm>
@@ -59,15 +60,116 @@ private:
 };
 
 
-/** One solution, as a variable-name to text map. */
-typedef std::map<std::string, std::string> Row;
+/**
+ * One solution: each goal variable, and the one word or number it bound to.
+ *
+ * WHY THIS IS STILL TEXT, now that a binding crosses the boundary as a TREE
+ * (engine item E7.3 -- Atom, Int, Cons, Array, Map, Var; the table is in
+ * unify/src/vault-unify-term-value.hpp). The alternative was to keep
+ * `us::Value` in the row and check the kind at each of the dozen reads. It
+ * was not taken, for two reasons:
+ *
+ *  - The check is the SAME check at every one of them. The flat-fact
+ *    vocabulary this file reads has no argument that may be a compound, so
+ *    "is this a leaf" is a property of the CROSSING rather than of the
+ *    field, and the crossing is the one place that can state it once and be
+ *    sure it was not forgotten at the thirteenth read.
+ *  - The vocabulary dispatches on text. checkExpectation() tells
+ *    `cursor( 99 )` from `panel( Help )` by trying asInt() on the argument
+ *    (see "the value-equality family" below). Typed values would have moved
+ *    that decision in the same phase that changed what arrives, and then a
+ *    red case would mean either of two things.
+ *
+ * So a row is text, plus the one reason it may not be readable at all.
+ * `complaint` is non-empty when some binding was not a leaf, and it belongs
+ * to the ROW rather than to the field: a fact with a compound in it is not a
+ * fact this file can read, whichever argument the compound was in.
+ */
+struct Row {
+    std::map<std::string, std::string> values;
+    std::string complaint;
+};
+
+
+/**
+ * A binding, flattened to the word or number a flat fact may carry.
+ *
+ * @return true with `out_text` set, or false with `out_why` naming the trap.
+ *
+ * NOT `us::toDisplayString()` and not lens's own `renderValue()`
+ * (src/model/transcript.cpp), though both are linked in and both flatten a
+ * `Value`. Both render for a READER -- the first quotes `Str` so a
+ * debugger's eye can see the kind, the second deliberately does not so a
+ * user reads their own answer back. This produces a KEY: a case id, a panel
+ * name, a key sequence, a step number. `"Help"` with its quotes is not the
+ * panel `Help`, and a compound rendered to text would be a compound
+ * smuggled in as a word -- exactly the "a typo must not be green" rule this
+ * runner exists to keep. toDisplayString IS the right tool for the
+ * complaint, and is used there: showing the kind is what a diagnostic wants.
+ *
+ * Every kind is spelled out, with no `default`, so a kind added to the wire
+ * format surfaces as a -Wswitch warning here rather than as a binding that
+ * silently reads as the empty string.
+ */
+bool flatten( const us::Value& value, std::string& out_text,
+              std::string& out_why )
+{
+    if( value.truncated ) {
+        /*
+         * A cut value is a DIFFERENT value, not a shorter one, and this file
+         * compares for equality and looks ids up in a map. Losing the case
+         * loudly beats matching a prefix.
+         */
+        out_why = "was cut short by the value budget";
+        return false;
+    }
+
+    std::ostringstream text;
+
+    switch( value.kind ) {
+    case us::Value::Kind::Atom:
+    case us::Value::Kind::Str:
+        /*
+         * This engine produces only Atom -- quoting is lost in the parser,
+         * so `red` and `"red"` arrive byte-identical. Str is a remote core's
+         * or the fake session's, and is taken unquoted for the reason above:
+         * the text is about to become a key.
+         */
+        text << value.name;
+        break;
+
+    case us::Value::Kind::Int:
+        text << value.i;
+        break;
+
+    case us::Value::Kind::Float:
+        text << value.f;
+        break;
+
+    case us::Value::Kind::Var:
+        out_why = "is an unbound variable (" + us::toDisplayString( value )
+                + ")";
+        return false;
+
+    case us::Value::Kind::Cons:
+    case us::Value::Kind::Array:
+    case us::Value::Kind::Map:
+        out_why = "is a structured term (" + us::toDisplayString( value )
+                + "), and every argument of a flat fact must be a word or a "
+                  "number";
+        return false;
+    }
+
+    out_text = text.str();
+    return true;
+}
 
 
 /**
  * Run one goal and return every solution.
  *
- * Bindings arrive as text -- see the note in spec.hpp about why this file
- * asks the engine only for atomic values.
+ * Bindings arrive as term trees and are flattened HERE, at the crossing --
+ * see Row above for why here rather than at each read.
  */
 std::vector<Row> query( us::LocalSession& session, Collector& collector,
                         const std::string& goal )
@@ -95,7 +197,23 @@ std::vector<Row> query( us::LocalSession& session, Collector& collector,
 
         Row row;
         for( std::size_t b = 0; b < solution->bindings.size(); ++b ) {
-            row[ solution->bindings[b].first ] = solution->bindings[b].second.name;
+            const std::string& name = solution->bindings[b].first;
+            std::string text;
+            std::string why;
+
+            if( flatten( solution->bindings[b].second, text, why ) ) {
+                row.values[ name ] = text;
+                continue;
+            }
+
+            /*
+             * The first complaint only. A row is already unusable after one,
+             * and a reader chasing a compound argument wants the name of the
+             * argument, not a list.
+             */
+            if( row.complaint.empty() ) {
+                row.complaint = name + " " + why;
+            }
         }
         rows.push_back( row );
     }
@@ -106,8 +224,9 @@ std::vector<Row> query( us::LocalSession& session, Collector& collector,
 
 std::string field( const Row& row, const char* name )
 {
-    const Row::const_iterator it = row.find( name );
-    return it == row.end() ? std::string() : it->second;
+    const std::map<std::string, std::string>::const_iterator it =
+        row.values.find( name );
+    return it == row.values.end() ? std::string() : it->second;
 }
 
 
@@ -389,6 +508,43 @@ bool pressLess( const Press& a, const Press& b )
 }
 
 
+/**
+ * Report a row whose bindings this file cannot read.
+ *
+ * Against its own case when the id survived the crossing, and as a case of
+ * its own when it did not -- never dropped. Dropping is the failure mode the
+ * whole file is built against: a fact that silently does nothing is a test
+ * that silently does not run, and that looks exactly like a green one.
+ *
+ * A row is reported here rather than at the read that would have used it,
+ * because the compound may have been in ANY argument -- including `$id`
+ * itself, which is why the id is looked up rather than assumed.
+ */
+void rejectRow( const Row& row, const char* what,
+                const std::map<std::string, std::size_t>& byId,
+                std::vector<Case>& out_cases )
+{
+    const std::string id = field( row, "$id" );
+    const std::string complaint = std::string( what ) + ": " + row.complaint;
+
+    const std::map<std::string, std::size_t>::const_iterator found =
+        byId.find( id );
+    if( found != byId.end() ) {
+        out_cases[ found->second ].malformed = complaint;
+        return;
+    }
+
+    Case entry;
+    entry.id = id;
+    entry.name = "<" + std::string( what )
+               + ( id.empty() ? std::string( " whose case id is unreadable" )
+                              : " for unknown case '" + id + "'" )
+               + ">";
+    entry.malformed = complaint;
+    out_cases.push_back( entry );
+}
+
+
 void readCases( us::LocalSession& session, Collector& collector,
                 std::vector<Case>& out_cases )
 {
@@ -401,7 +557,11 @@ void readCases( us::LocalSession& session, Collector& collector,
         entry.id = field( cases[i], "$id" );
         entry.name = field( cases[i], "$name" );
         if( entry.name.empty() ) {
-            entry.name = entry.id;
+            entry.name = entry.id.empty() ? "<a case with no readable id>"
+                                          : entry.id;
+        }
+        if( !cases[i].complaint.empty() ) {
+            entry.malformed = "case: " + cases[i].complaint;
         }
         byId[ entry.id ] = out_cases.size();
         out_cases.push_back( entry );
@@ -419,6 +579,10 @@ void readCases( us::LocalSession& session, Collector& collector,
     const std::vector<Row> layouts =
         query( session, collector, "layout( $id, $layout )" );
     for( std::size_t i = 0; i < layouts.size(); ++i ) {
+        if( !layouts[i].complaint.empty() ) {
+            rejectRow( layouts[i], "layout", byId, out_cases );
+            continue;
+        }
         const std::string id = field( layouts[i], "$id" );
         if( byId.count( id ) == 0 ) {
             orphans.push_back( Orphan{ "layout", id } );
@@ -430,6 +594,10 @@ void readCases( us::LocalSession& session, Collector& collector,
     const std::vector<Row> geometries =
         query( session, collector, "geometry( $id, $w, $h )" );
     for( std::size_t i = 0; i < geometries.size(); ++i ) {
+        if( !geometries[i].complaint.empty() ) {
+            rejectRow( geometries[i], "geometry", byId, out_cases );
+            continue;
+        }
         const std::string id = field( geometries[i], "$id" );
         if( byId.count( id ) == 0 ) {
             orphans.push_back( Orphan{ "geometry", id } );
@@ -455,6 +623,10 @@ void readCases( us::LocalSession& session, Collector& collector,
 
         const std::vector<Row> presses = query( session, collector, goal );
         for( std::size_t i = 0; i < presses.size(); ++i ) {
+            if( !presses[i].complaint.empty() ) {
+                rejectRow( presses[i], "press", byId, out_cases );
+                continue;
+            }
             const std::string id = field( presses[i], "$id" );
             if( byId.count( id ) == 0 ) {
                 orphans.push_back( Orphan{ "press", id } );
@@ -499,6 +671,10 @@ void readCases( us::LocalSession& session, Collector& collector,
             query( session, collector, kShapes[s].goal );
 
         for( std::size_t i = 0; i < rows.size(); ++i ) {
+            if( !rows[i].complaint.empty() ) {
+                rejectRow( rows[i], "expect", byId, out_cases );
+                continue;
+            }
             const std::string id = field( rows[i], "$id" );
             if( byId.count( id ) == 0 ) {
                 orphans.push_back( Orphan{ "expect", id } );

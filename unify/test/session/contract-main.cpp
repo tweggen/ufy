@@ -368,15 +368,43 @@ SessionDriver makeLocalDriver()
         scripted->mapGoal( goal, body.str() );
     };
 
-    d.scriptDeepGoal = []( const std::string&, std::uint32_t ) {
+    d.scriptDeepGoal = [ local, scripted, counter ](
+            const std::string& goal, std::uint32_t depth ) {
         /*
-         * Never reached: every case needing a nested value checks
-         * structuredSolutions first and skips. Failing rather than skipping
-         * here, because reaching it would mean the suite's own guard has
-         * gone wrong, and that is a bug, not a missing capability.
+         * One fact, one solution, one binding -- the suite reads
+         * sols[ 0 ].bindings[ 0 ], so a second variable in the goal would
+         * make the assertions depend on std::map's ordering of variable
+         * names rather than on the value model.
+         *
+         * `depth` counts LEVELS INCLUDING THE LEAF, which is what
+         * applyBudget()'s maxDepth counts: depth 1 is the bare atom
+         * `bottom`, depth 3 is n( n( bottom ) ) -- a Cons whose only child
+         * is a Cons whose only child is an Atom. A tight budget of
+         * maxDepth 1 therefore marks the depth-5 term the truncation case
+         * asks for, and maxDepth 32 leaves it alone, which is exactly the
+         * pair that case compares.
+         *
+         * A CHAIN rather than a bush on purpose. maxNodes would otherwise
+         * be the limit that fires first and the cases would be testing the
+         * wrong rule; one child per level makes depth the only thing the
+         * budget can run out of.
          */
-        UT_FAIL( "scriptDeepGoal is unavailable while engine item E7 is open; "
-                 "the case should have skipped on structuredSolutions" );
+        const std::string pred = "deep" + std::to_string( ++( *counter ) );
+
+        std::string term = "bottom";
+        for ( std::uint32_t i = 1; i < depth; ++i ) {
+            term = "n( " + term + " )";
+        }
+
+        std::ostringstream program;
+        program << pred << "( " << term << " );\n";
+
+        us::Origin origin;
+        origin.kind = us::Origin::Kind::Transcript;
+        local->define( program.str(), origin, us::OverwritePolicy::Append );
+        local->waitUntilQuiet();
+
+        scripted->mapGoal( goal, pred + "( $deep );" );
     };
 
     d.badDefineText = "this is not a program";
