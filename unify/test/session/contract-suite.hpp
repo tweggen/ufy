@@ -79,6 +79,29 @@ struct SessionDriver {
         scriptDeepGoal;
 
     /**
+     * Script a goal with exactly one solution that binds `$bound` to a
+     * non-`Var` value and leaves `$open` unbound.
+     *
+     * Both names are part of the contract rather than an implementation
+     * detail, because the case that uses this asserts them. SESSION-API.md
+     * section 3 requires an unbound binding to carry "the variable's display
+     * name", and display name means the one the CALLER wrote: a subject that
+     * reported whatever its own clause happened to call that argument would
+     * still hand back a `Var` with a non-empty name -- passing any looser
+     * assertion -- while naming a variable the user never typed. Only fixing
+     * the name here makes that failure visible.
+     *
+     * `$bound` exists so that a subject which returned EVERY binding as an
+     * unbound `Var` could not pass the case by accident.
+     *
+     * Arranging this is subtler than it looks for a real core: a variable
+     * that merely fails to appear in the goal is never collected as a
+     * binding at all, so it would prove nothing. The unbound one has to be
+     * asked about and left open.
+     */
+    std::function<void( const std::string& goalText )> scriptUnboundGoal;
+
+    /**
      * Text this subject's `define` will reject.
      *
      * A count is deliberately NOT part of this: a fake can be told to

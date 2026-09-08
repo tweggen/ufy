@@ -140,6 +140,28 @@ SessionDriver makeFakeDriver( FakeSession::Policy policy )
         fake->scriptGoal( goal, g );
     };
 
+    d.scriptUnboundGoal = [ fake ]( const std::string& goal ) {
+        /*
+         * The fake has no solver, so "left unbound" is simply what it is
+         * told to say. That is the point of running the same case against
+         * both subjects: here it pins the WIRE shape -- a Var leaf carrying
+         * a name is a thing the value model can express and a front end can
+         * be handed -- while the local driver below pins that a real engine
+         * actually produces one.
+         */
+        us::Value bound;
+        bound.kind = us::Value::Kind::Atom;
+        bound.name = "red";
+
+        us::Value open;
+        open.kind = us::Value::Kind::Var;
+        open.name = "$open";
+
+        ScriptedGoal g;
+        g.solutions.push_back( { { "$bound", bound }, { "$open", open } } );
+        fake->scriptGoal( goal, g );
+    };
+
     /*
      * The fake produces two diagnostics for this text, so the suite's
      * "errorCount matches the diagnostics emitted" assertion is checked
@@ -405,6 +427,45 @@ SessionDriver makeLocalDriver()
         local->waitUntilQuiet();
 
         scripted->mapGoal( goal, pred + "( $deep );" );
+    };
+
+    d.scriptUnboundGoal = [ local, scripted, counter ](
+            const std::string& goal ) {
+        /*
+         * A fact whose second argument is a VARIABLE OF ITS OWN is the
+         * smallest program that leaves a caller's variable unbound.
+         * `open1( $bound, $open )` succeeds, binds `$bound` to `red`, and
+         * constrains `$open` to nothing at all -- so the solution has to say
+         * something about `$open` without having a value for it. That is
+         * exactly the row engine item E7.4 made the engine emit, and the
+         * same shape `unify/test/engine/nested-binding-test.cpp` uses at the
+         * engine level (`unconstrained( $ignored )`).
+         *
+         * Two things about it are load-bearing rather than incidental:
+         *
+         *  - The open variable must be ASKED ABOUT. A variable that merely
+         *    appears nowhere in the goal is never collected as a binding
+         *    (SolveJob::collectGoalVarNames()), so a goal carrying a spare
+         *    unused variable would assert nothing at all -- which is how the
+         *    old version of this case managed to be vacuous.
+         *
+         *  - It must be the GOAL side that stays open, not the clause's. The
+         *    fact calls its argument `$ignored`; if the engine bound the
+         *    caller's `$open` to that instead of the other way round, the
+         *    row would arrive under a name the user never wrote. The case
+         *    asserts the name for that reason.
+         */
+        const std::string pred = "open" + std::to_string( ++( *counter ) );
+
+        std::ostringstream program;
+        program << pred << "( red, $ignored );\n";
+
+        us::Origin origin;
+        origin.kind = us::Origin::Kind::Transcript;
+        local->define( program.str(), origin, us::OverwritePolicy::Append );
+        local->waitUntilQuiet();
+
+        scripted->mapGoal( goal, pred + "( $bound, $open );" );
     };
 
     d.badDefineText = "this is not a program";

@@ -73,9 +73,24 @@ void Recorder::onEvent( const us::Event& event )
         }
         m_lastQuerySeq[ qid ] = event.header.querySeq;
 
-        if ( std::get_if<us::Solution>( &event.body ) != nullptr ) {
+        if ( const us::Solution* sol =
+                 std::get_if<us::Solution>( &event.body ) ) {
             if ( m_terminal[ qid ] ) {
                 note( "G0.5: a Solution followed its query's terminal status" );
+            }
+
+            /*
+             * Moved here out of the display-name case, which used to make
+             * this check over the bindings of the one goal it happened to
+             * drive. A binding whose variable name is empty is unrenderable
+             * whoever produced it, so it belongs with the other invariants
+             * that are asserted on every event of every case rather than in
+             * whichever case first noticed.
+             */
+            for ( const auto& binding : sol->bindings ) {
+                if ( binding.first.empty() ) {
+                    note( "a binding with no variable name is unreadable" );
+                }
             }
         }
 
@@ -131,6 +146,22 @@ std::optional<us::QueryStatus> lastStatus( const Recorder& rec,
         return std::nullopt;
     }
     return all.back();
+}
+
+/** The name of a value kind, so a wrong-kind failure reads as one. */
+std::string kindName( us::Value::Kind k )
+{
+    switch ( k ) {
+    case us::Value::Kind::Atom:  return "Atom";
+    case us::Value::Kind::Int:   return "Int";
+    case us::Value::Kind::Float: return "Float";
+    case us::Value::Kind::Str:   return "Str";
+    case us::Value::Kind::Var:   return "Var";
+    case us::Value::Kind::Cons:  return "Cons";
+    case us::Value::Kind::Array: return "Array";
+    case us::Value::Kind::Map:   return "Map";
+    }
+    return "?";
 }
 
 std::string stateName( us::QueryStatus::State s )
@@ -993,14 +1024,28 @@ void registerContractSuite( Registry& registry,
                           "the generous budget did not return more" );
         } );
 
+    /*
+     * SESSION-API.md section 3: "Var carries the variable's display name for
+     * unbound bindings -- a Prolog front end that loses this is unusable for
+     * the debugging cases that matter most."
+     *
+     * This case replaces one that drove a plain counting goal and then said
+     * `if ( kind == Var )` -- a conditional no subject could ever enter,
+     * since a counting goal binds everything it asks about. Asserting a
+     * property only when it happens to hold is not asserting it, so the case
+     * now scripts a goal that is REQUIRED to leave a variable open and
+     * asserts unconditionally. Its other, live half -- every binding carries
+     * a variable name -- moved into Recorder, where it now runs over every
+     * Solution of every case instead of this one goal's.
+     */
     registry.add(
-        name( "an unbound binding keeps its display name" ),
+        name( "an unbound binding arrives, as a Var, under its own name" ),
         [ factory ]() {
             SessionDriver d = factory();
             Recorder rec;
             d.session->subscribe( rec, 0 );
 
-            d.scriptCountingGoal( "named.", 1 );
+            d.scriptUnboundGoal( "named." );
             us::QueryOptions opt;
             opt.initialDemand = 1;
             const us::QueryId q = d.session->solve( "named.", opt );
@@ -1009,14 +1054,45 @@ void registerContractSuite( Registry& registry,
 
             const std::vector<us::Solution> sols = rec.allFor<us::Solution>( q );
             UT_CHECK_EQ( sols.size(), std::size_t( 1 ) );
+
+            /*
+             * Looked up by name rather than by index. The driver's contract
+             * fixes the two variable names but deliberately not the order a
+             * subject reports them in -- LocalSession's is its binding map's
+             * -- and a case that indexed would be asserting that ordering.
+             */
+            const us::Value* bound = nullptr;
+            const us::Value* open  = nullptr;
             for ( const auto& binding : sols[ 0 ].bindings ) {
-                UT_CHECK_MSG( !binding.first.empty(),
-                              "a binding with no variable name is unreadable" );
-                if ( binding.second.kind == us::Value::Kind::Var ) {
-                    UT_CHECK_MSG( !binding.second.name.empty(),
-                                  "an unbound Var must carry its display name" );
-                }
+                if ( binding.first == "$bound" ) { bound = &binding.second; }
+                if ( binding.first == "$open" )  { open  = &binding.second; }
             }
+
+            /*
+             * Cardinality first: before the row exists at all, a front end
+             * cannot tell "you asked about $open and it came back open" from
+             * "there is no $open", and the second is a different answer.
+             */
+            UT_CHECK_MSG( open != nullptr,
+                          "the solution has no row for $open -- a variable "
+                          "the solve left unbound was dropped instead of "
+                          "reported" );
+            UT_CHECK_MSG( open->kind == us::Value::Kind::Var,
+                          "an unbound variable must arrive as Kind::Var, got "
+                              << kindName( open->kind ) );
+            UT_CHECK_MSG( !open->name.empty(),
+                          "an unbound Var must carry its display name" );
+            UT_CHECK_EQ( open->name, std::string( "$open" ) );
+
+            /*
+             * And the bound sibling, so a subject that answered EVERY
+             * binding with a nameless open variable could not pass this by
+             * being uniformly useless.
+             */
+            UT_CHECK_MSG( bound != nullptr,
+                          "the solution has no row for $bound" );
+            UT_CHECK_MSG( bound->kind != us::Value::Kind::Var,
+                          "a variable the solve bound came back as a Var" );
         } );
 
     // -- describe -----------------------------------------------------------
