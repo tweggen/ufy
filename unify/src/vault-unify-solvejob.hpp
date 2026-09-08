@@ -148,6 +148,109 @@ public:
      */
     SolutionListPtr getSolutionList() const;
 
+    /**
+     * Engine item E7.2 (plans/todo/lens/E7-STRUCTURED-VALUES.md): the
+     * solutions as TERMS instead of as text, owned by the returned object.
+     *
+     * getSolutionList() above flattens every binding to a string, which is
+     * lossy in the one direction a front end cares about: `point( 1, 2 )`
+     * arrives as nine characters somebody has to re-parse. This hands out
+     * the structure instead.
+     *
+     * The reason it is a class rather than a plain container of pointers is
+     * lifetime. m_listUnifySolutions holds non-owning pointers into this
+     * job's arena, and ~SolveJob() frees that arena the moment the last
+     * reference to the job goes away -- which Engine::executionLoop() does
+     * as soon as the onFinished callback returns. So the job does not hand
+     * out arena pointers at all: it GROUNDS each binding with
+     * resolveTermGrounded(), whose contract is "every node returned is a
+     * fresh allocation, safe to outlive pUCStackTop's own arena"
+     * (include/vault-unify.hpp), and the result owns those clones. Terms
+     * read out of a GroundedSolutions stay valid after the job is gone;
+     * they die with the GroundedSolutions and not before.
+     *
+     * Move-only on purpose: a copy would give two objects the same term
+     * pointers and the second destructor would double-free them.
+     */
+    class GroundedSolutions
+    {
+    public:
+        /// One solution: variable display name -> its own grounded term tree.
+        typedef std::map<std::string,const AbstractTerm*> BindingMap;
+        typedef std::vector<BindingMap>::const_iterator const_iterator;
+
+        GroundedSolutions() {}
+
+        /**
+         * Frees every term tree handed over by getGroundedSolutions().
+         */
+        ~GroundedSolutions();
+
+        GroundedSolutions( GroundedSolutions&& other ) noexcept;
+        GroundedSolutions& operator=( GroundedSolutions&& other );
+
+        GroundedSolutions( const GroundedSolutions& ) = delete;
+        GroundedSolutions& operator=( const GroundedSolutions& ) = delete;
+
+        /// Number of solutions, in the order the engine emitted them.
+        size_t size() const { return m_lsSolutions.size(); }
+
+        bool empty() const { return m_lsSolutions.empty(); }
+
+        /// The bindings of solution `idx`. Throws if idx >= size().
+        const BindingMap& at( size_t idx ) const { return m_lsSolutions.at( idx ); }
+
+        const_iterator begin() const { return m_lsSolutions.begin(); }
+        const_iterator end() const { return m_lsSolutions.end(); }
+
+        /**
+         * The term bound to strVar in solution idx, or NULL if there is no
+         * such solution or the variable was not bound in it.
+         *
+         * Unbound variables are omitted entirely, exactly as
+         * getSolutionList() omits them -- see engine item E7.4, which is
+         * where that changes.
+         */
+        const AbstractTerm* find( size_t idx, const std::string& strVar ) const;
+
+    private:
+        friend class SolveJob;
+
+        /**
+         * Take over one solution's bindings (and the term trees they point
+         * at). Empties mapBindings, so the caller cannot keep a second
+         * handle on terms this object now owns.
+         */
+        void adoptSolution( BindingMap& mapBindings );
+
+        /**
+         * Free every term tree reachable from one solution's bindings.
+         *
+         * ONE std::set for the whole solution rather than a
+         * deleteTermTree() per binding: term nodes can be reachable from
+         * more than one root (see the ownership note above
+         * collectTermTree() in include/vault-unify.hpp), and a per-term
+         * delete would then free the same node twice. The set de-duplicates
+         * by pointer identity -- the same pattern ~SolveJob() uses for a
+         * Goal's term trees.
+         *
+         * A MapTerm's Atom* KEYS are freed by ~MapTerm() itself and are not
+         * AbstractTerms, so they are neither collected nor deleted here;
+         * its value terms are not freed by ~MapTerm() and are (they show up
+         * as ordinary children of the walk).
+         */
+        static void releaseSolution( BindingMap& mapBindings );
+
+        std::vector<BindingMap> m_lsSolutions;
+    };
+
+    /**
+     * See GroundedSolutions above. Like getSolutionList(), this may only be
+     * called while the job is still alive, i.e. from inside its onFinished
+     * callback -- but unlike getSolutionList(), what it returns outlives it.
+     */
+    GroundedSolutions getGroundedSolutions() const;
+
     virtual DebugLocation getDebugLocation();
     virtual int getDebugStack( std::list<StackFrame>& );
     virtual int getDebugProperties( std::list<DebugProperty>&, uint64_t );
@@ -186,6 +289,18 @@ public:
 
 
 private:
+    /**
+     * Collect every variable occurring in this job's goal, as
+     * VarTermId -> the variable's original (display) name.
+     *
+     * ONE copy of the collection rule, shared by getSolutionList() and
+     * getGroundedSolutions(). They must agree on which variables a
+     * solution has and what each one is called -- two copies of this walk
+     * is exactly how the string form and the term form would quietly grow
+     * different key sets.
+     */
+    void collectGoalVarNames( std::map<VarTermId,std::string>& out_mapVarTerms ) const;
+
     /**
      * Start a unification process in the current state.
      */

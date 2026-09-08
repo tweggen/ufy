@@ -11,6 +11,8 @@
 #include <boost/shared_ptr.hpp>
 
 #include <list>
+#include <set>
+#include <utility>
 
 #include <vault-unification.hpp>
 #include <vault-unify-solvejob.hpp>
@@ -82,34 +84,51 @@ SolveContext::SolveContext(
 }
 
 
+namespace {
+
+/**
+ * Visitor collecting all var terms in a goal.
+ *
+ * File scope rather than local to getSolutionList(), because
+ * getGroundedSolutions() has to collect exactly the same variables under
+ * exactly the same names -- see SolveJob::collectGoalVarNames(), the single
+ * caller of this that both of them go through.
+ */
+class CollectVarTermsVisitor {
+public:
+    CollectVarTermsVisitor( std::map<VarTermId,std::string>& varTermMap )
+        : m_varTermMap( varTermMap ) {}
+
+    void operator() ( const TermTraversable* term ) {
+        const VarTerm* varTerm = dynamic_cast<const VarTerm*>( term );
+        if( varTerm ) {
+            m_varTermMap[varTerm->getBinding()] = varTerm->getOriginalVarName();
+        }
+    }
+private:
+    std::map<VarTermId,std::string>& m_varTermMap;
+};
+
+} // anonymous namespace
+
+
+void SolveJob::collectGoalVarNames(
+    std::map<VarTermId,std::string>& out_mapVarTerms ) const
+{
+    CollectVarTermsVisitor varTermCollector( out_mapVarTerms );
+    m_pGoal->applyVisitor( varTermCollector );
+}
+
+
 SolveJob::SolutionListPtr SolveJob::getSolutionList() const
 {
-    /*
-     * Local visitor class to collect all var terms in goal.
-     */
-    class CollectVarTermsVisitor {
-    public:
-        CollectVarTermsVisitor( std::map<VarTermId,std::string>& varTermMap ) 
-            : m_varTermMap( varTermMap ) {}
-
-        void operator() ( const TermTraversable* term ) {
-            const VarTerm* varTerm = dynamic_cast<const VarTerm*>( term );
-            if( varTerm ) {
-                m_varTermMap[varTerm->getBinding()] = varTerm->getOriginalVarName();
-            }
-        }
-    private:
-        std::map<VarTermId,std::string>& m_varTermMap;
-    };
-
     VAULT_UNIFY_DI( SOLUTION, "Called.\n" );
 
-    /* 
+    /*
      * First, collect the var terms.
      */
     std::map<VarTermId,std::string> mapVarTerms;
-    CollectVarTermsVisitor varTermCollector( mapVarTerms );
-    m_pGoal->applyVisitor( varTermCollector );
+    collectGoalVarNames( mapVarTerms );
 
     SolutionList* l = new SolutionList;
     SolutionListPtr spList( l );
@@ -173,6 +192,177 @@ SolveJob::SolutionListPtr SolveJob::getSolutionList() const
     }
 
     return spList;
+}
+
+
+/*
+ * ---------------------------------------------------------------------------
+ * Engine item E7.2: SolveJob::GroundedSolutions.
+ *
+ * See the class comment in vault-unify-solvejob.hpp for what it is for. The
+ * whole of the memory management lives here.
+ * ---------------------------------------------------------------------------
+ */
+
+void SolveJob::GroundedSolutions::releaseSolution( BindingMap& mapBindings )
+{
+    /*
+     * One set for the whole solution, then delete each pointer exactly
+     * once. See the header comment for why a per-binding deleteTermTree()
+     * would not be equivalent.
+     */
+    std::set<const AbstractTerm*> setVisited;
+    BindingMap::const_iterator it, itEnd = mapBindings.end();
+    for( it = mapBindings.begin(); it != itEnd; ++it ) {
+        collectTermTree( it->second, setVisited );
+    }
+    std::set<const AbstractTerm*>::const_iterator itV, itVEnd = setVisited.end();
+    for( itV = setVisited.begin(); itV != itVEnd; ++itV ) {
+        delete *itV;
+    }
+    mapBindings.clear();
+}
+
+
+void SolveJob::GroundedSolutions::adoptSolution( BindingMap& mapBindings )
+{
+    m_lsSolutions.push_back( BindingMap() );
+    m_lsSolutions.back().swap( mapBindings );
+}
+
+
+SolveJob::GroundedSolutions::~GroundedSolutions()
+{
+    std::vector<BindingMap>::iterator it, itEnd = m_lsSolutions.end();
+    for( it = m_lsSolutions.begin(); it != itEnd; ++it ) {
+        releaseSolution( *it );
+    }
+    m_lsSolutions.clear();
+}
+
+
+SolveJob::GroundedSolutions::GroundedSolutions( GroundedSolutions&& other ) noexcept
+    : m_lsSolutions( std::move( other.m_lsSolutions ) )
+{
+    /*
+     * A moved-from std::vector is only guaranteed to be valid, not empty.
+     * Say it explicitly: exactly one object must own these trees, and it is
+     * this one.
+     */
+    other.m_lsSolutions.clear();
+}
+
+
+SolveJob::GroundedSolutions& SolveJob::GroundedSolutions::operator=(
+    GroundedSolutions&& other )
+{
+    if( this != &other ) {
+        std::vector<BindingMap>::iterator it, itEnd = m_lsSolutions.end();
+        for( it = m_lsSolutions.begin(); it != itEnd; ++it ) {
+            releaseSolution( *it );
+        }
+        m_lsSolutions = std::move( other.m_lsSolutions );
+        other.m_lsSolutions.clear();
+    }
+    return *this;
+}
+
+
+const AbstractTerm* SolveJob::GroundedSolutions::find(
+    size_t idx, const std::string& strVar ) const
+{
+    if( idx >= m_lsSolutions.size() ) {
+        return NULL;
+    }
+    const BindingMap& mapBindings = m_lsSolutions[idx];
+    BindingMap::const_iterator it = mapBindings.find( strVar );
+    if( it == mapBindings.end() ) {
+        return NULL;
+    }
+    return it->second;
+}
+
+
+SolveJob::GroundedSolutions SolveJob::getGroundedSolutions() const
+{
+    VAULT_UNIFY_DI( SOLUTION, "Called.\n" );
+
+    /*
+     * The same variables, under the same names, as getSolutionList() --
+     * that is the whole reason collectGoalVarNames() exists.
+     */
+    std::map<VarTermId,std::string> mapVarTerms;
+    collectGoalVarNames( mapVarTerms );
+
+    GroundedSolutions solutions;
+
+    std::list<UnifyContext*>::const_iterator itSol, itSolEnd = m_listUnifySolutions.cend();
+    for( itSol = m_listUnifySolutions.begin(); itSol != itSolEnd; ++itSol ) {
+        UnifyContext* uc = *itSol;
+        GroundedSolutions::BindingMap mapBindings;
+
+        std::map<VarTermId,std::string>::const_iterator itVar, itVarEnd = mapVarTerms.end();
+        for( itVar = mapVarTerms.begin(); itVar != itVarEnd; ++itVar ) {
+            /*
+             * Resolution is deliberately byte-for-byte the same as
+             * getSolutionList()'s: AssignmentId's UnifyContextId is 0
+             * because these are the TOP-LEVEL query's own variables, which
+             * live in the job's root (parentless) UnifyContext -- the same
+             * fresh-top-level-query assumption findall's nested solve
+             * relies on, analysed at the __builtin_findall block in
+             * performSlice() below and in the resolveTermGrounded()
+             * contract (include/vault-unify.hpp).
+             *
+             * findVarBinding() answers 1 or 0 and nothing else, so its
+             * result decides nothing; the spInstance test is the guard.
+             */
+            AssignmentId aid( 0, itVar->first );
+            InstanceId iid = 0;
+            (void) uc->findVarBinding( aid, iid );
+            boost::shared_ptr<SingleVarInstance> spInstance;
+            // We have to find the instance recursively starting at the uc leaf.
+            (void) uc->findVarInstance( iid, spInstance );
+            if( spInstance && spInstance->getTerm() ) {
+                /*
+                 * The pivot of E7. The instance term points into THIS job's
+                 * arena and would dangle the moment ~SolveJob() runs;
+                 * resolveTermGrounded() returns an independent clone with
+                 * every nested variable already followed -- the term-shaped
+                 * sibling of the toContextString() call getSolutionList()
+                 * makes on the very same term.
+                 */
+                AbstractTerm* pGrounded = resolveTermGrounded(
+                    spInstance->getTerm(), uc, spInstance->getUnifyContext() );
+                if( pGrounded ) {
+                    /*
+                     * Two VarTermIds sharing one display name should not
+                     * happen (the parser resolves a repeated name within a
+                     * query to a single VarTerm), but if it ever did, an
+                     * overwrite here would drop a tree nobody can free any
+                     * more. Insert, and free the loser.
+                     */
+                    if( !mapBindings.insert(
+                            std::make_pair( itVar->second,
+                                (const AbstractTerm*) pGrounded ) ).second ) {
+                        VAULT_UNIFY_DI( ALWAYS,
+                            "getGroundedSolutions(): duplicate binding for %s; "
+                            "keeping the first.\n", itVar->second.c_str() );
+                        deleteTermTree( pGrounded );
+                    }
+                }
+            } else {
+                VAULT_UNIFY_DI( SOLUTION, "%lld::VT%lld" /* ",%lld" */ "= %lld does not seem to be instantiated yet.\n"
+                    , (long long) aid.getUnifyContextId()
+                    , (long long) aid.getVarTermId()
+                    , (long long) iid
+                    );
+            }
+        }
+
+        solutions.adoptSolution( mapBindings );
+    }
+
+    return solutions;
 }
 
 
@@ -1507,15 +1697,23 @@ SolveJob::~SolveJob()
      *    safely be freed here, independently of World's own lifetime. See
      *    test/conformance/if-statement.ufy.
      *
-     *    getSolutionList() (called from onFinished(), before a job is ever
-     *    destroyed) has already turned every solution into plain strings
-     *    (VarTermId -> std::string) by this point, so nothing outside this
-     *    job still needs these term trees once we get here. Solution
-     *    UnifyContexts (freed in step 2 above) hold SingleVarInstance
-     *    pointers into these same terms, but SingleVarInstance has no
-     *    custom destructor and nothing else in this class dereferences a
-     *    term, so freeing terms after (or before) the UnifyContext arena
-     *    is equally safe.
+     *    Nothing outside this job still needs these term trees once we get
+     *    here, and since engine item E7.2 that is a property of the two
+     *    accessors rather than of strings: both are called from
+     *    onFinished(), before a job is ever destroyed, and neither lets an
+     *    arena pointer escape. getSolutionList() flattens every solution to
+     *    plain text; getGroundedSolutions() hands out resolveTermGrounded()
+     *    CLONES, freshly allocated and owned by the returned
+     *    GroundedSolutions, which is exactly why a caller may read those
+     *    terms after this destructor has run. A future accessor that
+     *    returned a term pointer from this job's arena would break that,
+     *    and this comment is the place it would have to be argued.
+     *
+     *    Solution UnifyContexts (freed in step 2 above) hold
+     *    SingleVarInstance pointers into these same terms, but
+     *    SingleVarInstance has no custom destructor and nothing else in
+     *    this class dereferences a term, so freeing terms after (or before)
+     *    the UnifyContext arena is equally safe.
      */
     while( !m_stackContext.empty() ) {
         SolveContext* sc = m_stackContext.back();
