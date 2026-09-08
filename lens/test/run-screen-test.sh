@@ -66,6 +66,13 @@ ACTUAL="$WORKDIR/actual"
     --script "$SCRIPT" > "$ACTUAL" 2>"$WORKDIR/stderr"
 RC=$?
 
+# On Windows the C runtime writes \r\n for every \n on a text-mode stream,
+# so a golden recorded on Unix differs on every line and the diff shows two
+# lines that look identical. Strip the CR here rather than reopening stdout
+# in binary mode in the program: a character grid never legitimately holds
+# one -- control characters have display width 0 and are never drawn.
+tr -d '\r' < "$ACTUAL" > "$ACTUAL.lf" && mv "$ACTUAL.lf" "$ACTUAL"
+
 # Engine item E4's user-visible proof (G2.3): a program's output belongs in
 # the transcript, so nothing may reach lens's own streams. The screen is
 # exactly as many lines as the geometry has rows -- an extra line means

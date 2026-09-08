@@ -90,11 +90,18 @@ if [ "$ACTUAL_EXIT" -ge 128 ]; then
     exit 1
 fi
 
-# Normalize trivially volatile content: strip trailing whitespace on each
-# line and any trailing blank lines, so incidental formatting differences
-# don't cause false-positive diffs.
+# Normalize trivially volatile content: strip carriage returns and trailing
+# whitespace on each line, and any trailing blank lines, so incidental
+# formatting differences don't cause false-positive diffs.
+#
+# The CR strip is what makes this runnable on Windows: the C runtime turns
+# every \n into \r\n on a text-mode stream, so a golden file recorded on
+# Unix would otherwise differ on every single line, with a diff showing two
+# lines that look identical. The engine never emits a lone CR of its own.
 normalize() {
-    sed -e 's/[ \t]*$//' "$1" | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}'
+    tr -d '\r' < "$1" \
+        | sed -e 's/[ \t]*$//' \
+        | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}'
 }
 
 normalize "$ACTUAL_RAW" > "$ACTUAL_NORM"
