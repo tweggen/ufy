@@ -66,11 +66,34 @@ Git Bash a Windows-style `VCPKG_ROOT` (`C:\vcpkg`) is fine — CMake accepts
 mixed separators — but quote the variable, because a path containing
 `Program Files` will otherwise split.
 
+Check `VCPKG_ROOT` is actually set *in the shell you are using*: a Windows
+environment variable does not necessarily reach Git Bash, and if it is empty
+the argument becomes `/scripts/buildsystems/vcpkg.cmake`, which Git Bash
+rewrites to the Git installation prefix. The error then names a path under
+`…/Programs/Git/scripts/…` and says nothing about the variable being unset.
+A Windows path with forward slashes sidesteps the translation entirely.
+
 vcpkg's Boost is modular, so if a header turns up missing, install the
 matching `boost-<lib>` port rather than reaching for anything larger. The
 sledgehammer, `vcpkg install boost`, works and takes a long time.
 
-Two things specific to this codebase on Windows:
+Three things specific to this codebase on Windows:
+
+- **Visual Studio installed without its C++ half.** VS 2026 can be present
+  and still have no `cl`, no `nmake` and no `vcvarsall.bat` — they all come
+  from the *Desktop development with C++* workload, which an upgrade from an
+  earlier VS does not necessarily carry over. The symptoms name none of
+  this: vcpkg says "Unable to find a valid Visual Studio instance", and
+  CMake silently falls back to the NMake generator and then reports that
+  `nmake` does not exist. Check with
+  `vswhere -latest -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`;
+  an empty answer means the workload is missing. Note that `which cl` in Git
+  Bash proves nothing — `cl` is only ever on PATH inside a Developer Command
+  Prompt.
+
+  **Delete the build directory after fixing it.** CMake caches the generator
+  and the toolchain file, so a directory configured during the broken state
+  keeps failing the same way and the fix appears not to work.
 
 - **`UNIFY_BUILD_XDEBUG` already defaults to `OFF`** off UNIX. The xdebug TCP
   backend has a POSIX `::access()` call, so it is excluded rather than

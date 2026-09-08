@@ -19,6 +19,22 @@
 #include <boost/thread/condition_variable.hpp>
 #include <boost/thread/mutex.hpp>
 #include <boost/thread/lock_guard.hpp>
+/*
+ * Include what this header USES, not what happens to arrive with it.
+ *
+ * boost::thread (Engine::m_lsWorkerThreads) and boost::unique_lock (the
+ * Guard typedef below) are both used here, and neither is declared by the
+ * three thread headers above. On Linux and macOS they arrive anyway,
+ * transitively, through whatever those headers happen to pull in -- which
+ * is why this compiled for years on both. vcpkg's Boost on MSVC is more
+ * finely split and does not make the same accident available, so the first
+ * Windows build failed with "'thread': is not a member of 'boost'".
+ *
+ * The lesson is not about Windows: a header that compiles because of what
+ * its neighbours include is one refactor away from failing anywhere.
+ */
+#include <boost/thread/thread.hpp>
+#include <boost/thread/lock_types.hpp>
 #include <boost/lexical_cast.hpp>
 
 #include <string>
@@ -31,6 +47,7 @@
 #include <atomic>
 #include <list>
 #include <set>
+#include <utility>
 
 /*
  * Debug trace categories. Guarded so a build can override single
