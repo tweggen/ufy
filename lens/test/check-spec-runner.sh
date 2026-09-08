@@ -25,6 +25,11 @@ BAD_DIR="$2"
 STATUS=0
 
 # fixture | expected exit | a phrase the output must contain
+#
+# The table grows with the vocabulary, and that is the rule rather than the
+# habit: every shape the spec language learns is a new shape it can be
+# WRONG in, and a way of being wrong that nothing here names is a way of
+# being wrong the runner is free to forgive later without anyone noticing.
 CASES="
 false-expectation|1|cursor is 0, not 99
 unknown-expectation|1|no such quantity
@@ -32,6 +37,13 @@ orphan-fact|1|there is no case
 no-cases|2|states no case
 parse-error|2|parse error
 bad-keys|1|is not a key sequence
+nested-unknown-expectation|1|no such expectation
+nested-not-a-step|1|is not step( Keys )
+nested-steps-not-a-list|1|the steps of a case must be a list
+nested-expectations-not-a-list|1|the expectations of a step must be a list
+nested-bad-repeat|1|a repeat count must be a whole number
+nested-mixed-forms|1|cannot be part of it
+duplicate-case|1|there is already a case
 "
 
 echo "$CASES" | while IFS='|' read -r name expected needle; do

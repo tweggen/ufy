@@ -84,9 +84,23 @@ private:
  * `complaint` is non-empty when some binding was not a leaf, and it belongs
  * to the ROW rather than to the field: a fact with a compound in it is not a
  * fact this file can read, whichever argument the compound was in.
+ *
+ * AND THEN THE NESTED FORM ARRIVED (E7.6), whose whole point is that one
+ * argument IS a tree. So the row also keeps every binding untouched in
+ * `terms`. The two are not two views of the same thing and must not be read
+ * as if they were:
+ *
+ *  - `values` / `complaint` are the FLAT reader's verdict. For a flat fact
+ *    they are the whole truth.
+ *  - For a `case/3` or `case/4` row `complaint` is ALWAYS set, because
+ *    `$steps` is a list and a list is not a leaf. It is not a diagnosis
+ *    there, it is the flat reader saying "not mine". The nested reader must
+ *    therefore never consult it, and instead checks leaf-ness itself at the
+ *    two places it wants a word -- `$id` and `$name`.
  */
 struct Row {
     std::map<std::string, std::string> values;
+    std::map<std::string, us::Value>   terms;
     std::string complaint;
 };
 
@@ -182,6 +196,19 @@ std::vector<Row> query( us::LocalSession& session, Collector& collector,
     options.initialDemand = 1000000;
     options.retain = false;
 
+    /*
+     * The default budget (depth 8, 512 nodes) is sized for a value SHOWN on a
+     * 40-row screen. A nested case is not shown, it is READ, and a case of a
+     * dozen steps with expectations on each is a bigger tree than a
+     * transcript line ever is; at the display default it would arrive cut
+     * short. Raising the ceiling is not the same as tolerating a cut: both
+     * flatten() and the nested reader refuse a `truncated` node outright, so
+     * a case too large even for this fails loudly rather than running as the
+     * prefix of itself.
+     */
+    options.budget.maxDepth = 64;
+    options.budget.maxNodes = 100000;
+
     ( void ) session.solve( goal, options );
     session.waitUntilQuiet();
 
@@ -200,6 +227,8 @@ std::vector<Row> query( us::LocalSession& session, Collector& collector,
             const std::string& name = solution->bindings[b].first;
             std::string text;
             std::string why;
+
+            row.terms[ name ] = solution->bindings[b].second;
 
             if( flatten( solution->bindings[b].second, text, why ) ) {
                 row.values[ name ] = text;
@@ -227,6 +256,16 @@ std::string field( const Row& row, const char* name )
     const std::map<std::string, std::string>::const_iterator it =
         row.values.find( name );
     return it == row.values.end() ? std::string() : it->second;
+}
+
+
+/** The binding as it arrived, tree and all, or NULL if the goal had no such
+ *  variable. Only the nested reader wants this; see Row. */
+const us::Value* binding( const Row& row, const char* name )
+{
+    const std::map<std::string, us::Value>::const_iterator it =
+        row.terms.find( name );
+    return it == row.terms.end() ? NULL : &it->second;
 }
 
 
@@ -270,7 +309,240 @@ struct Case {
     std::map<int, std::vector<Expectation> > expectations;
 
     std::string malformed;   //!< non-empty if the facts do not add up
+
+    /**
+     * Written as one nested term rather than as a pile of flat facts.
+     *
+     * Load-bearing rather than informational: it is what lets a flat
+     * `press( Id, ... )` aimed at a nested case be REFUSED instead of
+     * appended. A nested case already carries its steps in order, so a flat
+     * press joining it would land at some step number the term never
+     * mentions -- a fact that appears to do something and does something
+     * else, which is the one outcome this runner is built against.
+     */
+    bool nested = false;
 };
+
+// ---------------------------------------------------------------------------
+// The nested form: one term per case.
+//
+// Everything below produces exactly the Press and Expectation the flat
+// reader produces, and then stops. There is ONE checker (checkExpectation)
+// and one replayer (runCase) for both forms, on purpose: two readers of one
+// vocabulary is a documentation problem, two checkers would be a correctness
+// one -- the shapes would drift and a case would mean different things
+// depending on how it was spelled.
+// ---------------------------------------------------------------------------
+
+/**
+ * One expectation term -> the same Expectation a flat `expect` fact makes.
+ *
+ * `visible` arrives as a 0-arity ConsTerm, which the walker types as Atom;
+ * everything else is a Cons whose functor is the kind and whose arguments
+ * must each be a leaf. Nothing is validated against the vocabulary here --
+ * that is checkExpectation()'s job, and it already fails on a kind it does
+ * not know rather than passing it. Splitting the check would give a typo two
+ * chances to be forgiven.
+ */
+bool readExpectation( const us::Value& value, Expectation& out_expectation,
+                      std::string& out_why )
+{
+    if( value.truncated ) {
+        out_why = "'" + us::toDisplayString( value )
+                + "' was cut short by the value budget";
+        return false;
+    }
+
+    if( value.kind == us::Value::Kind::Atom
+        || value.kind == us::Value::Kind::Str ) {
+        out_expectation.kind = value.name;
+        return true;
+    }
+
+    if( value.kind != us::Value::Kind::Cons ) {
+        out_why = "'" + us::toDisplayString( value )
+                + "' is not an expectation; an expectation is a name, or a "
+                  "name( ... ) term";
+        return false;
+    }
+
+    out_expectation.kind = value.name;
+    for( std::size_t i = 0; i < value.args.size(); ++i ) {
+        std::string text;
+        std::string why;
+        if( !flatten( value.args[i], text, why ) ) {
+            std::ostringstream os;
+            os << value.name << " argument " << ( i + 1 ) << " " << why;
+            out_why = os.str();
+            return false;
+        }
+        out_expectation.args.push_back( text );
+    }
+    return true;
+}
+
+
+bool readExpectations( const us::Value& list,
+                       std::vector<Expectation>& out_expectations,
+                       std::string& out_why )
+{
+    if( list.kind != us::Value::Kind::Array || list.truncated ) {
+        out_why = "the expectations of a step must be a list, not '"
+                + us::toDisplayString( list ) + "'";
+        return false;
+    }
+
+    for( std::size_t i = 0; i < list.args.size(); ++i ) {
+        Expectation expectation;
+        if( !readExpectation( list.args[i], expectation, out_why ) ) {
+            return false;
+        }
+        out_expectations.push_back( expectation );
+    }
+    return true;
+}
+
+
+/**
+ * The steps list -> presses and expectations, numbered by position.
+ *
+ * A step's number is where it sits in the list, so the nested form cannot
+ * have the two incoherences the flat form can -- a gap in the numbering, or
+ * an expectation of a step nobody presses. That is the point of it.
+ *
+ * `step( Keys )` and `repeat( N, Keys )` exist because an empty list does
+ * not parse (unify/ROADMAP.md): `step( "F10", [] )` is a parse error, so a
+ * step with nothing to check needs a shape that omits the list rather than
+ * one that writes it empty.
+ */
+bool readSteps( const us::Value& list, Case& out_case, std::string& out_why )
+{
+    if( list.kind != us::Value::Kind::Array || list.truncated ) {
+        out_why = "the steps of a case must be a list, not '"
+                + us::toDisplayString( list ) + "'";
+        return false;
+    }
+
+    for( std::size_t i = 0; i < list.args.size(); ++i ) {
+        const us::Value& value = list.args[i];
+
+        std::ostringstream where;
+        where << "step " << ( i + 1 ) << ": ";
+
+        const bool repeating = ( value.kind == us::Value::Kind::Cons
+                                 && value.name == "repeat" );
+        if( !repeating
+            && !( value.kind == us::Value::Kind::Cons && value.name == "step" ) ) {
+            out_why = where.str() + "'" + us::toDisplayString( value )
+                    + "' is not step( Keys ), step( Keys, Expectations ), "
+                      "repeat( N, Keys ) or repeat( N, Keys, Expectations )";
+            return false;
+        }
+
+        /* repeat takes a count before the keys; both may end with a list. */
+        const std::size_t least = repeating ? 2u : 1u;
+        if( value.args.size() != least && value.args.size() != least + 1 ) {
+            std::ostringstream os;
+            os << where.str() << value.name << " takes " << least << " or "
+               << ( least + 1 ) << " arguments, not " << value.args.size();
+            out_why = os.str();
+            return false;
+        }
+
+        Press press;
+        press.index = (int) ( i + 1 );
+        press.times = 1;
+
+        if( repeating ) {
+            std::string text;
+            std::string why;
+            long long times = 0;
+            if( !flatten( value.args[0], text, why )
+                || !asInt( text, times ) || times < 0 ) {
+                out_why = where.str()
+                        + "a repeat count must be a whole number, not '"
+                        + us::toDisplayString( value.args[0] ) + "'";
+                return false;
+            }
+            press.times = (int) times;
+        }
+
+        {
+            std::string why;
+            if( !flatten( value.args[ repeating ? 1u : 0u ], press.keys, why ) ) {
+                out_why = where.str() + "the keys " + why;
+                return false;
+            }
+        }
+
+        if( value.args.size() == least + 1 ) {
+            std::vector<Expectation> expectations;
+            std::string why;
+            if( !readExpectations( value.args[ least ], expectations, why ) ) {
+                out_why = where.str() + why;
+                return false;
+            }
+            out_case.expectations[ press.index ] = expectations;
+        }
+
+        out_case.presses.push_back( press );
+    }
+    return true;
+}
+
+
+/**
+ * The optional options list -- what `layout/2` and `geometry/3` say flatly.
+ *
+ * Closed the same way the expectations are: an option nobody defined is an
+ * error, because an ignored option is a case that ran with a geometry the
+ * author did not ask for and could not see.
+ */
+bool readOptions( const us::Value& list, Case& out_case, std::string& out_why )
+{
+    if( list.kind != us::Value::Kind::Array || list.truncated ) {
+        out_why = "the options of a case must be a list, not '"
+                + us::toDisplayString( list ) + "'";
+        return false;
+    }
+
+    for( std::size_t i = 0; i < list.args.size(); ++i ) {
+        const us::Value& value = list.args[i];
+        std::string why;
+
+        if( value.kind == us::Value::Kind::Cons && value.name == "layout"
+            && value.args.size() == 1 ) {
+            if( !flatten( value.args[0], out_case.layout, why ) ) {
+                out_why = "the layout " + why;
+                return false;
+            }
+            continue;
+        }
+
+        if( value.kind == us::Value::Kind::Cons && value.name == "geometry"
+            && value.args.size() == 2 ) {
+            std::string w;
+            std::string h;
+            long long columns = 0;
+            long long rows = 0;
+            if( !flatten( value.args[0], w, why ) || !asInt( w, columns )
+                || !flatten( value.args[1], h, why ) || !asInt( h, rows ) ) {
+                out_why = "geometry wants two whole numbers, not '"
+                        + us::toDisplayString( value ) + "'";
+                return false;
+            }
+            out_case.width = (int) columns;
+            out_case.height = (int) rows;
+            continue;
+        }
+
+        out_why = "'" + us::toDisplayString( value )
+                + "' is not an option; the options are layout( Name ) and "
+                  "geometry( Columns, Rows )";
+        return false;
+    }
+    return true;
+}
 
 // ---------------------------------------------------------------------------
 // Checking one expectation against one observation.
@@ -545,10 +817,116 @@ void rejectRow( const Row& row, const char* what,
 }
 
 
+/**
+ * Add a case, and refuse to let a second one answer to the same id.
+ *
+ * The flat and the nested form are two ways of writing the same thing, so
+ * nothing stops an author writing both -- and then one of them is dead code
+ * that looks like a running test. `byId` keeps pointing at the FIRST, so the
+ * facts that already found their case keep it, and the newcomer is the one
+ * that is red.
+ */
+void addCase( Case& entry, std::map<std::string, std::size_t>& byId,
+              std::vector<Case>& out_cases )
+{
+    if( byId.count( entry.id ) != 0 ) {
+        if( entry.malformed.empty() ) {
+            entry.malformed = "there is already a case( " + entry.id
+                            + ", ... ); an id names exactly one case";
+        }
+    } else {
+        byId[ entry.id ] = out_cases.size();
+    }
+    out_cases.push_back( entry );
+}
+
+
+/**
+ * @return true, having spoiled the case, if a flat fact aimed at a nested
+ *         one. See Case::nested for why this is refused and not merged.
+ */
+bool refuseFlatFact( Case& entry, const char* what )
+{
+    if( !entry.nested ) {
+        return false;
+    }
+    if( entry.malformed.empty() ) {
+        entry.malformed = "case '" + entry.id + "' is written as one nested "
+                          "term, which already carries its steps in order, so "
+                          "the flat " + std::string( what )
+                        + "( " + entry.id + ", ... ) beside it cannot be part "
+                          "of it";
+    }
+    return true;
+}
+
+
 void readCases( us::LocalSession& session, Collector& collector,
                 std::vector<Case>& out_cases )
 {
     std::map<std::string, std::size_t> byId;
+
+    /*
+     * The nested form first, so that every id it claims is already known when
+     * the flat facts below look theirs up -- which is what turns a flat press
+     * aimed at a nested case into a refusal rather than a silent append.
+     */
+    struct Nested { const char* goal; bool options; };
+    static const Nested kNested[] = {
+        { "case( $id, $name, $steps )",           false },
+        { "case( $id, $name, $options, $steps )", true  },
+    };
+
+    for( std::size_t s = 0; s < sizeof( kNested ) / sizeof( kNested[0] ); ++s ) {
+        const std::vector<Row> rows =
+            query( session, collector, kNested[s].goal );
+
+        for( std::size_t i = 0; i < rows.size(); ++i ) {
+            Case entry;
+            entry.nested = true;
+
+            /*
+             * NOT rows[i].complaint: for these goals it is always set, since
+             * `$steps` is a list. The nested reader asks for a leaf only
+             * where it wants a word, and this is one of the two places.
+             */
+            std::string why;
+            const us::Value* idValue = binding( rows[i], "$id" );
+            if( !idValue || !flatten( *idValue, entry.id, why ) ) {
+                entry.name = "<a case whose id is unreadable>";
+                entry.malformed = "the case id "
+                                + ( idValue ? why : std::string( "is missing" ) );
+                out_cases.push_back( entry );
+                continue;
+            }
+
+            const us::Value* nameValue = binding( rows[i], "$name" );
+            if( !nameValue || !flatten( *nameValue, entry.name, why )
+                || entry.name.empty() ) {
+                entry.name = entry.id;
+            }
+
+            if( kNested[s].options ) {
+                const us::Value* optionsValue = binding( rows[i], "$options" );
+                if( !optionsValue ) {
+                    entry.malformed = "the case has no options list";
+                } else if( !readOptions( *optionsValue, entry, why ) ) {
+                    entry.malformed = why;
+                }
+            }
+
+            const us::Value* stepsValue = binding( rows[i], "$steps" );
+            if( entry.malformed.empty() ) {
+                if( !stepsValue ) {
+                    entry.malformed = "the case has no steps list";
+                } else if( !readSteps( *stepsValue, entry, why ) ) {
+                    entry.malformed = why;
+                }
+            }
+
+            addCase( entry, byId, out_cases );
+        }
+    }
 
     const std::vector<Row> cases =
         query( session, collector, "case( $id, $name )" );
@@ -563,8 +941,7 @@ void readCases( us::LocalSession& session, Collector& collector,
         if( !cases[i].complaint.empty() ) {
             entry.malformed = "case: " + cases[i].complaint;
         }
-        byId[ entry.id ] = out_cases.size();
-        out_cases.push_back( entry );
+        addCase( entry, byId, out_cases );
     }
 
     /*
@@ -588,6 +965,9 @@ void readCases( us::LocalSession& session, Collector& collector,
             orphans.push_back( Orphan{ "layout", id } );
             continue;
         }
+        if( refuseFlatFact( out_cases[ byId[id] ], "layout" ) ) {
+            continue;
+        }
         out_cases[ byId[id] ].layout = field( layouts[i], "$layout" );
     }
 
@@ -606,6 +986,9 @@ void readCases( us::LocalSession& session, Collector& collector,
         long long w = 0;
         long long h = 0;
         Case& entry = out_cases[ byId[id] ];
+        if( refuseFlatFact( entry, "geometry" ) ) {
+            continue;
+        }
         if( !asInt( field( geometries[i], "$w" ), w )
             || !asInt( field( geometries[i], "$h" ), h ) ) {
             entry.malformed = "geometry wants two whole numbers";
@@ -633,6 +1016,9 @@ void readCases( us::LocalSession& session, Collector& collector,
                 continue;
             }
             Case& entry = out_cases[ byId[id] ];
+            if( refuseFlatFact( entry, "press" ) ) {
+                continue;
+            }
 
             long long index = 0;
             if( !asInt( field( presses[i], "$step" ), index ) ) {
@@ -681,6 +1067,9 @@ void readCases( us::LocalSession& session, Collector& collector,
                 continue;
             }
             Case& entry = out_cases[ byId[id] ];
+            if( refuseFlatFact( entry, "expect" ) ) {
+                continue;
+            }
 
             long long index = 0;
             if( !asInt( field( rows[i], "$step" ), index ) ) {

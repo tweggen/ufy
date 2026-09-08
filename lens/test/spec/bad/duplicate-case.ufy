@@ -1,0 +1,7 @@
+// One id, two cases. With two ways to write a case there are two ways to
+// write the same one, and the loser is then a test that sits in the file
+// looking like it runs. The nested form is read first, so the id belongs to
+// it and the flat declaration is the one that is red -- which of the two is
+// arbitrary; that exactly one of them survives is not.
+case( twice, "declared flat" );
+case( twice, "declared nested", [ step( "F1", [ visible ] ) ] );

@@ -24,16 +24,49 @@
  * the engine -- so if the engine breaks, these fail loudly rather than
  * quietly passing.
  *
- * THE VOCABULARY, which is closed on purpose -- an expectation this does not
- * recognise is an error, never a silent pass:
+ * TWO SHAPES, ONE MEANING. A case may be written as one nested term or as a
+ * pile of flat facts, and both are read. The flat form is not a legacy: it
+ * was the only form the engine could deliver until engine item E7 made a
+ * solution binding arrive as a tree rather than as text
+ * (plans/todo/lens/E7-STRUCTURED-VALUES.md), and it was kept afterwards
+ * because it is genuinely better for a case that is a set of independent
+ * claims rather than a sequence. test/spec/interaction.ufy argues the split
+ * at length and uses both.
  *
- *   case( Name, Steps )
- *   case( Name, Options, Steps )
- *       Options: layout( browse | run | debug | full ), geometry( W, H )
+ * Only the reading differs. Both readers build the same expectation and hand
+ * it to the same checker, which is what keeps the two spellings from
+ * drifting into two languages.
  *
- *   Steps: a list of
- *       step( Keys, Expectations )            one key sequence
+ * THE VOCABULARY, which is closed on purpose in both forms -- an expectation
+ * this does not recognise is an error, never a silent pass:
+ *
+ *   case( Id, Name, Steps )
+ *   case( Id, Name, Options, Steps )
+ *       Options: a list of layout( browse | run | debug | full )
+ *                      and geometry( Columns, Rows )
+ *
+ *   Steps: a list, one entry per step, numbered by position
+ *       step( Keys )                          one key sequence, no check
+ *       step( Keys, Expectations )            ... and check afterwards
+ *       repeat( N, Keys )                     N times, no check
  *       repeat( N, Keys, Expectations )       N times, checked after EACH
+ *
+ *   The two-argument-free forms exist because an empty list does not parse
+ *   (unify/ROADMAP.md): a step with nothing to check must be able to omit
+ *   the list, since it cannot write it empty.
+ *
+ * The same, flat -- an id and a step number in place of the nesting:
+ *
+ *   case( Id, Name )
+ *   layout( Id, Name )        geometry( Id, Columns, Rows )
+ *   press( Id, N, Keys )      press( Id, N, Keys, Times )
+ *   expect( Id, N, What )     expect( Id, N, What, A )
+ *   expect( Id, N, moved, What, Dir, Distance )
+ *
+ * An id names exactly one case, and a flat fact aimed at a case written in
+ * the nested form is refused rather than merged: the nested term already
+ * carries its steps in order, so there is no step number the loose fact
+ * could honestly mean.
  *
  *   Keys: a string in the keymap's own grammar -- "Down", "C-x 2", "M-x".
  *

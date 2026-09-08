@@ -1,0 +1,7 @@
+// repeat's count must be a whole number. A word there would otherwise be
+// read as zero repetitions -- a step that presses nothing, checks nothing,
+// and passes.
+case( nested_count, "a repeat count that is not a number", [
+    step( "F1", [ panel( "Help" ) ] ),
+    repeat( lots, "Down", [ visible ] )
+] );

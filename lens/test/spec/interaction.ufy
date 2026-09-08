@@ -4,14 +4,13 @@
 //     unify-lens --spec lens/test/spec/interaction.ufy
 //
 // lens is the front end for this engine and links it in, so a test case
-// here is a Unify program. `case( Id, Name )` names one, `press` says what
-// is typed, `expect` says what must be true afterwards -- and the runner
-// (src/app/spec.cpp) queries for all of it, replays each case against the
-// real model, and checks what it observes. The vocabulary is closed: an
-// expectation the runner does not recognise FAILS the case rather than
-// passing it, so a typo here cannot become a green test. Nor can a stray
-// id: a press or expect naming a case that does not exist is reported, not
-// dropped.
+// here is a Unify program. A case names itself, says what is typed, and says
+// what must be true afterwards -- and the runner (src/app/spec.cpp) queries
+// for all of it, replays each case against the real model, and checks what
+// it observes. The vocabulary is closed: an expectation the runner does not
+// recognise FAILS the case rather than passing it, so a typo here cannot
+// become a green test. Nor can a stray id: a press or expect naming a case
+// that does not exist is reported, not dropped.
 //
 // WHAT BELONGS HERE: anything about the sequence -- what a keystroke does,
 // what it must not do, what still holds afterwards.
@@ -24,40 +23,89 @@
 // terminal is broken.
 //
 // ---------------------------------------------------------------------------
-// WHY FLAT FACTS RATHER THAN ONE NESTED TERM PER CASE
+// TWO SHAPES, AND WHY BOTH
 //
-// The obvious shape for this file is one term per case:
+// A case can be written FLAT, as a pile of facts tied together by an id and
+// a step number, or NESTED, as one term. Both are read; a file may use
+// either; this one uses both, on purpose. The history is worth keeping,
+// because for a long time the shape was not a matter of taste.
 //
-//     case( reversal, [ step( "F1", [ panel("Help") ] ), ... ] );
+// It was flat because nothing else was possible. The obvious shape for this
+// file has always been one term per case, and it could not be written:
+// LocalSession delivered every solution binding as TEXT -- getSolutionList()
+// called toString() on the bound term and the session handed that string
+// across the boundary -- even though vault-unify-session.hpp had defined a
+// full structured Value (Atom, Int, Cons, Array, Map) for exactly this
+// purpose. A nested case would have arrived as the string
+// "[step( F1, [panel( Help )] ), ...]" and the front end would have had to
+// re-parse the engine's own syntax to read it back: a second parser for one
+// language, living in the wrong module. So this file was written flat, and
+// said so at length, and named the gap rather than pretending flat was a
+// preference.
 //
-// It does not work yet, and the reason is worth writing down because it is
-// a gap in the engine rather than a matter of taste. LocalSession delivers
-// every solution binding as TEXT: SolveJob::getSolutionList() calls
-// toString() on the bound term and the session hands that string across the
-// boundary, even though vault-unify-session.hpp defines a full structured
-// Value (Atom, Int, Cons, Array, Map) for exactly this purpose. So a nested
-// case would arrive as the string "[step( F1, [panel( Help )] ), ...]" and
-// the front end would have to re-parse the engine's own syntax to read it
-// back -- a second parser for one language, living in the wrong module.
+// Engine item E7 closed the gap (plans/todo/lens/E7-STRUCTURED-VALUES.md).
+// A binding now crosses the boundary as a tree, and E7.6 added the nested
+// reader this file had been asking for.
 //
-// Flat facts need no structure to survive the crossing: every binding is an
-// atom, a number or a string. This also happens to be how a Prolog test
-// suite is conventionally written, so it is not a hardship.
+// The flat form was NOT removed, and the mixture below is deliberate:
 //
-// Two smaller notation traps, both designed around rather than papered over:
+//   - Two readers, with real cases on each, is a suite that defends both.
+//     Every case here is a live assertion about lens, so leaving four
+//     nested and five flat means a regression in either reader turns this
+//     file red on its own -- without anyone having to maintain a fixture
+//     whose only job is to be read.
+//   - They are honestly good at different things. Nested suits a case that
+//     is a SEQUENCE: the order is the whole point, the step numbers are
+//     merely positions, and hand-numbering them is a chance to skip one.
+//     Flat suits a case that is a handful of independent claims, reads the
+//     way a Prolog test suite conventionally does, and lets you append one
+//     more `expect` without touching anything around it.
 //
-//   - A negative literal in a data position loses its sign: `d([-1])` is
-//     stored as `d([1])`. So distance is written with a direction rather
-//     than a sign: `expect( Id, N, moved, cursor, up, 1 )`.
+// Only the READING differs. Both readers build the same expectation and hand
+// it to the same checker (src/app/spec.cpp), so a case means the same thing
+// whichever way it is spelled -- and the vocabulary stays closed in both.
 //
-//   - An empty list does not parse at all -- `f([])` is a parse error, even
-//     though findall produces `[]` as a value.
+// TWO NOTATION TRAPS SURVIVE. They are the parser's, they are recorded in
+// unify/ROADMAP.md, and both are designed around here rather than papered
+// over -- a workaround with no note beside it is how a bug becomes a
+// convention:
 //
-// All three are the engine's to fix. When structured values land, a nested
-// `case/2` form can be added beside this one without disturbing it.
+//   - A negative literal in a data position loses its sign: `d( [ -1 ] )` is
+//     stored as `d( [( 1 )] )`, silently. So a distance is written with a
+//     direction word and never with a sign, in both forms:
+//     `moved( cursor, up, 1 )`.
+//
+//   - An empty list does not parse at all -- `f( [] )` is a parse error,
+//     even though findall produces `[]` as a value. So a step with nothing
+//     to check cannot write an empty expectation list, and the nested
+//     vocabulary carries `step( Keys )` and `repeat( N, Keys )` beside the
+//     longer forms for exactly that reason. menu_modal below uses them.
 // ---------------------------------------------------------------------------
 //
-// THE VOCABULARY
+// THE VOCABULARY -- the nested form
+//
+//     case( Id, Name, Steps )
+//     case( Id, Name, Options, Steps )
+//
+//     Options: a list of
+//         layout( browse | run | debug | full )     default: browse
+//         geometry( Columns, Rows )                 default: 120 x 40
+//
+//     Steps: a list of, in order, one step per entry
+//         step( Keys )                      type Keys once, check nothing
+//         step( Keys, Expectations )        ... and check afterwards
+//         repeat( N, Keys )                 N times, check nothing
+//         repeat( N, Keys, Expectations )   N times, checked after EACH
+//
+//     Expectations: a list of
+//         visible                  the cursor is on screen
+//         panel( Name )            the focused panel
+//         cursor( N )  top( N )  row( N )  rows( N )  lines( N )  tiles( N )
+//         still( What )            unchanged since the previous key
+//         moved( What, up|down, Distance )
+//         message( Text )          the status line contains Text
+//
+// THE VOCABULARY -- the flat form
 //
 //     case( Id, Name )                  a case, and what to call it
 //     layout( Id, browse|run|debug|full )       default: browse
@@ -73,6 +121,11 @@
 //     expect( Id, N, moved, What, up|down, Distance )
 //     expect( Id, N, message, Text )    the status line contains Text
 //
+// The two do not mix within one case: an id names exactly one case, and a
+// flat fact aimed at a nested case is refused rather than merged into it,
+// because a nested case already carries its steps in order and there is no
+// step number for the loose fact to mean.
+//
 // Keys are spelled as the keymap spells them: "Down", "C-x 2", "M-x", "F10".
 
 
@@ -83,31 +136,30 @@
 // visible, so the key looked dead and the user pressed it again. Three
 // panels each had a copy of `top = cursor >= rows ? cursor-rows+1 : 0`,
 // which pins the cursor to the last row and eats the first press back.
+//
+// Nested: this case IS its sequence. Far enough down that the list is
+// definitely scrolled -- the bug could not happen before the viewport
+// started moving -- and then ONE Up, after which both the selection and the
+// highlight must move exactly one. Before the fix the selection moved and
+// the highlight did not.
 // ---------------------------------------------------------------------------
 
-case( reversal, "reversing direction takes effect on the first press" );
-
-press(  reversal, 1, "F1" );
-expect( reversal, 1, panel, "Help" );
-expect( reversal, 1, visible );
-
-// Far enough that the list is definitely scrolled -- the bug could not
-// happen before the viewport started moving.
-press(  reversal, 2, "Down", 25 );
-expect( reversal, 2, visible );
-
-// ONE Up, and both the selection and the highlight move exactly one. Before
-// the fix the selection moved and the highlight did not.
-press(  reversal, 3, "Up" );
-expect( reversal, 3, moved, cursor, up, 1 );
-expect( reversal, 3, moved, row, up, 1 );
-expect( reversal, 3, visible );
+case( reversal, "reversing direction takes effect on the first press", [
+    step( "F1", [ panel( "Help" ), visible ] ),
+    repeat( 25, "Down", [ visible ] ),
+    step( "Up", [ moved( cursor, up, 1 ), moved( row, up, 1 ), visible ] )
+] );
 
 
 // ---------------------------------------------------------------------------
 // The same invariant, stated for each panel that scrolls. Three cases on
 // purpose: three copies of the scroll arithmetic is how the bug above
 // happened, and one case per panel is what proves they now share one rule.
+//
+// Two are left flat and one is nested -- the split is arbitrary within the
+// group and is meant to be: these three are as close to the same case as
+// three cases get, so if the two readers ever disagreed about anything, this
+// is where it would show as one of three siblings behaving differently.
 // ---------------------------------------------------------------------------
 
 case( help_scroll, "help scrolls without ever losing the cursor" );
@@ -131,41 +183,42 @@ expect( menu_scroll, 2, visible );
 press(  menu_scroll, 3, "Up", 30 );
 expect( menu_scroll, 3, visible );
 
-case( palette_scroll, "the palette scrolls without ever losing the cursor" );
-geometry( palette_scroll, 80, 24 );
-press(  palette_scroll, 1, "M-x" );
-expect( palette_scroll, 1, panel, "Palette" );
-press(  palette_scroll, 2, "Down", 20 );
-expect( palette_scroll, 2, visible );
-press(  palette_scroll, 3, "Up", 20 );
-expect( palette_scroll, 3, visible );
+// Nested, and carrying the geometry as an option rather than as a fact of
+// its own -- so the options list is exercised by a live case and not only by
+// a fixture in test/spec/bad/.
+case( palette_scroll, "the palette scrolls without ever losing the cursor",
+      [ geometry( 80, 24 ) ], [
+    step( "M-x", [ panel( "Palette" ) ] ),
+    repeat( 20, "Down", [ visible ] ),
+    repeat( 20, "Up", [ visible ] )
+] );
 
 
 // ---------------------------------------------------------------------------
 // Modality. A panel that takes the screen must give it back, and must not
 // leak a tile each time -- damage that accumulates over a session is
 // exactly what no single-frame golden can see.
-// ---------------------------------------------------------------------------
-
+//
 // The browse layout has four tiles; a modal panel borrows a fifth. Both
 // numbers are written down: after five open-and-cancel cycles the counts
 // must be the SAME two, which is what "no tile leaked" means. `still` would
 // not say this -- it compares against the previous key, and the previous key
 // legitimately changed the count.
+// ---------------------------------------------------------------------------
 
-case( menu_modal, "the menu gives the layout back when cancelled" );
-press(  menu_modal, 1, "F10" );
-expect( menu_modal, 1, panel, "Menu" );
-expect( menu_modal, 1, tiles, 5 );
-press(  menu_modal, 2, "Esc" );
-expect( menu_modal, 2, tiles, 4 );
-press(  menu_modal, 3, "F10" );
-press(  menu_modal, 4, "Esc" );
-press(  menu_modal, 5, "F10" );
-expect( menu_modal, 5, panel, "Menu" );
-expect( menu_modal, 5, tiles, 5 );
-press(  menu_modal, 6, "Esc" );
-expect( menu_modal, 6, tiles, 4 );
+// Nested, and the reason is the middle of it: two of these steps check
+// nothing at all, they are only there to run the cycle again. Flat, that is
+// a press with no expect beside it and a step number nobody reads; nested it
+// is `step( "F10" )`, which is also the one place the empty-list trap shows
+// up in a real case rather than in a note.
+case( menu_modal, "the menu gives the layout back when cancelled", [
+    step( "F10", [ panel( "Menu" ), tiles( 5 ) ] ),
+    step( "Esc", [ tiles( 4 ) ] ),
+    step( "F10" ),
+    step( "Esc" ),
+    step( "F10", [ panel( "Menu" ), tiles( 5 ) ] ),
+    step( "Esc", [ tiles( 4 ) ] )
+] );
 
 case( palette_modal, "the palette gives the layout back when cancelled" );
 press(  palette_modal, 1, "M-x" );
@@ -185,6 +238,10 @@ expect( palette_modal, 6, tiles, 4 );
 // ---------------------------------------------------------------------------
 // Tiling. `C-x 2` is two keys, and the state between them -- the pending
 // chord -- is a state a user can see and get stuck in.
+//
+// Flat, both of them, and this is the shape's own argument: each line is one
+// independent claim about one key, and nothing about either case is a
+// sequence beyond the fact that keys happen in order.
 // ---------------------------------------------------------------------------
 
 case( tiling, "splitting adds exactly one tile, closing removes it" );
@@ -206,13 +263,13 @@ expect( chord, 2, still, tiles );
 
 // ---------------------------------------------------------------------------
 // A stock layout other than the default, to prove the option is honoured
-// rather than quietly ignored.
+// rather than quietly ignored. Nested, so that the options list is read for
+// `layout` as well as for `geometry` -- an option the reader accepted but
+// then dropped would look exactly like a passing case, which is why the
+// layout it asks for is one the default would not give it.
 // ---------------------------------------------------------------------------
 
-case( run_layout, "help opens over the run layout too" );
-layout( run_layout, run );
-press(  run_layout, 1, "F1" );
-expect( run_layout, 1, panel, "Help" );
-expect( run_layout, 1, visible );
-press(  run_layout, 2, "Down", 10 );
-expect( run_layout, 2, visible );
+case( run_layout, "help opens over the run layout too", [ layout( run ) ], [
+    step( "F1", [ panel( "Help" ), visible ] ),
+    repeat( 10, "Down", [ visible ] )
+] );
