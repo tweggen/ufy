@@ -26,6 +26,11 @@
  * vault-unify-local-session.cpp:577-586). Everything the E7.0 cases read is
  * therefore copied out to strings while the job is still alive.
  *
+ * Engine item E7.4 adds the last group: a variable the solve left UNBOUND
+ * is a row in the solution too, an unbound VarTerm carrying its display
+ * name, instead of being dropped. Only the term form changed -- the string
+ * form still omits it, deliberately, and one case below pins that.
+ *
  * Engine item E7.2 adds the other half, and inverts that rule on purpose.
  * `SolveJob::getGroundedSolutions()` is still taken inside the callback,
  * but what it returns is read AFTER the job is gone -- that is the entire
@@ -86,6 +91,19 @@ const char* const kProgramUri = "<nested-binding-test>";
  * nothing the solver invented. Empty `[]` and `{}` are deliberately absent
  * -- they do not parse (SPEC.md, and unify/ROADMAP.md records it as a
  * defect), and E7 must not paper over that.
+ *
+ * `unconstrained/1` exists for E7.4 and is the smallest thing that leaves a
+ * CALLER's variable unbound: a fact whose only argument is a variable of
+ * its own. `unconstrained( $u )` succeeds, constrains nothing, and the
+ * solution therefore has to say something about `$u` without having a
+ * value for it. Getting a genuinely unbound variable out of a solution is
+ * harder than it looks -- a variable simply absent from the goal is never
+ * collected at all (SolveJob::collectGoalVarNames()), so it would prove
+ * nothing -- and it must be the goal side that stays unbound, not the
+ * clause's: `$u` is what the caller asked about, and if the engine bound
+ * `$u` to the fact's `$ignored` instead of the other way round, the row
+ * would come back under the wrong display name. The E7.4 cases assert the
+ * NAME for exactly that reason.
  */
 const char* const kProgram =
     "colour( red );\n"
@@ -101,7 +119,9 @@ const char* const kProgram =
     "\n"
     "shape( point( 1, two, nested( 3 ) ) );\n"
     "items( [ a, b, c ] );\n"
-    "coords( { x: 10, y: 20 } );\n";
+    "coords( { x: 10, y: 20 } );\n"
+    "\n"
+    "unconstrained( $ignored );\n";
 
 /// One solution: variable display name -> the text the engine shipped.
 typedef std::map<std::string, std::string> SolutionRow;
@@ -571,6 +591,15 @@ int main()
          * same job, over the same variables, under the same key names --
          * which is what collectGoalVarNames() is for. This case is the
          * thing that fails if the two ever drift apart.
+         *
+         * `deep( $x )` on purpose: every variable in it is BOUND, which is
+         * the only region where the two forms are still required to agree
+         * exactly. E7.4 made them diverge for unbound variables -- the term
+         * form emits a row, the string form omits it (see the divergence
+         * note on getSolutionList() in vault-unify-solvejob.hpp) -- so the
+         * size check below would be wrong for a goal like the E7.4 cases'.
+         * That divergence is pinned by its own case, further down, rather
+         * than weakened away here.
          */
         std::vector<SolutionRow> rows = f.runQuery( "query { deep( $x ); }\n" );
         const vault::unify::SolveJob::GroundedSolutions& solutions =
@@ -679,8 +708,158 @@ int main()
                      std::string( "point" ) );
     } );
 
-    return registry.run( "engine items E7.0/E7.2 (nested bindings resolve, "
-                         "and come out as terms)" ) == 0
+    /*
+     * -----------------------------------------------------------------------
+     * E7.4 -- an unbound variable is a row, not a silence.
+     * -----------------------------------------------------------------------
+     */
+
+    registry.add( "E7.4 an unbound variable arrives as a Var with its own name", []() {
+        Fixture f;
+        UT_CHECK_EQ( f.parseErrors, 0 );
+
+        /*
+         * THE case for this phase. Before E7.4 the solution simply had no
+         * `$u` in it: getGroundedSolutions() found no instance and stored
+         * nothing, so a front end could not tell "you asked about $u and it
+         * came back open" from "there is no $u". SESSION-API.md section 3
+         * calls losing this unusable for the debugging cases that matter
+         * most, and it is right -- `$u` staying open is often the ANSWER.
+         *
+         * Two goals in one query so that the case also pins CARDINALITY:
+         * one bound variable and one unbound one must both be present, in
+         * the same solution, twice over.
+         */
+        const vault::unify::SolveJob::GroundedSolutions& solutions =
+            f.runQueryGrounded( "query { colour( $y ); unconstrained( $u ); }\n" );
+
+        UT_CHECK_MSG( f.collector.wpLastJob.expired(),
+                      "the solve job is still alive, so the VarTerm read "
+                      "below might still be the job's own" );
+        UT_CHECK_EQ( solutions.size(), (size_t) 2 );
+
+        const char* const expected[] = { "red", "green" };
+        for( size_t i = 0; i < solutions.size(); ++i ) {
+            UT_CHECK_MSG( solutions.at( i ).size() == 2,
+                          "solution " << i << " should carry both variables, "
+                          "bound or not; it has "
+                              << solutions.at( i ).size() );
+
+            const us::Value valBound = groundedValue( solutions, i, "$y" );
+            UT_CHECK_MSG( us::Value::Kind::Atom == valBound.kind,
+                          show( valBound ) );
+            UT_CHECK_EQ( valBound.name, std::string( expected[i] ) );
+
+            const us::Value valOpen = groundedValue( solutions, i, "$u" );
+            UT_CHECK_MSG( us::Value::Kind::Var == valOpen.kind,
+                          "an unbound variable must arrive as a Var, got "
+                              << show( valOpen ) );
+            /*
+             * The name is the whole point, and it must be the CALLER's.
+             * `unconstrained( $ignored )` is what $u unified against; a
+             * solution reporting `$ignored` would be naming a variable the
+             * user never wrote, and one reporting `VT390` would be naming
+             * nothing at all (toSessionValue()'s fallback for a VarTerm
+             * that lost its original name).
+             */
+            UT_CHECK_EQ( valOpen.name, std::string( "$u" ) );
+
+            /*
+             * Asserted against the TERM as well: the Value above would
+             * still read as a Var if the engine had shipped some other
+             * VarTerm, but this says the tree really is a lone, unbound
+             * variable and not, say, a compound that happens to contain
+             * one.
+             */
+            const vault::unify::AbstractTerm* pTerm =
+                groundedTerm( solutions, i, "$u" );
+            const vault::unify::VarTerm* pVar =
+                dynamic_cast<const vault::unify::VarTerm*>( pTerm );
+            UT_CHECK_MSG( pVar != NULL,
+                          "expected a VarTerm, got "
+                              << describe( pTerm->toString() ) );
+            UT_CHECK_EQ( pVar->getOriginalVarName(), std::string( "$u" ) );
+        }
+    } );
+
+    registry.add( "E7.4 findall's template variable comes back open too", []() {
+        Fixture f;
+
+        /*
+         * The shape that turns up in real programs without anybody writing
+         * a variable-only fact. `findall`'s template `$c` is a variable of
+         * the OUTER query -- the parser keeps the caller's own VarTerm in
+         * `__builtin_findall( $c, colour( $c ), $all )` -- but it is bound
+         * only inside the nested, fresh-top-level solve, whose whole arena
+         * is gone by the time the outer solution is read (SPEC.md's
+         * fresh-scope subgoal limitation). So the outer `$c` is genuinely
+         * unbound, and before E7.4 it silently vanished from a solution
+         * that did report `$all`.
+         */
+        const vault::unify::SolveJob::GroundedSolutions& solutions =
+            f.runQueryGrounded(
+                "query { $all = findall( $c, colour( $c ) ); }\n" );
+        UT_CHECK_EQ( solutions.size(), (size_t) 1 );
+        UT_CHECK_EQ( solutions.at( 0 ).size(), (size_t) 2 );
+
+        const us::Value valAll = groundedValue( solutions, 0, "$all" );
+        UT_CHECK_MSG( us::Value::Kind::Array == valAll.kind, show( valAll ) );
+        UT_CHECK_EQ( valAll.args.size(), (size_t) 2 );
+
+        const us::Value valTmpl = groundedValue( solutions, 0, "$c" );
+        UT_CHECK_MSG( us::Value::Kind::Var == valTmpl.kind, show( valTmpl ) );
+        UT_CHECK_EQ( valTmpl.name, std::string( "$c" ) );
+    } );
+
+    registry.add( "E7.4 find() answers NULL only for a variable that is not there", []() {
+        Fixture f;
+
+        /*
+         * The contract change E7.4 makes to GroundedSolutions::find(). NULL
+         * used to mean two different things -- "no such variable" and "that
+         * variable is unbound" -- and a caller could not tell which. It now
+         * means only the first, which is the one a front end can act on.
+         */
+        const vault::unify::SolveJob::GroundedSolutions& solutions =
+            f.runQueryGrounded( "query { unconstrained( $u ); }\n" );
+        UT_CHECK_EQ( solutions.size(), (size_t) 1 );
+
+        UT_CHECK_MSG( solutions.find( 0, "$u" ) != NULL,
+                      "an unbound variable must still have a row" );
+        UT_CHECK( NULL == solutions.find( 0, "$nosuchvar" ) );
+        UT_CHECK( NULL == solutions.find( 99, "$u" ) );
+    } );
+
+    registry.add( "E7.4 the string form deliberately still omits it", []() {
+        Fixture f;
+
+        /*
+         * The divergence, pinned so that it is a decision and not a drift.
+         * getSolutionList() is unchanged: it renders bound terms to text
+         * and skips unbound variables, because there is no honest string
+         * for one and its only remaining caller (unify-repl) has a
+         * user-facing output format nobody has been asked about. If someone
+         * later makes the REPL print open variables, this case is what
+         * tells them the two methods were knowingly out of step and that
+         * the header comment explaining why now needs deleting.
+         */
+        std::vector<SolutionRow> rows =
+            f.runQuery( "query { colour( $y ); unconstrained( $u ); }\n" );
+        const vault::unify::SolveJob::GroundedSolutions& solutions =
+            f.collector.grounded.at( 0 );
+
+        UT_CHECK_EQ( rows.size(), solutions.size() );
+        for( size_t i = 0; i < rows.size(); ++i ) {
+            UT_CHECK_EQ( rows[i].size(), (size_t) 1 );
+            UT_CHECK_MSG( rows[i].find( "$u" ) == rows[i].end(),
+                          "the string form gained an unbound binding: "
+                              << bindingOf( rows[i], "$u" ) );
+            UT_CHECK_EQ( solutions.at( i ).size(), (size_t) 2 );
+        }
+    } );
+
+    return registry.run( "engine items E7.0/E7.2/E7.4 (nested bindings resolve, "
+                         "come out as terms, and unbound ones come out at all)" ) == 0
                ? 0
                : 1;
 }

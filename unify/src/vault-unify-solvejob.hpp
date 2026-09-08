@@ -145,6 +145,23 @@ public:
 
     /**
      * Return a textual representation of the result bindings as key/value pairs.
+     *
+     * Engine item E7.4 -- a DELIBERATE divergence from
+     * getGroundedSolutions() below, and the one place a reader will look
+     * for it: this method still OMITS an unbound variable entirely, while
+     * the term form now emits it as an unbound VarTerm. The two therefore
+     * no longer always have the same key set, and only the term form
+     * satisfies SESSION-API.md's "Var carries the variable's display name
+     * for unbound bindings".
+     *
+     * The reason is that there is no honest string for an unbound
+     * variable. Every candidate ("$x", "_", "$x = $x") is a rendering
+     * choice, and the only surviving caller of this method is
+     * unify-repl.cpp, whose printed output is a user-facing decision
+     * nobody has taken. E7's own plan lists that REPL as something to
+     * leave alone (plans/todo/lens/E7-STRUCTURED-VALUES.md, "Things to
+     * leave alone"). Whoever takes that decision should delete this
+     * paragraph and make the two agree again.
      */
     SolutionListPtr getSolutionList() const;
 
@@ -205,11 +222,20 @@ public:
 
         /**
          * The term bound to strVar in solution idx, or NULL if there is no
-         * such solution or the variable was not bound in it.
+         * such solution or the goal has no variable of that name.
          *
-         * Unbound variables are omitted entirely, exactly as
-         * getSolutionList() omits them -- see engine item E7.4, which is
-         * where that changes.
+         * Engine item E7.4 changed what NULL means. It used to also cover
+         * "the goal has that variable and the solve left it unbound";
+         * every variable the goal mentions now has a row, so that case
+         * comes back as a non-NULL, unbound VarTerm carrying its display
+         * name instead. NULL is now only ever "no such variable" -- which
+         * is the answer a caller can actually act on, and the reason the
+         * distinction is worth making: a front end that shows `$x = $x`
+         * has told the user something true, and one that shows no row at
+         * all has told them their variable does not exist.
+         *
+         * Test for it with dynamic_cast<const VarTerm*>, or let
+         * toSessionValue() map it to Value::Kind::Var.
          */
         const AbstractTerm* find( size_t idx, const std::string& strVar ) const;
 
@@ -248,6 +274,13 @@ public:
      * See GroundedSolutions above. Like getSolutionList(), this may only be
      * called while the job is still alive, i.e. from inside its onFinished
      * callback -- but unlike getSolutionList(), what it returns outlives it.
+     *
+     * Engine item E7.4: EVERY variable the goal mentions gets a binding in
+     * every solution. An unbound one arrives as an unbound VarTerm rather
+     * than as a missing key, so a solution's binding count is now the
+     * goal's variable count and not "however many happened to be bound".
+     * A front end that treated an empty binding map as "the goal has no
+     * variables" needs to look at the map's contents instead.
      */
     GroundedSolutions getGroundedSolutions() const;
 

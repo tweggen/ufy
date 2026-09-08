@@ -351,11 +351,54 @@ SolveJob::GroundedSolutions SolveJob::getGroundedSolutions() const
                     }
                 }
             } else {
-                VAULT_UNIFY_DI( SOLUTION, "%lld::VT%lld" /* ",%lld" */ "= %lld does not seem to be instantiated yet.\n"
+                /*
+                 * Engine item E7.4: the variable is UNBOUND in this
+                 * solution, and it still gets a row.
+                 *
+                 * getSolutionList() drops it on the floor here (see the
+                 * divergence note on that method in the header). Dropping
+                 * it is what SESSION-API.md section 3 rules out: "Var
+                 * carries the variable's display name for unbound
+                 * bindings -- a Prolog front end that loses this is
+                 * unusable for the debugging cases that matter most". A
+                 * missing row cannot be told apart from a variable the
+                 * goal never mentioned, so `member( $x, $l )` answering
+                 * with nothing about $l reads as an engine that forgot
+                 * the question rather than as an answer that leaves it
+                 * open.
+                 *
+                 * What is emitted is EXACTLY resolveTermGrounded()'s own
+                 * unbound arm (vault-unify-terms.cpp): a fresh, unbound
+                 * VarTerm carrying the original display name. It is built
+                 * here rather than by calling that function because what
+                 * we hold at this point is the variable's id and name, not
+                 * the goal's VarTerm object -- collectGoalVarNames() keeps
+                 * ids so that both solution methods can share one
+                 * collection rule. Keep the two spellings in step: the
+                 * only visible difference is the VT<id> fallback that
+                 * toSessionValue() applies when the name is empty, and a
+                 * goal variable always has a name (the parser sets one for
+                 * every VarTerm it builds, anonymous ones included).
+                 *
+                 * The clone is owned like every other binding here --
+                 * releaseSolution() frees it -- so the leak gate covers it.
+                 */
+                VAULT_UNIFY_DI( SOLUTION, "%lld::VT%lld" /* ",%lld" */ "= %lld is unbound; emitting it as an unbound VarTerm.\n"
                     , (long long) aid.getUnifyContextId()
                     , (long long) aid.getVarTermId()
                     , (long long) iid
                     );
+
+                VarTerm* pUnbound = new VarTerm();
+                pUnbound->setOriginalVarName( itVar->second );
+                if( !mapBindings.insert(
+                        std::make_pair( itVar->second,
+                            (const AbstractTerm*) pUnbound ) ).second ) {
+                    VAULT_UNIFY_DI( ALWAYS,
+                        "getGroundedSolutions(): duplicate binding for %s; "
+                        "keeping the first.\n", itVar->second.c_str() );
+                    delete pUnbound;
+                }
             }
         }
 
