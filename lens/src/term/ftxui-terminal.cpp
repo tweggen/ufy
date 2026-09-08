@@ -11,15 +11,19 @@
  * the rendering below is "copy a CellGrid into a Screen", which is roughly a
  * tenth of FTXUI's surface and the tenth least likely to change under us.
  *
- * WHAT IS VERIFIED HERE, AND WHAT IS NOT. This file is compile- and
- * link-verified, and the grid it renders is tested exhaustively on the other
- * side of the seam. Its INTERACTIVE behaviour -- that a real terminal
- * produces the keys this expects, that resize arrives, that the alternate
- * screen is restored on exit -- is not verified in the environment this was
- * written in, which has no tty. That is exactly why `--script` (gate G1.7)
- * exists and why the goldens run through it: everything a golden can prove
- * is proved without a terminal, and what is left is this file, kept as small
- * as it is so that "we could not test it" covers as little as possible.
+ * WHAT IS VERIFIED HERE. The grid this renders is tested exhaustively on
+ * the other side of the seam, and everything a golden can prove is proved
+ * without a terminal through `--script` (gate G1.7).
+ *
+ * This file used to end its comment with "and what is left is this file,
+ * kept as small as it is so that 'we could not test it' covers as little as
+ * possible." Two user-visible bugs then turned up inside exactly that
+ * remainder -- a frame that was computed and never presented, and a Ctrl-C
+ * that killed the process instead of completing a chord -- so the remainder
+ * is no longer untested: test/pty-interaction-test.cpp runs the real binary
+ * on a real pseudo-terminal and reads the bytes that come back. What is
+ * still unverified is narrower and named: resize signals, and the alternate
+ * screen being restored on an abnormal exit.
  */
 
 #include "iterminal.hpp"
@@ -238,6 +242,21 @@ public:
         m_caps.unicode = true;
 
         /*
+         * C-c and C-z belong to lens, not to FTXUI.
+         *
+         * FTXUI raises SIGINT on Ctrl-C whatever the component returns
+         * (force_handle_ctrl_c_ defaults to true), which is the right
+         * default for a widget in someone else's program and the wrong one
+         * here: `C-x C-c` is the documented way to quit, and its second
+         * key would kill the process by signal instead -- skipping the
+         * quit path, and any confirmation a later gate puts in front of it.
+         * The same argument applies to C-z: a tiling editor decides what
+         * suspend means.
+         */
+        m_app.ForceHandleCtrlC( false );
+        m_app.ForceHandleCtrlZ( false );
+
+        /*
          * Tier detection from the environment, which is all a terminal
          * offers: COLORTERM is the only widely honoured signal for
          * truecolour, and TERM carrying "256color" for the middle tier.
@@ -280,9 +299,37 @@ public:
 
     TerminalCapabilities capabilities() const override { return m_caps; }
 
+    /**
+     * Present a frame -- and make FTXUI actually do it.
+     *
+     * The two lines this replaced were a one-keystroke lag on every screen
+     * lens has. FTXUI's RunOnce() renders only if one of ITS tasks ran
+     * (App::Internal::RunOnce returns early otherwise) and Draw() is a
+     * no-op while its frame_valid_ flag stands, which only an event
+     * clears. lens changes the grid out of band -- FTXUI's own component
+     * tree never changes -- so after a key was consumed in poll(), the
+     * frame computed from it found nothing to invalidate and was dropped.
+     * It reached the screen on the NEXT keystroke, one behind forever.
+     *
+     * Posting a Custom event says the thing that is true: something
+     * changed, this frame is stale. The event reaches the CatchEvent
+     * handler below, translates to no key, and is swallowed.
+     *
+     * The equality check matters as much as the post. The UI loop calls
+     * draw() every time poll() times out -- twenty times a second with
+     * nobody touching the keyboard -- and without it every one of those
+     * would repaint the whole screen.
+     */
     void draw( const CellGrid& grid ) override
     {
+        if( m_drawn && grid == m_grid ) {
+            return;
+        }
+
         m_grid = grid;
+        m_drawn = true;
+
+        m_app.PostEvent( ftxui::Event::Custom );
         m_loop->RunOnce();
     }
 
@@ -343,6 +390,7 @@ private:
     std::unique_ptr<ftxui::Loop> m_loop;
 
     CellGrid m_grid;
+    bool     m_drawn = false;   //!< has m_grid ever been presented?
     TerminalCapabilities m_caps;
     std::deque<TerminalEvent> m_pending;
 };

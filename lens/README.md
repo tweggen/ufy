@@ -238,6 +238,7 @@ whole grid per step when you need the film rather than the summary.
 | `lens-grid` | The character grid: UTF-8, display width, clipping, boxes. |
 | `lens-shell` | `fold`, the Help panel and the `M-x` palette: contextual help, no dead links, palette modality and filtering. |
 | `lens-interaction` | What happens *between* frames: that a keystroke visibly does something, that scrolling is minimal, that a modal panel gives focus back — plus a seeded random walk asserting those invariants after every key. See the file's comment for why the other two categories cannot see these bugs. |
+| `lens-pty-interaction` | The real `unify-lens` binary on a real pseudo-terminal: that a keystroke produces a frame *without* a second keystroke, and that `C-x C-c` leaves cleanly. The only test that exercises `src/term/`; POSIX only, skipped where no pty can be opened. |
 | `lens-screen-*` | Seventeen golden screens: four stock layouts at 120×40 and 80×24, plus tiling gestures, maximise, a resize round trip, an unfinished chord, help at both geometries, and the palette open and filtered. |
 | `lens-too-small` | That lens refuses below 80×24 — and renders at exactly 80×24, so the gate is not an off-by-one. |
 | `lens-resize-roundtrip` | That shrinking to 80×24 and back restores the screen *exactly*, not merely to something valid. |

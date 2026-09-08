@@ -240,6 +240,40 @@ if(NOT MSVC)
 endif()
 
 # ---------------------------------------------------------------------------
+# The fourth test category: the real binary, on a real pseudo-terminal.
+#
+# Everything else in this file tests lens with the terminal taken away --
+# which is right, and is why the model is testable at all, and is also why
+# src/term/ was the one place a user-visible bug could live unseen. This runs
+# unify-lens on a pty, types at it, and reads the bytes that come back.
+#
+# POSIX only: it needs posix_openpt, and Windows would need ConPTY, which is
+# a different enough API to be its own file if it ever earns one. The bug
+# class is not platform-specific, so catching it on one platform is enough.
+# It needs the terminal backend, obviously, so it follows LENS_BUILD_TERM.
+# ---------------------------------------------------------------------------
+if(UNIX AND LENS_BUILD_TERM)
+    add_executable(lens-pty-interaction-test
+        "${CMAKE_CURRENT_SOURCE_DIR}/test/pty-interaction-test.cpp"
+    )
+    target_include_directories(lens-pty-interaction-test PRIVATE
+        "${LENS_UNIFY_DIR}/test/session"
+    )
+    target_compile_options(lens-pty-interaction-test PRIVATE -Wall -Wextra)
+
+    add_test(
+        NAME lens-pty-interaction
+        COMMAND lens-pty-interaction-test "$<TARGET_FILE:unify-lens>"
+    )
+    set_tests_properties(lens-pty-interaction PROPERTIES
+        SKIP_RETURN_CODE 77
+        # Every wait inside has its own deadline; this is the backstop for a
+        # child that neither draws nor dies.
+        TIMEOUT 120
+    )
+endif()
+
+# ---------------------------------------------------------------------------
 # G1.1 / G1.2 / G1.7 -- golden screens.
 #
 # Every one runs through `--script`, which is the mechanism G1.7 asks for and
