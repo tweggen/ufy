@@ -415,10 +415,17 @@ not be filed under Phase 4 tooling.
       question "has everything been delivered?", which is not the same as
       "is the queue empty", since an event is popped before its callback
       runs.)*
-- [ ] **E7 — Structured solution values.** *(Already listed below as "not
-      started"; restated here 2026-09-08 with what writing lens's `--spec`
-      runner turned up, and planned in detail in
-      `plans/todo/lens/E7-STRUCTURED-VALUES.md`.)*
+- [x] **E7 — Structured solution values.** *(Planned and implemented
+      2026-09-08 in seven phases; the plan, and what each phase found that
+      the plan had wrong, is `plans/todo/lens/E7-STRUCTURED-VALUES.md`.)*
+      **Done:** `Capabilities::structuredSolutions` is `true`, the contract
+      suite's truncation case runs against the real engine rather than
+      skipping, and an unbound variable arrives as a `Var` under the
+      caller's own name. `SolveJob::getGroundedSolutions()` hands out
+      `resolveTermGrounded()` clones that outlive the job's arena;
+      `toSessionValue()` walks them into the boundary's `Value`. The
+      description below is what was wrong before, kept because the reasoning
+      for the leaf-typing decision has not changed:
       `vault-unify-session.hpp` defines a full `Value` (Atom, Int, Float,
       Str, Var, Cons, Array, Map) and documents it as mirroring the
       engine's term kinds one for one. Nothing fills it:

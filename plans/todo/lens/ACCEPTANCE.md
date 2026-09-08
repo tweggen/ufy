@@ -14,9 +14,12 @@ by gates whose criteria are executable.
 > The four skips are all `LocalSession`, all honest, and all printed with
 > their reason on every run: three ask for something an in-process session
 > has no way to do (fail a transport, drop a connection, deliver on a
-> controlled clock) and the fourth needs nested values, which engine item E7
-> has yet to make possible. None of them is skipped for the fake, so no
-> criterion goes unexercised.
+> controlled clock). *(2026-09-08: there were four. The fourth needed nested
+> values, which engine item E7 has now made possible -- the truncation case
+> runs against the real engine and passes, and the retention case takes its
+> structured branch rather than its flat one. Three left, all transport-
+> shaped.)* None of them is skipped for the fake, so no criterion goes
+> unexercised.
 >
 > Two deviations from the gates as written, both deliberate.
 >
@@ -283,7 +286,7 @@ Three harnesses, all in the repo's established golden style
 | G5.1 | Solutions table renders bindings; scrolling past the last row issues exactly one `demand` (not one per keystroke). |
 | G5.2 | Inspector expands a selected binding as a term tree; a `truncated` node is marked and expanded via `inspect(q, index, path, budget)` — **not** by re-running the query, which is nondeterministic and may have side effects. Requires the query to be retained (G0.10). |
 | G5.3 | Diagnostics panel navigates: Enter moves the source panel to the reported file/line/column. |
-| G5.4 | **Floor, stated explicitly:** with the engine's current `map<string,string>` solutions, the inspector renders `Str` leaves and the test asserts *that*. When ROADMAP Phase 1's structured solutions land, the same test is upgraded to assert a tree, and no session API change is required. |
+| G5.4 | ~~**Floor, stated explicitly:** with the engine's current `map<string,string>` solutions, the inspector renders `Str` leaves and the test asserts *that*.~~ **Floor raised 2026-09-08 — engine item E7 landed.** Bindings arrive as trees (`Cons`, `Array`, `Map`, `Int`, `Atom`, `Var`), `Capabilities::structuredSolutions` is `true`, and the contract suite's truncation case runs against the real engine instead of skipping. The prediction held exactly: **no session API change was required** — only the adapter and the inspector's richness moved, which is what the boundary was drawn for. Two obligations the floor did not mention, both now met: an unbound variable arrives as a `Var` under the caller's own name (SESSION-API §3), asserted unconditionally for every subject; and a value the budget cut is marked, since a compound rendered without its arguments is a *different* term shown as a whole one. See [E7-STRUCTURED-VALUES.md](E7-STRUCTURED-VALUES.md). |
 | **H** | `F1` in the inspector explains the term kinds and the truncation marker. |
 
 ## G6 — Debug

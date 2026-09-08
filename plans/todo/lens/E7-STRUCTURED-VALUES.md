@@ -1,7 +1,12 @@
 # E7 — Structured solution values
 
 An implementation roadmap, written 2026-09-08 to be executed by agents one
-phase at a time.
+phase at a time — and **executed the same day**. Every phase is marked DONE
+below with what it actually found, including the several places this
+document was wrong. It is kept rather than deleted because the reasoning
+survives the work: §2's leaf-typing decision is still the only answer to a
+question the engine cannot answer for itself, and the record of what a plan
+written from reading got wrong is worth more than a tidy plan.
 
 Every claim below carries a `file:line`; `vault-unify.hpp` and
 `vault-unify-session.hpp` live in `unify/include/`, everything else named
@@ -258,7 +263,17 @@ zero)").
 
 ---
 
-### E7.2 — Grounded solutions out of `SolveJob`
+### E7.2 — Grounded solutions out of `SolveJob` — **DONE**
+
+> Landed. **The plan's suggested test was necessary and not sufficient**,
+> and that is this phase's finding. A binding to `wrapper( red )` points
+> into the clause database, which outlives every job — handing out that raw
+> pointer is a wrong answer, not a dangling one, and the obvious test passes
+> either way. The bindings that genuinely dangle are the ones the job
+> allocated itself: arithmetic results and `findall` arrays, adopted into a
+> `UnifyContext` the arena destroys. There is a case for exactly that now,
+> and removing the grounding turns it into an ASan `heap-use-after-free`
+> while every other case still passes.
 
 **File:** `unify/src/vault-unify-solvejob.hpp` / `.cpp`.
 
@@ -315,7 +330,18 @@ use-after-free. Run it under ASan.
 
 ---
 
-### E7.3 — Wire the adapter, and flip the flag
+### E7.3 — Wire the adapter, and flip the flag — **DONE**
+
+> Landed, together with §E7.5 item 1 — splitting them would have left a
+> commit whose lens suite is red. Contract suite went 56 passed / 4 skipped
+> to 57 / 3. **Budget decision: defaults stay** (`maxDepth 8`,
+> `maxNodes 512`), recorded at the `applyBudget()` call that spends it — the
+> budget bounds what crosses the *boundary*, not what fits a transcript
+> line, and pre-cutting in the core would permanently remove the renderer's
+> choice between `point( 1, … )` and `point( … )`. Two corrections: §0 says
+> "one contract case skips on it" — two consult the flag, one skips and one
+> branches; and the spec runner needed a kind check at the *crossing*, not
+> at each of its thirteen field reads.
 
 **Files:** `unify/src/vault-unify-local-session.cpp`,
 `unify/test/session/contract-main.cpp`.
@@ -351,7 +377,22 @@ budget today.
 
 ---
 
-### E7.4 — Unbound variables become `Var` rows
+### E7.4 — Unbound variables become `Var` rows — **DONE**
+
+> Landed — and **the plan was wrong twice here**, both caught by checking
+> rather than assuming. It predicted this phase would make
+> `contract-suite.cpp`'s `Kind::Var` assertion live: it did not, because the
+> case carrying that assertion ran a goal whose variables were all bound in
+> *both* subjects. Closing that took a further phase, **E7.4b** (below). And
+> the plan's claim that `LocalSession` "never emits a `Kind::Var` binding"
+> was already false — it could whenever a bound term *contained* an unbound
+> variable. What this phase adds is the whole-binding case.
+>
+> `getSolutionList()` was deliberately left alone: there is no honest
+> *string* for an unbound variable, and its one remaining caller is the
+> REPL, whose output is a decision nobody has taken. In lens a solution with
+> an unbound variable renders `$u = $u`, which reads as "it came back open"
+> where silence would be indistinguishable from "there is no `$u`".
 
 **Separate phase because it changes binding cardinality**, and that is
 visible in the UI.
@@ -377,7 +418,18 @@ Emit them. Then:
 
 ---
 
-### E7.5 — Front-end fallout
+### E7.5 — Front-end fallout — **DONE**
+
+> Landed in two parts: the `renderValue` half first, independently of the
+> engine work, and the `spec.cpp` half alongside E7.3. **The `Cons` fix was
+> under-specified**: copying only the guard condition yields `point(  ) …`;
+> the whole `toDisplayString` shape had to move, and `Array` and `Map` had
+> the same fault in weaker form — the mark outside the bracket misattributes
+> what was cut. Also: `toDisplayString`, which this section treats as the
+> reference implementation, **has no caller anywhere in the tree**, so
+> choosing U+2026 over its `"..."` diverged from nothing. And
+> `transcript.hpp` claimed a golden pinned `renderValue` against drift; one
+> golden reaches one arm of eight.
 
 **Three known breaks, all found by reading, none hypothetical.**
 
@@ -416,7 +468,18 @@ Also note the divergence nothing pins: `renderValue` marks truncation with
 
 ---
 
-### E7.6 — The payoff: nested spec cases in lens
+### E7.6 — The payoff: nested spec cases in lens — **DONE**
+
+> Landed. Both forms exist; four of nine cases converted and five left flat
+> deliberately, so a regression in either reader turns the suite red. Two
+> readers, **one checker** — the nested reader builds the same structs the
+> flat one does and stops there. Three things the plan missed: the sketched
+> `case( Name, Steps )` omits the id the runner needs; two case forms create
+> a duplicate-id and a form-mixing hazard, both now refused with named
+> diagnostics and fixtures; and **at E7.3's budget defaults a nested case is
+> large enough to be truncated**, which would have run it as a silent prefix
+> of itself — `spec.cpp` now asks for depth 64 and refuses a truncated value
+> outright.
 
 Only after E7.3–E7.5 are green.
 
@@ -459,17 +522,44 @@ gone. Until then it is still true.
 - **The two ROADMAP defects** (negative literal, empty list). They live in
   the parser; E7 lives after it.
 
-## 5. Definition of done
+## 5. Definition of done — met 2026-09-08
 
-- [ ] `LocalSession::describe().structuredSolutions == true`.
-- [ ] `unify/test/session/contract-suite.cpp:950` runs and passes for the
-      `local` subject — no skip.
-- [ ] `contract-suite.cpp:1015`'s `Kind::Var` assertion is reached (E7.4).
-- [ ] A new engine-item test covers §2's table term by term.
-- [ ] `ctest` green on `build/unify` and `build/lens`; zero warnings; the
-      ASan leak gate still reports zero; TSan still clean.
-- [ ] Every engine golden byte-identical. Any lens golden that moves has its
-      diff explained in the commit message.
-- [ ] [ACCEPTANCE.md](ACCEPTANCE.md) G5.4's floor is raised, and the
-      `LocalSession` note at `vault-unify-local-session.cpp:72-84` no longer
-      describes a degradation that has been fixed.
+- [x] `LocalSession::describe().structuredSolutions == true`.
+- [x] The contract suite's truncation case runs and passes for the `local`
+      subject — no skip. 56 passed / 4 skipped became 57 / 3, and the
+      remaining three are transport-shaped cases an in-process session can
+      never satisfy.
+- [x] The unbound-`Var` obligation is asserted at the boundary. **Not** as
+      this checklist originally worded it — it said "`contract-suite.cpp:1015`'s
+      `Kind::Var` assertion is reached (E7.4)", and that line no longer
+      exists. The assertion sat inside `if ( kind == Var )`, which is not an
+      assertion at all: it holds only when it already holds. The guard was
+      the defect. Phase E7.4b replaced it with a driver obligation
+      (`scriptUnboundGoal`) and an unconditional case that pins the kind
+      *and* the caller's own display name, for every subject.
+- [x] A new engine-item test covers §2's table term by term
+      (`unify/test/engine/term-value-test.cpp`, 14 cases), and the
+      solution-level behaviour has its own
+      (`unify/test/engine/nested-binding-test.cpp`, 15 cases).
+- [x] `ctest` green on `build/unify` (29/29) and `build/lens` (63/63); zero
+      warnings; the ASan leak gate reports zero; TSan clean.
+- [x] Every engine golden byte-identical. **No lens golden moved either** —
+      `red` was a `Str` and is now an `Atom`, and `renderValue` prints
+      `.name` for both.
+- [x] [ACCEPTANCE.md](ACCEPTANCE.md) G5.4's floor is raised, and the
+      `LocalSession` note no longer describes a degradation that has been
+      fixed.
+
+### What this cost, and what it bought
+
+Seven phases, seven commits, each one green. The prediction G5.4 made when
+the floor was written held exactly: **no session API change was required**.
+Only the adapter and the inspector's richness moved, which is the whole
+argument for having drawn the boundary in pure standard C++ before there
+was anything behind it.
+
+Three defects were found by writing tests rather than by writing code: a
+use-after-free the obvious test could not have caught (E7.2), a truncated
+compound rendering as a different term (E7.5), and an assertion that had
+never once executed (E7.4b). None of them was the thing the phase set out
+to do.
