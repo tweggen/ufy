@@ -84,8 +84,6 @@ SolveContext::SolveContext(
 
 SolveJob::SolutionListPtr SolveJob::getSolutionList() const
 {
-    int res;
-
     /*
      * Local visitor class to collect all var terms in goal.
      */
@@ -137,28 +135,37 @@ SolveJob::SolutionListPtr SolveJob::getSolutionList() const
         std::map<VarTermId,std::string>::const_iterator itVar, itVarEnd = mapVarTerms.end();
         for( itVar=mapVarTerms.begin(); itVar != itVarEnd; ++itVar ) {
             AssignmentId aid( 0, itVar->first );
-            InstanceId iid;
-            res = uc->findVarBinding( aid, iid );
-            if( res>=0 ) {
+            InstanceId iid = 0;
+            /*
+             * findVarBinding() answers 1 or 0 and nothing else, so testing
+             * its result decides nothing: an unbound variable simply has
+             * no instance, and the spInstance test below is the only real
+             * guard. Take the instance id and let that test do the work.
+             */
+            (void) uc->findVarBinding( aid, iid );
+            boost::shared_ptr<SingleVarInstance> spInstance;
+            // We have to find the instance recursively starting at the uc leaf.
+            (void) uc->findVarInstance( iid, spInstance );
+            if( spInstance && spInstance->getTerm() ) {
+                const AbstractTerm* pTerm = spInstance->getTerm();
                 /*
-                 * This variable seems to have a value. Find out the content.
+                 * Render in the solution's context, not bare. A variable
+                 * sitting INSIDE the bound term is bound as well, and
+                 * toString() has no context to look it up in -- it would
+                 * ship "wrapper( VT17 )" where the caller asked what $x is.
+                 * `uc` is the solved stack top; the instance knows the
+                 * scope its own term was built in.
                  */
-                boost::shared_ptr<SingleVarInstance> spInstance;
-                // We have to find the instance recursively starting at the uc leaf.
-                (void) uc->findVarInstance( iid, spInstance );
-                if( spInstance && spInstance->getTerm() ) {
-                    const AbstractTerm* pTerm = spInstance->getTerm();
-                    std::string value = pTerm->toString();
-                    VAULT_UNIFY_DI( SOLUTION, "Var %s is \"%s\".\n", itVar->second.c_str(), value.c_str() );
-                    (*m)[itVar->second] = value.c_str();
-                } else {
-                    VAULT_UNIFY_DI( SOLUTION, "%lld::VT%lld" /* ",%lld" */ "= %lld does not seem to be instantiated yet.\n"
-                        , (long long) aid.getUnifyContextId()
-                        , (long long) aid.getVarTermId()
-                        , (long long) iid
-                        );
-                }                    
-
+                std::string value = pTerm->toContextString(
+                    uc, spInstance->getUnifyContext() );
+                VAULT_UNIFY_DI( SOLUTION, "Var %s is \"%s\".\n", itVar->second.c_str(), value.c_str() );
+                (*m)[itVar->second] = value.c_str();
+            } else {
+                VAULT_UNIFY_DI( SOLUTION, "%lld::VT%lld" /* ",%lld" */ "= %lld does not seem to be instantiated yet.\n"
+                    , (long long) aid.getUnifyContextId()
+                    , (long long) aid.getVarTermId()
+                    , (long long) iid
+                    );
             }
         }
         // TXWTODO: Do not break, but extend the data structure we return.
