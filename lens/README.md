@@ -320,15 +320,30 @@ than by convention.
 
 ## Status
 
+*Last updated 2026-09-10.*
+
 Gate **G0** (the session boundary) is closed; see
-[`../plans/todo/lens/ACCEPTANCE.md`](../plans/todo/lens/ACCEPTANCE.md).
+[`../plans/todo/lens/ACCEPTANCE.md`](../plans/todo/lens/ACCEPTANCE.md), and
+[`../plans/todo/lens/HANDOFF.md`](../plans/todo/lens/HANDOFF.md) §0 for the
+fuller picture.
 Gate **G1** (the shell) is closed: tiling, the four stock layouts,
 degradation, `--script`, the command table, the generated help surfaces, the
 Help panel `F1` opens and the `M-x` command palette.
 
-Gate **G2** (the transcript) is under way: define a fact, ask a question,
+Gate **G2** (the transcript) is half open: define a fact, ask a question,
 see the binding, against a real engine. Parse errors and program output land
-in the transcript rather than on lens's streams.
+in the transcript rather than on lens's streams. Still to come under G2:
+`F5` re-run, cancel, history-file interop with `unify-run -i`, writing the
+transcript to a file, and the 10,000-solution responsiveness bound.
+
+Since 2026-09-08 a binding arrives as a **term tree** rather than as text —
+`point( 1, 2 )` is a compound with two integers, not nine characters —
+because engine item E7 landed. A value the engine had to cut to fit the
+budget says so, and a truncated compound is rendered as `point( … )` rather
+than as the different term `point`.
+
+Gates **G3–G9** have not started. G5 (Inspect) is the cheapest of them now:
+it was waiting on exactly the term trees E7 delivered.
 
 On a fresh start lens opens the **first-steps** help page in the main working
 area — the keys that matter, and a worked example to type. `C-x 0` dismisses

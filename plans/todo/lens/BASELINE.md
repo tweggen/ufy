@@ -85,3 +85,40 @@ therefore unpacked into a session-local prefix and the build pointed at it:
 Same Boost, same version, statically linked. It is not a different build in
 any way that should matter — but if a later result is surprising, install
 `libboost-all-dev` properly and re-check before believing it.
+
+---
+
+## 5. Where the numbers are now — 2026-09-10
+
+The baseline above is what §1–§4 recorded **before any lens work**, at
+`39023de`. Keep it: it is what "the engine goldens stay byte-identical"
+is measured against, and all 23 of them still are.
+
+For diffing against *today*, on the same machine and toolchain:
+
+| | at `39023de` | now |
+| --- | --- | --- |
+| `ctest --test-dir build/unify` | 23/23 | **29/29** — the 23 goldens, unchanged, plus 3 session and 3 engine-item targets |
+| `ctest --test-dir build/lens` | did not exist | **63/63** |
+| Contract suite | did not exist | **57 passed, 0 failed, 3 skipped**, over three subjects |
+| Warnings under `-Wall -Wextra` | zero | zero |
+| ASan + UBSan | clean | clean |
+| LeakSanitizer | zero reports | zero reports |
+| TSan over `ctest` and the `.ufy` corpus | **164 race reports** | **zero** — engine items E14 and E16 |
+| Platforms built and tested | Linux | Linux, macOS, **Windows/MSVC in CI** |
+
+Two things worth carrying forward rather than rediscovering:
+
+**§2.1's caveat still stands.** LSan reports only *unreachable* blocks, and
+`~RuntimeContext`'s deliberately leaked `Engine` is still reachable at
+exit. A continuing zero here is **not** evidence that E9 (world reset)
+landed correctly. Gate E9's leak claim on a loop of `load`s and RSS.
+
+**The TSan number is the one that moved most, and it was pre-existing.**
+The 164 reports were measured at `39023de` in a throwaway worktree, before
+any of this work — they were not introduced by the boundary. E14 took them
+to 13; the remaining 13 were the unlocked clause-list reader racing
+`appendClause`'s `push_back`, which needed E16 (an append-only segmented
+store with a snapshot-count read) to reach zero. There was no measurable
+performance cost. If TSan ever comes back non-zero, that is a regression in
+this code and not the engine's inheritance.

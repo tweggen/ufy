@@ -4,6 +4,20 @@ Companion to [`../lens-text-mode-environment.md`](../lens-text-mode-environment.
 Plan requirement (e): development is test-driven, and progress is measured
 by gates whose criteria are executable.
 
+> ## Where the gates stand — 2026-09-10
+>
+> | Gate | | |
+> | --- | --- | --- |
+> | **G0** Boundary | **CLOSED** 2026-09-06 | contract suite 57 passed / 0 failed / 3 skipped, over three subjects |
+> | **G1** Shell | **CLOSED** 2026-09-07 | tiling, four layouts, degradation, `--script`, commands, help, palette |
+> | **G2** Transcript | **PARTIAL** | G2.1, G2.2, G2.3, G2.7 done; G2.4, G2.5, G2.6, G2.8, G2.9 and H open |
+> | **G3–G9** | not started | G5 (Inspect) is now much cheaper — it was blocked on term trees and engine item E7 delivered them |
+>
+> Engine items **E1, E2, E4, E7, E10, E14, E16** are done; **E3, E5, E6,
+> E9, E11, E12, E13, E15** are not. `ctest` is 29/29 on `build/unify` and
+> 63/63 on `build/lens`; CI additionally builds and tests on Windows/MSVC.
+> [HANDOFF.md](HANDOFF.md) §0 is the fuller picture and the place to start.
+
 > **Progress note (2026-09-06, implementation machine). G0 IS CLOSED.**
 > The boundary exists, the contract suite runs against three subjects --
 > `FakeSession` benign, `FakeSession` reordering, and `LocalSession` over a

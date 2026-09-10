@@ -2,6 +2,10 @@
 
 Status: draft, created 2026-08-20 from a code review of the Unify engine
 (then living at `combine/modules/unify` in the vault repository).
+Phases 0 and 1 are substantially done; Phase 5.1 landed as engine items E14
+and E16. The engine items E1–E16 pulled forward by the lens plan are
+tracked in their own section below, and the plan itself lives in
+`plans/todo/lens/` — start at its `HANDOFF.md`.
 
 Unify is a Prolog-family logic language with C-like surface syntax (`.ufy`),
 embedded as the rule engine of the vault home-automation system. This document
