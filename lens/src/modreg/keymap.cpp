@@ -3,6 +3,7 @@
  */
 
 #include "keymap.hpp"
+#include "help.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -307,6 +308,20 @@ Keymap defaultKeymap()
         if( parseKeySeq( kDefaults[i].keys, seq ) ) {
             map.bind( seq, kDefaults[i].command );
         }
+    }
+
+    /*
+     * M-<letter> opens one heading's drop-down directly (UI.md section 1).
+     * Read off the heading table rather than written out a second time, so
+     * the letter the bar underlines and the key that answers to it cannot
+     * start out disagreeing.
+     */
+    const std::vector<MenuHeading> headings = menuHeadings();
+    for( std::size_t i = 0; i < headings.size(); ++i ) {
+        KeySeq seq;
+        seq.push_back( Key::character( (char32_t) headings[i].defaultLetter,
+                                       false, true ) );
+        map.bind( seq, headings[i].commandId );
     }
     return map;
 }

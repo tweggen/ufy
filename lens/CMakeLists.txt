@@ -345,6 +345,8 @@ if(BASH_PROGRAM)
         "palette-120x40|120x40|browse|palette"
         "palette-filtered|120x40|browse|palette-filtered"
         "menu-120x40|120x40|browse|menu"
+        "menu-window-80x24|80x24|browse|menu-window"
+        "menu-empty-80x24|80x24|browse|menu-empty"
     )
 
     # The welcome page, which needs --welcome. Its own list for the same

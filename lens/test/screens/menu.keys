@@ -1,5 +1,5 @@
-# F10. The menu bar draws eight headings, so the menu shows all eight --
-# including the ones with nothing under them yet, which say so rather than
-# vanishing and making the bar look like a lie.
-C-x 0
+# F10 lights the bar on File; Enter drops it down. The drop-down is the one
+# overlay (UI.md section 1): it covers the tiles under it and moves none of
+# them, and the status line explains the highlighted item.
 F10
+Enter

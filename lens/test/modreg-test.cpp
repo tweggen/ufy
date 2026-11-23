@@ -190,6 +190,10 @@ int main()
             { "F1",    "help.contextual" },
             { "F10",   "menu.open" },
             { "M-x",   "command.palette" },
+            { "M-f",   "menu.file" },
+            { "M-w",   "menu.world" },
+            { "M-n",   "menu.window" },   /* World has the W */
+            { "M-h",   "menu.help" },
         };
         for ( const Expected& e : expected ) {
             KeySeq seq;

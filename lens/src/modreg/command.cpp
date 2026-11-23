@@ -66,6 +66,13 @@ Command& Command::helpTopic( std::string topic )
 }
 
 
+Command& Command::notInMenu()
+{
+    m_inMenu = false;
+    return *this;
+}
+
+
 Command& Command::enabledWhen( Predicate predicate )
 {
     m_enabled = std::move( predicate );
