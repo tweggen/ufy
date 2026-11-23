@@ -45,6 +45,28 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "Build type" FORCE)
 endif()
 
+# ---------------------------------------------------------------------------
+# MSVC needs telling two things that GCC and Clang infer.
+#
+#   /utf-8   The sources are UTF-8 and so are their literals. MSVC otherwise
+#            reads them in the system codepage, which turns a box-drawing
+#            character constant into "error C2015: too many characters in
+#            constant" and silently corrupts non-ASCII string literals that
+#            do compile.
+#
+#   /bigobj  Boost.Spirit Qi grammars generate enormous numbers of template
+#            instantiations, and the parser exceeds MSVC's default per-object
+#            section limit (error C1128). Harmless everywhere else -- it only
+#            raises a ceiling.
+#
+# Set directory-wide rather than per target, so tests and any target added
+# later inherit them; a translation unit that needs one of these and does not
+# get it fails in a way that names neither.
+# ---------------------------------------------------------------------------
+if(MSVC)
+    add_compile_options(/utf-8 /bigobj)
+endif()
+
 # UNIFY_SANITIZE: comma-separated -fsanitize= value(s), e.g. "address,undefined".
 # Empty (the default) builds with no sanitizer. This is a standalone project
 # with exactly two targets (vault-unify-core, unify-run), so applying the
@@ -64,7 +86,14 @@ else()
     option(UNIFY_BUILD_XDEBUG "Build the xdebug TCP debugger backend" OFF)
 endif()
 
-find_package(Boost REQUIRED COMPONENTS thread system filesystem)
+# Boost.System has been header-only since Boost 1.69, and distributions
+# packaging Boost >= 1.87 (Ubuntu's 1.90, for one) ship no libboost_system
+# at all -- so requiring it as a component makes configuration fail outright
+# on a perfectly good Boost. Ask for it optionally and link the imported
+# target only if this Boost still provides one; the header-only Boost.System
+# comes in via Boost::thread / Boost::filesystem regardless.
+find_package(Boost REQUIRED COMPONENTS thread filesystem
+                   OPTIONAL_COMPONENTS system)
 find_package(Threads REQUIRED)
 
 # ---------------------------------------------------------------------------
@@ -73,9 +102,16 @@ find_package(Threads REQUIRED)
 # Everything in src/ is the pure engine core and needs only Boost +
 # Threads.
 #
-# The xdebug-* files are pure Boost.Asio/Boost.Thread except for one POSIX
-# ::access() call in vault-unify-xdebug.cpp, so they are split out behind
-# UNIFY_BUILD_XDEBUG instead of being patched for portability.
+# The xdebug-* files are pure Boost.Asio/Boost.Thread. They used to carry one
+# POSIX ::access() call, which is why they are split out behind
+# UNIFY_BUILD_XDEBUG; that call is gone (2026-09-08, replaced by simply
+# opening the stream, which is portable and has no check-then-open race), so
+# nothing in them is POSIX-only any more.
+#
+# The option still defaults OFF away from UNIX, deliberately: the reason is
+# now "nobody has run this backend on Windows" rather than "it cannot
+# compile there". Turning it on is a decision for whoever tests it, not a
+# default we assume on their behalf.
 # ---------------------------------------------------------------------------
 
 file(GLOB UNIFY_ALL_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp")
@@ -121,10 +157,13 @@ target_compile_definitions(vault-unify-core PRIVATE VAULT_NO_PPLX)
 target_link_libraries(vault-unify-core
     PUBLIC
         Boost::thread
-        Boost::system
         Boost::filesystem
         Threads::Threads
 )
+
+if(TARGET Boost::system)
+    target_link_libraries(vault-unify-core PUBLIC Boost::system)
+endif()
 
 # The C++03-era boost::bind/boost::asio usage in vault-unify-xdebug-tcp.cpp
 # relies on the pre-C++11 global placeholders (_1, _2, ...); newer Boost

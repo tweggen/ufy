@@ -1,0 +1,7 @@
+# G2.3: engine item E4's user-visible proof. print/emit output appears in the
+# transcript, and the runner separately asserts nothing reached lens's own
+# stdout or stderr.
+type greet( $who ) { print( "hello" ); print( $who ); }
+Enter
+type greet( world )
+Enter

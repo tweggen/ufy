@@ -1,0 +1,40 @@
+ File  Edit  World  Query  Image  Debug  Window  Help
+┌ Catalogue ─────────────────────┐┌ Source ────────────────────────────────────────────────────────────────────────────┐
+│module -> (name, arity)         ││the selected definition                                                             │
+│awaiting listing (G3)           ││awaiting source (G3)                                                                │
+│                                ││                                                                                    │
+│                                ││                                                                                    │
+│                                ││                                                                                    │
+│                                │└────────────────────────────────────────────────────────────────────────────────────┘
+│                                │┌ Help ──────────────────────────────────────────────────────────────────────────────┐
+│                                ││Each tile shows a panel. None of them is privileged in the code --                  │
+│                                ││the shell knows about tiles, not about what is in them.                             │
+│                                ││                                                                                    │
+│                                ││  Transcript    the REPL: goals, results, program output                            │
+│                                ││  Catalogue     module -> (name, arity) -> clause count                             │
+│                                ││  Source        the selected definition                                             │
+│                                ││  Diagnostics   parse and runtime errors, navigable to source                       │
+│                                ││  Solutions     the current query's bindings, one row per solution                  │
+│                                ││  Inspector     one binding as an expandable term tree                              │
+│                                ││  Trace         goal stack, breakpoints, step controls                  more ▾ Down │
+│                                │└────────────────────────────────────────────────────────────────────────────────────┘
+│                                │┌ Diagnostics ───────────────────────────────────────────────────────────────────────┐
+│                                ││(none)                                                                              │
+│                                ││                                                                                    │
+│                                ││                                                                                    │
+│                                ││                                                                                    │
+│                                ││                                                                                    │
+│                                ││                                                                                    │
+└────────────────────────────────┘└────────────────────────────────────────────────────────────────────────────────────┘
+┌ Transcript ──────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│?-                                                                                                                    │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+ gen 0 · 0 clauses · idle · no session · browse
+F1 Help  F10 Menu

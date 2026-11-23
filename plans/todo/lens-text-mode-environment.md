@@ -134,6 +134,29 @@ returning a `RequestId`, answered by `Defined{added, replaced, diagnostics}`.
 
 ## 5. Engine work this requires
 
+> **Implementation note (2026-09-06).** E1, E2, E4, E10 and E14 -- the whole
+> of section 5.1 -- are implemented and tested; `unify/ROADMAP.md` records
+> each with what actually happened. Two findings worth carrying back into
+> this section:
+>
+> - **E14 was under-scoped, exactly as the handoff predicted.** Its three
+>   bullets are done and took ThreadSanitizer reports over the test corpus
+>   from 164 to 13. The residual 13 are all one thing the list omitted: the
+>   clause-list READER (`ExecutionState::ClauseIterator`) walking
+>   `std::list<Clause*>` while `appendClause()` pushes onto it. It is
+>   pre-existing rather than introduced -- the same measurement at `39023de`
+>   reports 164 -- and it blocks G0.9. It is now engine item **E16**;
+>   locking the reader is the obvious fix and the wrong one, since
+>   `isValid()` runs once per candidate clause per goal.
+> - **E1's design as written here does not work.** "origin + kind on
+>   `Clause`, set at `ExecutionState::appendClause()`" is right about the
+>   choke point and wrong about the source: the origin cannot be derived
+>   from the clause's `DebugLocation`, because the parser never sets one on
+>   a clause and every builtin sets one pointing at its own C++ file. The
+>   caller has to supply file and line, so `appendClause()` takes a full
+>   `ClauseOrigin` and fills in only the module id.
+
+
 These are genuine additions to `vault-unify-core`, not adapter tricks.
 **The engine work is the bulk of this plan, not a preamble to it** — an
 independent review of the first draft found that the two largest items were

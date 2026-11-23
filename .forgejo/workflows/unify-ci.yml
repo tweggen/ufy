@@ -9,6 +9,12 @@ name: Unify CI
 #   - upload-artifact: the stock actions/upload-artifact@v4 does not work on
 #     Forgejo (it targets GitHub's artifact backend); the patched fork at
 #     code.forgejo.org/forgejo/upload-artifact@v4 is used instead.
+#   - the windows-msvc job has no twin here. It exists on GitHub to catch
+#     code that compiles on Linux and macOS by accident (a POSIX header, a
+#     transitively-included Boost one, a UTF-8 character constant read in
+#     the system codepage -- all real failures in this repository). Forgejo
+#     runners here are Linux containers, so the job would have nowhere to
+#     run; if a Windows runner is ever registered, copy it across verbatim.
 #   - runs-on: "ubuntu-latest" here is just a runner label -- map it in your
 #     forgejo-runner config to a Debian/Ubuntu-based docker image that has
 #     node.js (needed to execute actions), e.g. the documented default
@@ -21,10 +27,12 @@ on:
   push:
     paths:
       - "unify/**"
+      - "lens/**"
       - ".forgejo/workflows/unify-ci.yml"
   pull_request:
     paths:
       - "unify/**"
+      - "lens/**"
       - ".forgejo/workflows/unify-ci.yml"
   # Manual trigger; with update_golden=true the build-and-test job also
   # regenerates all golden files and uploads them as the
@@ -199,3 +207,42 @@ jobs:
           name: unify-leak-report
           path: leak-report/
           if-no-files-found: warn
+
+  # ---------------------------------------------------------------------
+  # lens, on Linux. Builds the engine as a subproject (lens/CMakeLists.txt
+  # does the add_subdirectory), so this job runs BOTH suites: every
+  # unify-* test and every lens-* one.
+  #
+  # LENS_BUILD_TERM=ON on purpose. The terminal backend is one file
+  # (lens/src/term/ftxui-terminal.cpp) and it is the only one that includes
+  # FTXUI or touches a real tty, so it is exactly the file that a
+  # model-only build would never compile. It is fetched at configure time,
+  # so this job needs outbound network -- unlike the two above it.
+  # ---------------------------------------------------------------------
+  lens-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          if command -v sudo >/dev/null 2>&1; then SUDO=sudo; else SUDO=; fi
+          $SUDO apt-get update
+          $SUDO apt-get install -y --no-install-recommends \
+            build-essential cmake git libboost-all-dev
+
+      - name: Configure
+        run: |
+          cmake -S lens -B build/lens \
+                -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+                -DLENS_BUILD_TERM=ON
+
+      - name: Build
+        run: |
+          cmake --build build/lens --parallel
+
+      - name: Test
+        run: |
+          ctest --output-on-failure
+        working-directory: build/lens

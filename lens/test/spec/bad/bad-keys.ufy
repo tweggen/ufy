@@ -1,0 +1,3 @@
+// Keys that are not keys. Must FAIL and name the offending sequence.
+case( nokeys, "keys that are not keys" );
+press(  nokeys, 1, "Wibble-7" );

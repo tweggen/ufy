@@ -1,0 +1,13 @@
+# The same palette after typing. `x` is deliberately among the characters
+# typed: it is the second key of `C-x 2`, and while the minibuffer is open it
+# must filter rather than begin a chord.
+
+M-x
+w
+i
+n
+d
+o
+w
+.
+s

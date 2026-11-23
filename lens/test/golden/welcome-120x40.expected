@@ -1,0 +1,40 @@
+ File  Edit  World  Query  Image  Debug  Window  Help
+┌ Catalogue ─────────────────────┐┌ Help ──────────────────────────────────────────────────────────────────────────────┐
+│module -> (name, arity)         ││unify-lens -- a place to keep a Unify world open and work inside it.                │
+│awaiting listing (G3)           ││                                                                                    │
+│                                ││THE KEYS THAT MATTER                                                                │
+│                                ││                                                                                    │
+│                                ││  F1          help on whatever has focus. You are here.                             │
+│                                ││  F10         the menu.                                                             │
+│                                ││  M-x         every command there is, searchable.                                   │
+│                                ││                                                                                    │
+│                                ││  Tab         move to the next tile     S-Tab   the previous one                    │
+│                                ││  C-x 0       close this tile           C-x 1   make it the only one                │
+│                                ││  C-x 2       split it top/bottom       C-x 3   split it left/right                 │
+│                                ││                                                                                    │
+│                                ││  C-x C-c     leave lens.                                                           │
+│                                ││                                                                                    │
+│                                ││TRY SOMETHING                                                                       │
+│                                ││                                                                                    │
+│                                ││Move to the Transcript with Tab, and type at the ?- prompt:             more ▾ Down │
+│                                │└────────────────────────────────────────────────────────────────────────────────────┘
+│                                │┌ Diagnostics ───────────────────────────────────────────────────────────────────────┐
+│                                ││(none)                                                                              │
+│                                ││                                                                                    │
+│                                ││                                                                                    │
+│                                ││                                                                                    │
+│                                ││                                                                                    │
+│                                ││                                                                                    │
+└────────────────────────────────┘└────────────────────────────────────────────────────────────────────────────────────┘
+┌ Transcript ──────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│?-                                                                                                                    │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+ gen 0 · 0 clauses · idle · no session · browse
+F1 Help  F10 Menu

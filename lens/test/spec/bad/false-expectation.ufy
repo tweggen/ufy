@@ -1,0 +1,5 @@
+// A case whose expectation is simply not true. Must FAIL (exit 1) and say
+// what it saw next to what it wanted.
+case( wrong, "an expectation that is simply false" );
+press(  wrong, 1, "F1" );
+expect( wrong, 1, cursor, 99 );

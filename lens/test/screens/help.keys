@@ -1,0 +1,5 @@
+# G1 "H": F1 opens help on whatever has focus, beside the work rather than
+# over it. Recorded at both geometries, because at 80x24 the solver has to
+# decide what folds -- and help must not be what disappears.
+
+F1

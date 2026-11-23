@@ -1,0 +1,5 @@
+# UI.md section 5.1: an unfinished chord displaces the hint line, because a
+# prefix that silently swallowed the next keystroke is indistinguishable
+# from a hang. This script ends mid-chord on purpose.
+
+C-x

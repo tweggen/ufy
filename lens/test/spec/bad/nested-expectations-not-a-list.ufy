@@ -1,0 +1,7 @@
+// A step whose second argument is one expectation rather than a list of
+// them. The same slip as nested-steps-not-a-list, one level down, and it
+// must be caught at that level: a reader that accepted a bare term here
+// would accept it everywhere and the shape would stop being a shape.
+case( nested_bare_expect, "expectations that are not a list", [
+    step( "F1", panel( "Help" ) )
+] );

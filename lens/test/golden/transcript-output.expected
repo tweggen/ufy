@@ -1,0 +1,24 @@
+ File  Edit  World  Query  Image  Debug  Window  Help
+┌ Transcript ────────────────────────────────────┐┌ Solutions ─────────────────┐
+│?- greet( $who ) { print( "hello" ); print( $who││bindings, one row per soluti│
+│-- defined greet/1                              ││awaiting solve (G5)         │
+│?- greet( world )                               ││                            │
+│print: hello                                    ││                            │
+│print: world                                    ││                            │
+│yes                                             ││                            │
+│-- 1 solution                                   ││                            │
+│                                                ││                            │
+│                                                ││                            │
+│                                                ││                            │
+│                                                ││                            │
+│                                                ││                            │
+│                                                ││                            │
+│?-                                              ││                            │
+└────────────────────────────────────────────────┘└────────────────────────────┘
+┌ Catalogue ───────────────────────────────────────────────────────────────────┐
+│module -> (name, arity)                                                       │
+│awaiting listing (G3)                                                         │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+ gen 0 · idle · buffered · cancel detaches only · local
+F1 Help  F10 Menu

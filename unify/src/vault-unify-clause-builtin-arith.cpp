@@ -32,18 +32,10 @@
 namespace vault {
 namespace unify {
 
-namespace {
-
 /**
- * Parse s as a signed int64 (v1 semantics: no floats; a leading '-' is
- * accepted here even though m_ruleNumber -- src/vault-unify-parser.hpp --
- * never produces one itself, since an evaluated result CAN be negative,
- * e.g. `3 - 10;`, and its atom text ("-7") must itself be readable back as
- * a number by a later expression). Rejects empty strings, anything with
- * trailing garbage after the digits (strtoll only requires a PREFIX to be
- * numeric; a manual full-string check is required to actually reject
- * something like "12abc"), and out-of-range values. Returns false (and
- * leaves out_value untouched) on any failure.
+ * See the declaration (src/vault-unify-clause-builtin.hpp) for the full
+ * contract and for why this is the engine's ONE definition of "is this text
+ * a number".
  */
 bool parseInt64( const std::string& s, int64_t& out_value )
 {
@@ -64,8 +56,6 @@ bool parseInt64( const std::string& s, int64_t& out_value )
     return true;
 }
 
-} // anonymous namespace
-
 
 /**
  * Recursively evaluate an arithmetic expression term to an int64.
@@ -81,9 +71,8 @@ bool parseInt64( const std::string& s, int64_t& out_value )
  *    vault-unify-parser.cpp): lhs/rhs are evaluated recursively (bottom-up)
  *    and combined per opAtom's text.
  *  - a plain 0-arity ConsTerm atom, whose name must parse as an int64
- *    (parseInt64() above, in this file's own anonymous namespace -- still
- *    reachable from here by ordinary unqualified lookup within the same
- *    translation unit).
+ *    (parseInt64() above, defined here and declared in
+ *    vault-unify-clause-builtin.hpp).
  *
  * Any other shape (a MapTerm, an unbound var, a non-numeric atom, division
  * by zero, an unrecognized operator) is an error: returns false and fills
@@ -92,7 +81,7 @@ bool parseInt64( const std::string& s, int64_t& out_value )
  *
  * ROADMAP Phase 2 (string operations, SPEC.md): declared (non-static) in
  * vault-unify-clause-builtin.hpp -- rather than kept anonymous-namespace
- * file-local like parseInt64() above -- specifically so
+ * file-local, this module's usual per-file style -- specifically so
  * vault-unify-clause-builtin-string.cpp's concat/strlen argument resolution
  * can reuse this SAME evaluator for a `__builtin_arith` argument (e.g.
  * `$s = concat($a, 1 + 2);`), instead of duplicating the recursive tree

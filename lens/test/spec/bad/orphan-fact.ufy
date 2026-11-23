@@ -1,0 +1,6 @@
+// A press naming a case that does not exist -- a typo in an id. Must be
+// reported, not silently dropped, because a dropped press is a test that
+// quietly does not run.
+case( real, "a case that exists" );
+press(  real, 1, "F1" );
+press(  ral, 1, "F1" );

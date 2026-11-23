@@ -1,0 +1,24 @@
+ File  Edit  World  Query  Image  Debug  Window  Help
+┌ Catalogue ─────────┐┌ Help ──────────────────────────────────────────────────┐
+│module -> (name, ari││unify-lens -- a place to keep a Unify world open and    │
+│awaiting listing (G3││work inside it.                                         │
+│                    ││                                                        │
+│                    ││THE KEYS THAT MATTER                                    │
+│                    ││                                                        │
+│                    ││  F1          help on whatever has focus. You are here. │
+│                    ││  F10         the menu.                                 │
+│                    ││  M-x         every command there is, searc more ▾ Down │
+│                    │└────────────────────────────────────────────────────────┘
+│                    │┌ Diagnostics ───────────────────────────────────────────┐
+│                    ││(none)                                                  │
+│                    ││                                                        │
+│                    ││                                                        │
+└────────────────────┘└────────────────────────────────────────────────────────┘
+┌ Transcript ──────────────────────────────────────────────────────────────────┐
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│?-                                                                            │
+└──────────────────────────────────────────────────────────────────────────────┘
+ gen 0 · 0 clauses · idle · no session · browse
+F1 Help  F10 Menu

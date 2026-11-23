@@ -1,0 +1,3 @@
+// A perfectly valid Unify program that states no cases. Must be a setup
+// error (exit 2), never a green run of zero tests.
+fruit( apple );

@@ -19,13 +19,35 @@
 #include <boost/thread/condition_variable.hpp>
 #include <boost/thread/mutex.hpp>
 #include <boost/thread/lock_guard.hpp>
+/*
+ * Include what this header USES, not what happens to arrive with it.
+ *
+ * boost::thread (Engine::m_lsWorkerThreads) and boost::unique_lock (the
+ * Guard typedef below) are both used here, and neither is declared by the
+ * three thread headers above. On Linux and macOS they arrive anyway,
+ * transitively, through whatever those headers happen to pull in -- which
+ * is why this compiled for years on both. vcpkg's Boost on MSVC is more
+ * finely split and does not make the same accident available, so the first
+ * Windows build failed with "'thread': is not a member of 'boost'".
+ *
+ * The lesson is not about Windows: a header that compiles because of what
+ * its neighbours include is one refactor away from failing anywhere.
+ */
+#include <boost/thread/thread.hpp>
+#include <boost/thread/lock_types.hpp>
 #include <boost/lexical_cast.hpp>
 
 #include <string>
 #include <map>
 #include <vector>
+
+// Engine item E14 (the ROADMAP 5.1 concurrency subset): the id counters
+// below are read and written from more than one thread once a session
+// stops serialising everything behind waitForEngineIdle().
+#include <atomic>
 #include <list>
 #include <set>
+#include <utility>
 
 /*
  * Debug trace categories. Guarded so a build can override single
@@ -134,6 +156,177 @@ class ConsTerm;
 class Clause;
 class UnifyContext;
 
+
+/**
+ * Identifies one loaded module -- one .ufy file, the transcript, or the
+ * anonymous module a bare World starts with.
+ *
+ * Introduced with clause provenance (plans/todo/lens/ACCEPTANCE.md, engine
+ * item E1). Ids are assigned by World::moduleIdForFile() in first-seen
+ * order and are stable for the life of a World; 0 is "no module", which is
+ * what a builtin and a runtime-asserted clause carry.
+ */
+typedef uint64_t ModuleId;
+
+/// See ModuleId: never a valid module.
+const ModuleId NO_MODULE = 0;
+
+
+/**
+ * Where a clause came from -- engine item E1.
+ *
+ * Before this existed, "is this user code?" was inferred by the REPL from a
+ * `dynamic_cast<const SimpleBuiltinClause*>` plus a `__` head-name prefix
+ * test (unify-run's `:list`). Both were guesses that happened to be right:
+ * the cast because every builtin is currently that one subclass, the prefix
+ * because the parser happens to name its desugared clauses that way. Neither
+ * survives contact with a user predicate legitimately named `__cache`, and
+ * neither can answer the questions the catalogue, the source view and the
+ * image writer actually ask -- which file, which line, which module.
+ *
+ * So the answer is recorded when it is known -- at the one append -- rather
+ * than reconstructed later from the shape of the name.
+ */
+struct ClauseOrigin {
+    enum Kind {
+        /// Parsed from a module's source text.
+        MODULE = 0,
+        /// Created at run time by assert()/asserta()/assertz().
+        ASSERTED,
+        /// Provided by the engine itself (World::init()).
+        BUILTIN,
+        /// Produced by parse-time desugaring: __if__N, __fe__N, __feb__N,
+        /// __for__N. Real clauses, but never the user's own text -- an
+        /// image that printed these back would emit machine output instead
+        /// of the program.
+        SYNTHESIZED,
+        /// Typed at an interactive prompt.
+        TRANSCRIPT
+    };
+
+    ClauseOrigin()
+        : kind( MODULE )
+        , module( NO_MODULE )
+        , line( 0 )
+        , endLine( 0 )
+    {
+    }
+
+    Kind        kind;
+    ModuleId    module;
+
+    /// The source file, when there is one. Empty for BUILTIN, ASSERTED and
+    /// TRANSCRIPT. Duplicated from the clause's DebugLocation rather than
+    /// referenced, because a DebugLocation is optional and provenance is not.
+    std::string uriFile;
+
+    /// 1-based; 0 when unknown.
+    uint64_t    line;
+
+    /// 1-based end of the clause's source span; 0 when unknown. Set for
+    /// MODULE and TRANSCRIPT clauses so the source view can show a whole
+    /// definition rather than re-deriving its extent.
+    uint64_t    endLine;
+
+    /// True for clauses the user did not write and would not expect to see
+    /// listed: builtins and desugaring artefacts. The one place this
+    /// judgement is made, so it cannot drift between the REPL, the
+    /// catalogue and the image writer.
+    bool isInternal() const { return kind == BUILTIN || kind == SYNTHESIZED; }
+};
+
+
+/**
+ * A predicate's identity -- engine item E2.
+ *
+ * The unit the catalogue, the browser, the source view and `undefine` all
+ * address. Module is part of the key because the same name/arity in two
+ * modules is two predicates.
+ */
+struct PredicateKey {
+    PredicateKey()
+        : arity( 0 )
+        , module( NO_MODULE )
+    {
+    }
+
+    PredicateKey( const std::string& strName, int nArity, ModuleId idModule )
+        : name( strName )
+        , arity( nArity )
+        , module( idModule )
+    {
+    }
+
+    std::string name;
+    int         arity;
+    ModuleId    module;
+
+    /// Ordered so the catalogue can be a std::map and a listing is stable
+    /// without a sort: module, then name, then arity.
+    bool operator < ( const PredicateKey& other ) const {
+        if( module != other.module ) { return module < other.module; }
+        if( name != other.name ) { return name < other.name; }
+        return arity < other.arity;
+    }
+    bool operator == ( const PredicateKey& other ) const {
+        return module == other.module
+            && arity == other.arity
+            && name == other.name;
+    }
+};
+
+
+/**
+ * One row of the definition catalogue -- engine item E2.
+ *
+ * The catalogue exists because the only way to answer "what predicates are
+ * defined?" used to be to walk the whole clause list and group by head name
+ * -- which is O(total clauses) per question, is what the REPL's `:list`
+ * does today, and is unusable for a browser that asks after every edit.
+ * It is also, not incidentally, the index ROADMAP Phase 3's first-argument
+ * indexing needs: built once, used twice.
+ */
+struct CatalogueEntry {
+    CatalogueEntry()
+        : kind( ClauseOrigin::MODULE )
+        , firstLine( 0 )
+        , clauseCount( 0 )
+        , retiredCount( 0 )
+        , generation( 0 )
+    {
+    }
+
+    PredicateKey       key;
+
+    /// The provenance of this predicate's clauses (engine item E1). A
+    /// predicate whose clauses disagree reports the first clause's kind;
+    /// mixing builtin and user clauses under one key is not possible today.
+    ClauseOrigin::Kind kind;
+
+    /// Where the first clause was defined, for "jump to definition".
+    std::string        uriFile;
+    uint64_t           firstLine;
+
+    /// Live clauses -- tombstones excluded.
+    uint32_t           clauseCount;
+
+    /**
+     * Tombstoned clauses still occupying the clause list.
+     *
+     * Exposed rather than hidden because clauses are never removed (see
+     * Clause::isRetired()), so repeated redefinition grows the list
+     * monotonically and every future goal walks past the corpses. This
+     * counter is what lets that degradation be MEASURED instead of
+     * discovered as a mysterious slowdown -- it is the number gate G3.7
+     * of plans/todo/lens/ACCEPTANCE.md is written against.
+     */
+    uint32_t           retiredCount;
+
+    /// World mutation generation of the last change to this predicate.
+    uint64_t           generation;
+};
+
+
 class AbstractTerm;
 class TermTraversable;
 
@@ -164,6 +357,16 @@ public:
                 }
                 ti->next();
             }
+            // abstractTermIterator() is a factory -- it returns `new
+            // TermIterator( this )` -- and the caller owns the result.
+            // Every other call site in the engine deletes it
+            // (collectTermTree, deleteScratchTermTree,
+            // collectVarTermsOrdered, SolveJob's candidate scan); this one
+            // did not, so it leaked one iterator per node visited, on every
+            // traversal. Reached from SolveJob::getSolutionList(), which
+            // batch runs never call -- which is why the golden corpus never
+            // showed it and a session that reads solutions immediately does.
+            delete ti;
         }
     }
 };
@@ -287,6 +490,109 @@ typedef boost::shared_ptr<World> WorldPtr;
  * Goals can be attributed parallel: In that case, their terms can
  * be evaluated in any order.
  */
+/**
+ * The clause database's storage -- engine item E16.
+ *
+ * Append-only, segmented, and safe for one writer and any number of
+ * concurrent readers with NO LOCK ON THE READ PATH.
+ *
+ * Why this exists. The clause list used to be a std::list<Clause*>, walked
+ * unlocked by ExecutionState::ClauseIterator on the worker thread while
+ * appendClause() pushed onto it from whichever thread was parsing.
+ * World::clauseDbMutex()'s comment justified the unlocked reader with
+ * "this engine has exactly one reader today, the single worker thread" --
+ * but parseExecuteSegment() launches queries mid-parse and keeps parsing,
+ * so the parser and the worker really are concurrent, and ThreadSanitizer
+ * reported the race on every non-trivial program in the corpus.
+ *
+ * Why not simply lock the reader. ClauseIterator::isValid() runs once per
+ * candidate clause per goal -- it is the hottest path in the engine, and
+ * lookup is already a linear scan of the entire database (ROADMAP Phase 3's
+ * first-argument indexing is what fixes that). Putting a mutex acquire
+ * inside it would tax every resolution step in the system to fix a race
+ * that only exists at the tail of the structure.
+ *
+ * How this avoids it instead. Clauses are never removed -- retract
+ * tombstones in place (see Clause::isRetired()) -- so the store only ever
+ * grows, and readers only ever walk forward. A reader takes a snapshot of
+ * `size()` when it starts and looks only at indices below it; the writer
+ * fills a slot and only then publishes the new count with a release store.
+ * So a reader never reads a slot that is being written, and the two threads
+ * synchronise through one atomic counter rather than a mutex.
+ *
+ * Segmented rather than a plain vector because a vector reallocates, which
+ * would move elements out from under a reader mid-walk. Segments are
+ * allocated once and never moved, so a Clause* stays at a fixed address for
+ * the life of the World -- which is also what lets ClauseIterator be a bare
+ * index, and copies of one (UnifyContext::m_itClause,
+ * SolveContext::m_itNextChildClause) stay valid with no bookkeeping.
+ *
+ * A pleasant side effect: indices into contiguous segments are a better
+ * substrate for ROADMAP Phase 3's indexing than a linked list was.
+ */
+class ClauseStore {
+public:
+    ClauseStore();
+    ~ClauseStore();
+
+    /**
+     * Append one clause. The caller must hold World::clauseDbMutex(); this
+     * is the single-writer half of the contract.
+     *
+     * @return 0, or -ENOMEM if the segment directory is exhausted (see
+     *     kMaxSegments). Not silently ignored: the caller reports it.
+     */
+    int append( Clause* pClause );
+
+    /**
+     * How many clauses are published. Safe from any thread; this is the
+     * acquire that pairs with append()'s release, so every clause below the
+     * returned index is fully visible to the caller afterwards.
+     */
+    size_t size() const { return m_count.load( std::memory_order_acquire ); }
+
+    /**
+     * The clause at `idx`, which must be below a size() this thread has
+     * already observed. Relaxed loads are correct here precisely because
+     * that size() was an acquire.
+     */
+    Clause* at( size_t idx ) const
+    {
+        return m_lsSegments[ idx >> kSegmentShift ]
+                   .load( std::memory_order_relaxed )[ idx & kSegmentMask ];
+    }
+
+    /**
+     * Drop every clause pointer and free the segments. Does NOT delete the
+     * clauses -- ~ExecutionState() does that, and needs to walk them first.
+     * Not safe against a concurrent reader; only ~ExecutionState() calls it.
+     */
+    void clear();
+
+private:
+    ClauseStore( const ClauseStore& );
+    ClauseStore& operator = ( const ClauseStore& );
+
+    static const size_t kSegmentShift = 10;
+    static const size_t kSegmentSize  = ( (size_t) 1 ) << kSegmentShift;
+    static const size_t kSegmentMask  = kSegmentSize - 1;
+
+    /**
+     * 8192 segments of 1024 clauses -- 8,388,608 in one World, for a 64 KiB
+     * directory allocated once. The directory is fixed rather than grown
+     * because growing it would mean either moving it (unsafe under a
+     * reader) or keeping every old copy alive; at this size the limit is
+     * far past the point where the linear scan makes the engine unusable
+     * anyway, so the simpler structure is the right trade until Phase 3
+     * indexing changes that calculus.
+     */
+    static const size_t kMaxSegments = 8192;
+
+    std::atomic<Clause**>* m_lsSegments;
+    std::atomic<size_t>    m_count;
+};
+
+
 struct ExecutionState {
 public:
     ExecutionState( ExecutionState* parent, World* pWorld );
@@ -297,12 +603,21 @@ public:
         void enterState( ExecutionState* es )
         {
             m_currentState = es;
-            m_itClause = es->m_listClauses.begin();
-            m_itClauseEnd = es->m_listClauses.end();
+            m_idxClause = 0;
+            // Engine item E16: snapshot the published count, and never look
+            // past it. This is what makes the walk race-free, and it is not
+            // a change of behaviour: a clause appended after this point has
+            // an appendGeneration greater than this iterator's snapshotGen
+            // and was already being skipped by isValid()'s generation test.
+            // Snapshotting simply means we no longer READ the slot in order
+            // to decide to ignore it.
+            m_idxClauseEnd = es->m_clauseStore.size();
         }
 
     public:
-        ClauseIterator() : m_currentState( NULL ), m_invalidated( false ), m_snapshotGen( 0 ) {}
+        ClauseIterator()
+            : m_currentState( NULL ), m_idxClause( 0 ), m_idxClauseEnd( 0 )
+            , m_invalidated( false ), m_snapshotGen( 0 ) {}
 
         /**
          * ROADMAP Phase 2 (runtime assert/retract, SPEC.md -- "logical
@@ -366,11 +681,11 @@ public:
         bool isValid();
 
         const Clause* getClause() const {
-            return *m_itClause;
+            return m_currentState->m_clauseStore.at( m_idxClause );
         }
 
         void next() {
-            ++m_itClause;
+            ++m_idxClause;
         }
 
         /**
@@ -390,8 +705,15 @@ public:
 
     private:
         ExecutionState* m_currentState;
-        std::list<Clause*>::const_iterator m_itClause;
-        std::list<Clause*>::const_iterator m_itClauseEnd;
+
+        /// Engine item E16: a bare index into m_currentState's ClauseStore,
+        /// and a snapshot of the store's size taken when this iterator
+        /// entered that state. Indices rather than container iterators
+        /// because segments never move, so an index stays valid however
+        /// much the database grows underneath it -- and because copying one
+        /// (UnifyContext::m_itClause) is then trivially safe.
+        size_t m_idxClause;
+        size_t m_idxClauseEnd;
 
         /// See invalidate()/isValid() above.
         bool m_invalidated;
@@ -420,8 +742,27 @@ public:
      *
      * @param pClause
      *     The execution context takes ownership of the clause.
+     * @param origin
+     *     Where this clause came from -- engine item E1. Required rather
+     *     than defaulted: this is the single choke point through which
+     *     every clause in the database passes, so it is the one place where
+     *     forgetting to say is caught by the compiler instead of producing
+     *     a database that quietly claims everything is user code.
+     *
+     *     The caller fills in `kind`, `uriFile` and `line`; `module` is
+     *     resolved here from `uriFile` via World::moduleIdForFile().
+     *
+     *     Note that the origin is NOT derived from the clause's
+     *     DebugLocation, which would have been the obvious shortcut and is
+     *     wrong twice over: the parser never sets a DebugLocation on a
+     *     clause at all (only on terms, and only via the World's debug-info
+     *     map), so every parsed clause would have come out with no file;
+     *     and every builtin DOES set one -- to its own C++ source file and
+     *     line -- so every builtin would have been assigned a module named
+     *     after vault-unify-clause-builtin-print.cpp. The first version of
+     *     E1 did exactly this and the engine test caught both.
      */
-    int appendClause( WorldPtr spWorld, Clause* );
+    int appendClause( WorldPtr spWorld, Clause*, const ClauseOrigin& origin );
 
     /**
      * Collect (without deleting) every term reachable from every clause in
@@ -446,8 +787,10 @@ public:
     /// shares the one World it was created in or under.
     World* m_pWorld;
 
-    /// Clauses as added by this execution state.
-    std::list<Clause*> m_listClauses;
+    /// Clauses as added by this execution state. Engine item E16: an
+    /// append-only segmented store rather than a std::list, so the walk in
+    /// ClauseIterator needs no lock. See ClauseStore.
+    ClauseStore m_clauseStore;
 
     /// Child execution states spawned by this execution state.
     std::list<ExecutionState*> m_listChildStates;
@@ -973,7 +1316,12 @@ public:
     }
 
 private:
-    static VarTermId m_counterUidTerm;
+    /// Engine item E14: atomic. The busiest counter in the engine -- one
+    /// increment per VarTerm CONSTRUCTION, clones included -- and the
+    /// narrowest (VarTermId is uint32_t), so it is also the one most
+    /// likely to wrap on a long-lived session. Wrapping is out of scope
+    /// here; racing is not.
+    static std::atomic<VarTermId> m_counterUidTerm;
     VarTermId m_uidTerm;
 
     std::string m_originalVarName;
@@ -1380,6 +1728,16 @@ public:
 
     ClauseId getUID() const { return m_uid; }
 
+    /**
+     * Provenance -- engine item E1. Stamped by
+     * ExecutionState::appendClause(); meaningful only for a clause that has
+     * actually been appended (an unappended clause reports the default,
+     * ClauseOrigin::MODULE with no file, which is why the append is the
+     * thing that sets it rather than the constructor).
+     */
+    const ClauseOrigin& getOrigin() const { return m_origin; }
+    void setOrigin( const ClauseOrigin& origin ) { m_origin = origin; }
+
     const ConsTerm* leftHandTerm() const { return m_pLeftHandTerm; }
 
     virtual UnificationState startUnification(
@@ -1442,7 +1800,18 @@ public:
      * ExecutionState::appendClause() -- both mutate state guarded by that
      * one lock.
      */
-    void retire( uint64_t gen ) { m_isRetired = true; m_retireGeneration = gen; }
+    void retire( uint64_t gen ) {
+        // Engine item E14: the retirement generation is published BEFORE
+        // the flag, and both are atomic, because ClauseIterator::isValid()
+        // reads them on the worker thread while this runs. isValid() reads
+        // the flag first and only then the generation, so ordering them
+        // this way means a reader that sees the flag set is guaranteed to
+        // see the matching generation rather than a stale zero -- which
+        // would make a just-retired clause look retired since the beginning
+        // of time and hide it from an iteration that should still see it.
+        m_retireGeneration = gen;
+        m_isRetired = true;
+    }
 
     /// See ExecutionState::appendClause() -- stamped with the World
     /// mutation generation (World::bumpGeneration()) this clause was
@@ -1461,21 +1830,33 @@ public:
 private:
     ConsTerm* m_pLeftHandTerm;
 
-    static ClauseId m_nextUid;
+    /// Engine item E14: atomic. Every Clause construction increments it,
+    /// and a parse on the caller's thread now overlaps a solve on the
+    /// worker -- two clauses could otherwise be given the same uid, or
+    /// the counter could lose an increment entirely.
+    static std::atomic<ClauseId> m_nextUid;
 
     /// Uid of the clause.
     ClauseId m_uid;
 
     DebugLocation m_debugLocation;
 
-    /// See isRetired()/retire() above.
-    bool m_isRetired;
+    /// See isRetired()/retire() above. Engine item E14: atomic, because
+    /// `retract` sets it on the worker thread while another iteration is
+    /// walking past this clause.
+    std::atomic<bool> m_isRetired;
 
-    /// See getAppendGeneration()/setAppendGeneration() above.
-    uint64_t m_appendGeneration;
+    /// See getAppendGeneration()/setAppendGeneration() above. Engine item
+    /// E14: atomic -- written by whichever thread appends the clause and
+    /// read by every ClauseIterator that walks past it.
+    std::atomic<uint64_t> m_appendGeneration;
 
-    /// See getRetireGeneration()/retire() above.
-    uint64_t m_retireGeneration;
+    /// See getRetireGeneration()/retire() above. Engine item E14: atomic,
+    /// for the same reason as m_isRetired.
+    std::atomic<uint64_t> m_retireGeneration;
+
+    /// See getOrigin()/setOrigin() above (engine item E1).
+    ClauseOrigin m_origin;
 };
 
 
@@ -1788,7 +2169,8 @@ public:
     static InstanceId createIid() {
         return ++m_iidLast;
     }
-    static InstanceId m_iidLast;
+    /// Engine item E14: atomic. See Clause::m_nextUid.
+    static std::atomic<InstanceId> m_iidLast;
 
     /**
      * The parent unification context.
@@ -1933,6 +2315,68 @@ public:
     }
 
     /**
+     * Record a clause in the definition catalogue -- engine item E2.
+     *
+     * LOCKING: the caller must hold clauseDbMutex(). Public only because
+     * ExecutionState::appendClause() is the single call site and is not a
+     * member of World; it is not part of the World's usable surface.
+     */
+    void catalogueAppend( const Clause* pClause );
+
+    /**
+     * Account for a clause being tombstoned -- engine item E2. Same locking
+     * rule as catalogueAppend(); called from `retract`'s special form,
+     * which already holds the lock to call Clause::retire().
+     */
+    void catalogueRetire( const Clause* pClause );
+
+    /**
+     * Snapshot the catalogue -- engine items E2 and E14.
+     *
+     * Takes clauseDbMutex() and copies, rather than handing out a reference
+     * into the live map. That is the whole point: World::clauseDbMutex()'s
+     * comment justifies an unlocked reader side by "this engine has exactly
+     * one reader today, the single worker thread", and a session that
+     * answers `listing` while a query runs makes that false. Copying a few
+     * hundred rows is cheap next to the alternative, which is a std::map
+     * being read during a rehash.
+     */
+    void copyCatalogue( std::vector<CatalogueEntry>& out_lsEntries );
+
+    /**
+     * Snapshot one predicate's catalogue entry. Returns false if there is
+     * no such predicate. Same locking as copyCatalogue().
+     */
+    bool findCatalogueEntry( const PredicateKey& key,
+                             CatalogueEntry& out_entry );
+
+    /**
+     * The module id for a source file, assigning one on first sight
+     * (engine item E1).
+     *
+     * Ids are 1-based and dense, in first-seen order, and stable for the
+     * life of this World; NO_MODULE (0) is returned for an empty path,
+     * which is what a builtin or a runtime-asserted clause has.
+     *
+     * LOCKING: this is called from ExecutionState::appendClause(), which
+     * holds clauseDbMutex(). It is not safe to call from anywhere that does
+     * not hold that lock, and there is deliberately no internal locking --
+     * a second, finer lock here would have to be ordered against the clause
+     * -db one and would buy nothing, since every writer is already inside
+     * that critical section. See clauseDbMutex()'s comment.
+     */
+    ModuleId moduleIdForFile( const std::string& uriFile );
+
+    /**
+     * The file a module id names, or an empty string for NO_MODULE or an
+     * id this World never issued.
+     */
+    const std::string& moduleFile( ModuleId id ) const;
+
+    /// How many modules have been seen. Ids run 1..moduleCount().
+    size_t moduleCount() const { return m_lsModuleFiles.size(); }
+
+    /**
      * ROADMAP Phase 2 (runtime assert/retract, SPEC.md -- "logical update
      * view"): the current clause-database mutation generation, for a
      * ClauseIterator to snapshot at construction (see
@@ -2004,11 +2448,48 @@ private:
     /// discovers via TermDebugInfo entries.
     std::list<FileDebugInfo*> m_lsOwnedFileDebugInfos;
 
+    /// See catalogueAppend()/copyCatalogue() above (engine item E2).
+    std::map<PredicateKey, CatalogueEntry> m_mapCatalogue;
+
+    /// See moduleIdForFile()/moduleFile() above (engine item E1). The
+    /// vector is the id space -- index i holds the file for id i+1 -- and
+    /// the map is only an index into it, so an id can never be invalidated
+    /// by a later insertion.
+    std::vector<std::string> m_lsModuleFiles;
+    std::map<std::string, ModuleId> m_mapModuleIds;
+
     /// See currentGeneration()/bumpGeneration() above.
-    uint64_t m_mutationGeneration;
+    /// Engine item E14: atomic. The WRITE side is still done under
+    /// clauseDbMutex() (bumpGeneration()), which is what keeps it a
+    /// correct counter; atomic is for the READ side, which
+    /// currentGeneration() deliberately performs unlocked from every
+    /// ClauseIterator construction. That read was a plain data race on a
+    /// uint64_t -- benign in practice on the platforms this has run on,
+    /// and undefined behaviour by the language, which a sanitizer is
+    /// entitled to report and an optimiser is entitled to exploit.
+    std::atomic<uint64_t> m_mutationGeneration;
 
     /// See clauseDbMutex() above.
     boost::mutex m_mutexClauseDb;
+
+    /**
+     * Engine item E14: guards m_mapDebugInfos and
+     * m_lsRetiredDebugInfos.
+     *
+     * A SEPARATE lock rather than clauseDbMutex(), because
+     * ExecutionState::appendClause() calls setTermDebugInfo() while
+     * already holding the clause-db lock and boost::mutex is not
+     * recursive. LOCK ORDER, therefore: clause-db first, debug-info
+     * second, never the reverse.
+     *
+     * This one is not a benign race: the previous code had
+     * `// TXWTODO: Lock begin` / `// TXWTODO: Lock end` around a bare
+     * std::map insert, with an equally unlocked lookup in
+     * getTermDebugInfo() reachable from the debugger. Concurrent
+     * insert and lookup on a std::map is real undefined behaviour,
+     * not a word-sized read that happens to be atomic in practice.
+     */
+    mutable boost::mutex m_mutexDebugInfos;
 };
 
 
@@ -2041,6 +2522,113 @@ public:
  * It provides the real world resources which not directly are persistable.
  *
  */
+/**
+ * One user error, as data -- engine item E10.
+ *
+ * Before this existed, a parse error was three fprintf()s to stderr
+ * (reportParseError, vault-unify-runtime-context.cpp) and the caller got
+ * back an error COUNT; a runtime UnifyError incremented a counter and
+ * overwrote a single "last error" string (SolveJob::recordError). Neither
+ * is something a diagnostics panel can navigate to, neither survives a
+ * process boundary, and neither can be attributed to the query that caused
+ * it. Formatting is a presentation decision, so it moves to the sink and
+ * the engine reports facts.
+ *
+ * The default sink prints exactly the bytes the fprintf()s did -- see
+ * DefaultDiagnosticSink in vault-unify-engine.cpp. That format is what
+ * unify-run's users and its CI logs read, so E10 is a change of plumbing,
+ * not of output.
+ */
+struct Diagnostic {
+    enum Severity {
+        NOTE = 0,
+        WARNING,
+        ERROR
+    };
+
+    Diagnostic()
+        : severity( ERROR )
+        , line( 0 )
+        , column( 0 )
+    {
+    }
+
+    Severity    severity;
+
+    /// The file, or a pseudo-URI such as "<repl>" or "<input>".
+    std::string uriFile;
+
+    /// 1-based; 0 when unknown (a runtime error has no column).
+    uint64_t    line;
+    uint64_t    column;
+
+    /// What went wrong, with no file/line prefix and no trailing newline.
+    std::string message;
+
+    /**
+     * The offending source line, without its newline. Empty when there is
+     * none to show -- a runtime error, or an import that parsed fine and
+     * merely could not be opened.
+     *
+     * Carried here rather than re-read from the file by the consumer,
+     * because a transcript line has no file to re-read and a remote core's
+     * files are on the wrong machine.
+     */
+    std::string sourceLine;
+};
+
+
+/**
+ * Where diagnostics go -- engine item E10. See OutputSink below for the
+ * ownership and threading rules, which are the same.
+ */
+class DiagnosticSink {
+public:
+    virtual ~DiagnosticSink();
+    virtual void onDiagnostic( const Diagnostic& diagnostic ) = 0;
+};
+
+
+/**
+ * Where a program's output goes -- engine item E4.
+ *
+ * Before this existed, `print` wrote to std::cout, `emit` wrote to
+ * std::cout, and world-change logging wrote to std::cerr, each directly
+ * from whichever thread happened to be executing. That is fine for a
+ * command-line tool and unusable for anything else: a remote engine's
+ * `print` sent to the engine process's stdout is simply lost on another
+ * machine, and two sessions sharing one process interleave into the same
+ * two file descriptors with no way to tell whose output is whose.
+ *
+ * So output becomes something a caller can be handed instead of something
+ * the engine performs. The default sink (Engine's, installed unless
+ * replaced) reproduces the previous bytes exactly -- see DefaultOutputSink
+ * in vault-unify-engine.cpp -- because the golden corpus pins them and a
+ * "harmless" reformatting here would break every one of them.
+ *
+ * THREADING: called on the engine's worker thread, from inside a builtin.
+ * An implementation must not block and must not call back into the engine.
+ */
+class OutputSink {
+public:
+    virtual ~OutputSink();
+
+    /**
+     * @param strStream
+     *     "stdout" or "stderr" -- which of the two the default sink would
+     *     have used. A session sink turns this into the `stream` field of
+     *     an Output event rather than choosing a file descriptor.
+     * @param strText
+     *     The complete text to write, newline included. Deliberately not
+     *     line-oriented: the caller assembles the whole line so that a sink
+     *     never has to reassemble one, and so the default sink is a single
+     *     write with no formatting decisions of its own.
+     */
+    virtual void onOutput( const std::string& strStream,
+                           const std::string& strText ) = 0;
+};
+
+
 class Engine
     : public ExecutionController
 {
@@ -2051,6 +2639,64 @@ public:
     void setWorldChangeSink( WorldChangeSink* pWorldChangeSink ) {
         m_pWorldChangeSink = pWorldChangeSink;
     }
+
+    /**
+     * Engine item E4: redirect this engine's program output.
+     *
+     * Passing NULL restores the default sink (stdout/stderr, byte-for-byte
+     * as before E4). The caller retains ownership and must outlive the
+     * engine, or must clear the sink before dying -- there is no shutdown
+     * path to do it for them (ROADMAP 5.1).
+     */
+    void setOutputSink( OutputSink* pOutputSink );
+
+    /**
+     * Engine item E10: redirect this engine's diagnostics. NULL restores
+     * the default (gcc-style text on stderr, byte-for-byte as before E10).
+     */
+    void setDiagnosticSink( DiagnosticSink* pDiagnosticSink );
+
+    /**
+     * What the DEFAULT sink should do with a diagnostic when no sink has
+     * been installed.
+     *
+     * This exists because E10 must not change what unify-run prints. The
+     * two error paths it unifies did not previously behave the same way: a
+     * parse error was three lines on stderr, and a runtime UnifyError
+     * (SolveJob::recordError) printed NOTHING AT ALL -- it bumped a counter
+     * and overwrote a "last error" string that only unify-run's one-line
+     * summary ever read.
+     *
+     * Routing both to a printing default would have made the engine start
+     * reporting runtime errors it had always swallowed. That is arguably an
+     * improvement, and it is not this item's to make: "unify-run keeps
+     * working, unchanged" is a rule of the plan, and a diagnostics change
+     * that quietly adds output to everyone's CI logs is exactly the kind of
+     * drive-by the rule is there to prevent.
+     *
+     * So the call site states what silence meant before, and an INSTALLED
+     * sink receives everything either way -- which is the whole point:
+     * a front end gets the runtime errors, and unify-run's output does not
+     * move.
+     */
+    enum DiagnosticDefault {
+        /// No sink installed: print it, as this path always did.
+        DIAGNOSTIC_PRINT = 0,
+        /// No sink installed: drop it, as this path always did.
+        DIAGNOSTIC_SILENT
+    };
+
+    /** Report one diagnostic. The single funnel, for the same reason. */
+    void writeDiagnostic( const Diagnostic& diagnostic,
+                          DiagnosticDefault whenNoSink = DIAGNOSTIC_PRINT );
+
+    /**
+     * Write one complete piece of program output. Used by the `print` and
+     * `emit` builtins and by world-change logging; the single funnel is the
+     * point, since anything that bypasses it is invisible to a remote
+     * front end.
+     */
+    void writeOutput( const std::string& strStream, const std::string& strText );
 
     WorldPtr createWorld();
 
@@ -2126,6 +2772,19 @@ private:
      * Holds the number of threads currently waiting for work.
      */
     int m_nThreadsWaiting;
+
+    /// See setOutputSink()/writeOutput() above (engine item E4). Never
+
+    /// NULL: cleared back to the process-output default rather than unset.
+
+    OutputSink* m_pOutputSink;
+
+    /// See setDiagnosticSink()/writeDiagnostic() above (engine item E10).
+    /// NULL when no sink has been installed -- unlike m_pOutputSink, the
+    /// "nobody is listening" case is not uniform here (see
+    /// DiagnosticDefault), so it has to be distinguishable.
+    DiagnosticSink* m_pDiagnosticSink;
+
 
     WorldChangeSink* m_pWorldChangeSink;
 
@@ -2219,7 +2878,17 @@ public:
      */
     virtual int triggerRelease() = 0;
 
-    JobId getId() const { return m_idNextJob; }
+    /**
+     * This returned m_idNextJob -- the STATIC counter -- not m_id.
+     *
+     * So every live job reported the same id, and that id changed
+     * whenever any other job was created. Every "Job %lld ..." trace
+     * line in the engine is printed through this, which is why the
+     * logs have always looked plausible and been wrong. Found while
+     * inventorying the counters for engine item E14; m_id was being
+     * set correctly all along and simply never read.
+     */
+    JobId getId() const { return m_id; }
 
     Job& onFinished( boost::function<void (boost::shared_ptr<Job>)> onFinished );
 
@@ -2235,7 +2904,9 @@ private:
 
     JobId m_id;
     State m_state;
-    static JobId m_idNextJob;
+    /// Engine item E14: atomic. Jobs are created by whichever thread
+    /// submits one and destroyed on the worker.
+    static std::atomic<JobId> m_idNextJob;
     boost::function<void (boost::shared_ptr<Job>)> m_onFinished;
     DebugListener::ChangeReason m_debugTargetState;
 };
@@ -2270,7 +2941,18 @@ public:
         std::string::const_iterator itLine, 
         std::string::const_iterator itLineEnd,
         boost::function<void (boost::shared_ptr<vault::unify::Job>)> onFinished,
-        const FileDebugInfo* pFileDebugInfo = NULL );
+        const FileDebugInfo* pFileDebugInfo = NULL,
+        /**
+         * Engine item E1: the provenance to stamp on every clause this
+         * segment defines.
+         *
+         * Defaulted to MODULE because that is what a file is, and every
+         * caller that parses a file wants it. The REPL passes TRANSCRIPT
+         * for text typed at the prompt -- a distinction this function
+         * cannot make for itself, since the REPL hands it a FileDebugInfo
+         * just as a file does (with the pseudo-URI "<repl>").
+         */
+        ClauseOrigin::Kind kind = ClauseOrigin::MODULE );
 
     Engine* getEngine() const { return m_pEngine; }
     WorldPtr getWorld() const { return m_spWorld; }

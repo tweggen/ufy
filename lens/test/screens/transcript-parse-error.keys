@@ -1,0 +1,4 @@
+# G2.2: a parse error rendered with file, line, column and the offending
+# line, matching what unify-run already prints.
+type broken( $x ) { colour(
+Enter

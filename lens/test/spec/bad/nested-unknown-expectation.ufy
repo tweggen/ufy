@@ -1,0 +1,8 @@
+// The nested form's own version of unknown-expectation.ufy. Both readers
+// build the SAME Expectation and hand it to the same checker, and this is
+// what proves it: a name nobody defined must FAIL here exactly as it does
+// in a flat `expect` fact, or the nested form would be a way of smuggling a
+// typo past the vocabulary.
+case( nested_typo, "an expectation nobody defined", [
+    step( "F1", [ panel_name( "Help" ) ] )
+] );

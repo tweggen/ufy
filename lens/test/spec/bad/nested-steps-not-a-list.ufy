@@ -1,0 +1,4 @@
+// case/3's third argument must be a LIST of steps. One bare step term is
+// the natural slip when a case has only one, and it must be named rather
+// than silently read as a list of one.
+case( nested_bare, "steps that are not a list", step( "F1", [ visible ] ) );

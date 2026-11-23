@@ -117,7 +117,7 @@ const std::string VarTerm::toJSON(
 }
 
 
-VarTermId VarTerm::m_counterUidTerm = 1;
+std::atomic<VarTermId> VarTerm::m_counterUidTerm( 1 );
 
 // 2nd order call: this is clause, other is goal.
 UnifyResult VarTerm::unifyConsTerm(

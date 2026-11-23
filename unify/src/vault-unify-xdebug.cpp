@@ -2,7 +2,6 @@
 #include <list>
 #include <ctype.h>
 #include <string.h>
-#include <unistd.h>
 
 #include <iostream>
 #include <fstream>
@@ -12,8 +11,9 @@
 #include <boost/archive/iterators/binary_from_base64.hpp>
 #include <boost/archive/iterators/transform_width.hpp>
 #include <boost/assign/list_of.hpp>
+#include <sstream>
+
 #include <boost/lexical_cast.hpp>
-#include <boost/format.hpp>
 
 #include <vault-unify.hpp>
 #include "vault-unify-xdebug.hpp"
@@ -299,7 +299,8 @@ void XDebugCombine::consumeXDebugCommand( const std::list<std::string>& lsComman
         resGetOpt = parseCommand( lsCommand, argSpec, optargs );
         if( resGetOpt<0 ) return;
 
-        static int fakeBreakpointId = 10000;
+        // Engine item E14: shared by every debugger connection.
+static std::atomic<int> fakeBreakpointId( 10000 );
         ++fakeBreakpointId;
 
         m_pXDebugContext->sendXML( "<response"
@@ -431,8 +432,16 @@ void XDebugCombine::consumeXDebugCommand( const std::list<std::string>& lsComman
             // TXWTODO: Check for partial read.
             if( !strFilename.compare( 0, 7, "file://" ) ) {
                 strFilename = strFilename.substr( 7 );
-                if( 0==::access( strFilename.c_str(), R_OK ) ) {
-                    std::ifstream t( strFilename );
+                /*
+                 * Just open it. This used to call ::access( ..., R_OK )
+                 * first, which is POSIX-only -- the one thing keeping this
+                 * backend off Windows -- and was also a check-then-open
+                 * race: the answer could change between the two calls.
+                 * Whether the stream opened is the same question, asked
+                 * once, portably.
+                 */
+                std::ifstream t( strFilename.c_str() );
+                if( t ) {
                     std::string str(
                         (std::istreambuf_iterator<char>(t)),
                         std::istreambuf_iterator<char>());

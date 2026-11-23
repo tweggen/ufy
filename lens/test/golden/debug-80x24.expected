@@ -1,0 +1,24 @@
+ File  Edit  World  Query  Image  Debug  Window  Help
+┌ Trace ───────────────────────────┐┌ Source ──────────────────────────────────┐
+│goal stack and breakpoints        ││the selected definition                   │
+│unavailable: core reports debug: f││awaiting source (G3)                      │
+│                                  ││                                          │
+│                                  ││                                          │
+│                                  ││                                          │
+│                                  ││                                          │
+│                                  ││                                          │
+│                                  ││                                          │
+│                                  ││                                          │
+│                                  ││                                          │
+│                                  ││                                          │
+│                                  │└──────────────────────────────────────────┘
+└──────────────────────────────────┘┌ Inspector ───────────────────────────────┐
+┌ Queries ─────────────────────────┐│the selected binding                      │
+│queries in flight or retained     ││awaiting inspect (G5)                     │
+│(none)                            ││                                          │
+│                                  ││                                          │
+│                                  ││                                          │
+│                                  ││                                          │
+└──────────────────────────────────┘└──────────────────────────────────────────┘
+ gen 0 · 0 clauses · idle · no session · debug
+F1 Help  F10 Menu

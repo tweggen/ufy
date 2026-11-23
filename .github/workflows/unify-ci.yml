@@ -9,15 +9,19 @@ name: Unify CI
 # .github/workflows once a .forgejo directory exists, and GitHub never reads
 # .forgejo, so each platform runs exactly one copy. The twin's only intended
 # differences are the upload-artifact action -- Forgejo needs the patched
-# fork from code.forgejo.org -- and its paths filter naming itself.)
+# fork from code.forgejo.org -- its paths filter naming itself, and the
+# absence of the windows-msvc job below, which has no Windows runner to
+# run on there.)
 on:
   push:
     paths:
       - "unify/**"
+      - "lens/**"
       - ".github/workflows/unify-ci.yml"
   pull_request:
     paths:
       - "unify/**"
+      - "lens/**"
       - ".github/workflows/unify-ci.yml"
   # Manual trigger; with update_golden=true the build-and-test job also
   # regenerates all golden files and uploads them as the
@@ -194,3 +198,134 @@ jobs:
           name: unify-leak-report
           path: leak-report/
           if-no-files-found: warn
+
+  # ---------------------------------------------------------------------
+  # lens, on Linux. Builds the engine as a subproject (lens/CMakeLists.txt
+  # does the add_subdirectory), so this job runs BOTH suites: every
+  # unify-* test and every lens-* one.
+  #
+  # LENS_BUILD_TERM=ON on purpose. The terminal backend is one file
+  # (lens/src/term/ftxui-terminal.cpp) and it is the only one that includes
+  # FTXUI or touches a real tty, so it is exactly the file that a
+  # model-only build would never compile.
+  # ---------------------------------------------------------------------
+  lens-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          if command -v sudo >/dev/null 2>&1; then SUDO=sudo; else SUDO=; fi
+          $SUDO apt-get update
+          $SUDO apt-get install -y --no-install-recommends \
+            build-essential cmake git libboost-all-dev
+
+      - name: Configure
+        run: |
+          cmake -S lens -B build/lens \
+                -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+                -DLENS_BUILD_TERM=ON
+
+      - name: Build
+        run: |
+          cmake --build build/lens --parallel
+
+      - name: Test
+        run: |
+          ctest --output-on-failure
+        working-directory: build/lens
+
+  # ---------------------------------------------------------------------
+  # Windows / MSVC.
+  #
+  # Why this job exists, in one sentence: five separate build failures in
+  # this repository were code that compiles on Linux and macOS BY ACCIDENT
+  # -- a POSIX header nobody needed, a Boost header pulled in transitively,
+  # a UTF-8 character constant read in the system codepage -- and every one
+  # of them was found by a person on a Windows machine rather than by CI.
+  # This job is what converts that class of bug into a red build.
+  #
+  # It builds lens, which means it also builds the engine, with the real
+  # MSVC toolchain, Boost from vcpkg, and LENS_BUILD_TERM=ON so the
+  # terminal backend's Windows path is compiled too.
+  #
+  # There is deliberately no Forgejo twin of this job: the Forgejo instance
+  # has Linux runners only. See the header of .forgejo/workflows/unify-ci.yml.
+  # ---------------------------------------------------------------------
+  windows-msvc:
+    runs-on: windows-latest
+    defaults:
+      run:
+        # Git Bash, so the steps read the same as the Linux jobs' and the
+        # bash-based test harnesses have the shell they need. `ctest` finds
+        # the same bash via find_program(), so the golden-screen and
+        # layering checks run here rather than silently disappearing.
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # vcpkg builds Boost from source on a cache miss, which is slow; the
+      # binary cache turns every later run into an unpack. Keyed on the
+      # workflow file because that is where the port list lives -- change
+      # the ports and you want a new cache, not a stale one.
+      - name: Cache vcpkg binary packages
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\vcpkg\archives
+          key: vcpkg-x64-windows-${{ hashFiles('.github/workflows/unify-ci.yml') }}
+          restore-keys: |
+            vcpkg-x64-windows-
+
+      # The runner image ships vcpkg and points VCPKG_INSTALLATION_ROOT at
+      # it. cygpath -m turns C:\vcpkg into C:/vcpkg, which Git Bash will run
+      # as a command AND CMake will accept as a path -- the POSIX form
+      # (/c/vcpkg) does only the first of those.
+      #
+      # Boost from vcpkg is modular: these are the three ports the engine
+      # actually needs. boost-format is not among them because the xdebug
+      # backend that uses it is off on Windows (unify/CMakeLists.txt).
+      - name: Install Boost (vcpkg)
+        run: |
+          VCPKG="$(cygpath -m "$VCPKG_INSTALLATION_ROOT")"
+          echo "VCPKG=$VCPKG" >> "$GITHUB_ENV"
+          "$VCPKG/vcpkg.exe" install --triplet x64-windows \
+            boost-spirit boost-thread boost-filesystem
+
+      # The default generator on this image is a multi-config Visual Studio
+      # one, so the configuration is chosen at build time (--config), not
+      # here; CMAKE_BUILD_TYPE would be ignored.
+      - name: Configure
+        run: |
+          cmake -S lens -B build/lens \
+                -A x64 \
+                -DCMAKE_TOOLCHAIN_FILE="$VCPKG/scripts/buildsystems/vcpkg.cmake" \
+                -DVCPKG_TARGET_TRIPLET=x64-windows \
+                -DLENS_BUILD_TERM=ON
+
+      - name: Build
+        run: |
+          cmake --build build/lens --config RelWithDebInfo --parallel
+
+      # Gates the job: the C++ suites, the session boundary, and every lens
+      # test including the golden screens and the layering checks.
+      - name: Test
+        run: |
+          ctest -C RelWithDebInfo --output-on-failure \
+                -R "^(lens-|unify-session-|unify-engine-)"
+        working-directory: build/lens
+
+      # Informational, for now. The engine's golden files pin unify-run's
+      # stdout, and no one has yet audited them for the things a different C
+      # runtime formats differently. The harness normalizes line endings
+      # (test/run-golden-test.sh), so this may well be green -- when it has
+      # been green for a while, fold it into the gating step above and
+      # delete this one.
+      - name: Engine golden files (informational)
+        if: always()
+        continue-on-error: true
+        run: |
+          ctest -C RelWithDebInfo --output-on-failure -R "^unify-golden-"
+        working-directory: build/lens

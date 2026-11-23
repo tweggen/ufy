@@ -1,0 +1,15 @@
+# Line endings, decided here rather than by whoever checks the repo out.
+#
+# Git for Windows defaults core.autocrlf to true, which rewrites LF to CRLF
+# in the working tree. For most repositories that is harmless. Here it breaks
+# two things outright:
+#
+#   - the golden files (unify/test/golden/, lens/test/golden/) are compared
+#     byte for byte against a program's stdout, which is LF. A CRLF checkout
+#     fails every golden test on Windows and the diff shows two lines that
+#     look identical.
+#   - the test harnesses are bash scripts; CRLF in a shell script produces
+#     "\r: command not found" or worse, silently.
+#
+# So: LF in the working tree everywhere, on every platform.
+* text=auto eol=lf

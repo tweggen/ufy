@@ -1,0 +1,4 @@
+# G1 "H": M-x lists every registered command with its description and its
+# binding, bound or not, and the minibuffer occupies the hint line.
+
+M-x

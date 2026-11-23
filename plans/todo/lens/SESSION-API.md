@@ -8,6 +8,18 @@ Design brief (plan requirement (c)): lean and small, and shaped so that
 replacing the core with a BEAM implementation, or putting a network between
 the two, changes an implementation and not a single caller.
 
+> **Implementation note (2026-09-06).** The header is
+> `unify/include/vault-unify-session.hpp` and its namespace is
+> `vault::unify::session`, not the `unify::session` written below. The rest
+> of the codebase lives in `vault::unify`, and a second top-level `unify`
+> namespace beside it would be a genuine ambiguity trap for any code inside
+> `namespace vault`. Nothing else in this document changes: the request
+> list, the event list and the value model are implemented as specified.
+> `solve()` is worth one clarification it did not spell out — it returns a
+> `QueryId` rather than a `RequestId`, so it emits no `Started`; its
+> acknowledgement is its first `QueryStatus`, which with `initialDemand = 0`
+> is the only event until a `demand` arrives.
+
 > **Revision note (2026-09-06, after architecture review).** The first draft
 > claimed 13 requests and 7 events and was not closed over its own
 > acceptance gates: it had no debug/trace event, no way to expand a

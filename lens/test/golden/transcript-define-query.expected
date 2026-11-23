@@ -1,0 +1,24 @@
+ File  Edit  World  Query  Image  Debug  Window  Help
+┌ Transcript ────────────────────────────────────┐┌ Solutions ─────────────────┐
+│?- colour( red );                               ││bindings, one row per soluti│
+│-- defined colour/1                             ││awaiting solve (G5)         │
+│?- colour( green );                             ││                            │
+│-- defined colour/1                             ││                            │
+│?- colour( $x )                                 ││                            │
+│$x = red                                        ││                            │
+│$x = green                                      ││                            │
+│-- 2 solutions                                  ││                            │
+│                                                ││                            │
+│                                                ││                            │
+│                                                ││                            │
+│                                                ││                            │
+│                                                ││                            │
+│?-                                              ││                            │
+└────────────────────────────────────────────────┘└────────────────────────────┘
+┌ Catalogue ───────────────────────────────────────────────────────────────────┐
+│module -> (name, arity)                                                       │
+│awaiting listing (G3)                                                         │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+ gen 0 · idle · buffered · cancel detaches only · local
+F1 Help  F10 Menu

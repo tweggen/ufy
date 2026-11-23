@@ -1,0 +1,8 @@
+// A steps list whose element is neither step( ... ) nor repeat( ... ).
+// Nothing is pressed and nothing is checked, so the case would otherwise be
+// a green test that does nothing at all -- the exact failure the flat
+// reader's orphan check exists to prevent, arriving by the other door.
+case( nested_junk, "a step that is not a step", [
+    step( "F1", [ visible ] ),
+    wibble( "Down" )
+] );

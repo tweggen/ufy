@@ -17,7 +17,7 @@
 namespace vault {
 namespace unify {
 
-ClauseId Clause::m_nextUid;
+std::atomic<ClauseId> Clause::m_nextUid( 0 );
 
 
 /**

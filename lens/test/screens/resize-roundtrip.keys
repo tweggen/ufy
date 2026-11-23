@@ -1,0 +1,12 @@
+# ACCEPTANCE.md G1.3, on screen rather than in the model.
+#
+# Split, shrink to 80x24 so the solver has to demote, then grow back. The
+# recorded screen is the one AFTER returning to 120x40, so it is the same
+# screen a plain `--geometry 120x40` run of this script would produce --
+# which is exactly the claim: a resize round trip restores the layout, it
+# does not merely leave a valid one.
+
+C-x 3
+C-x 2
+resize 80x24
+resize 120x40
