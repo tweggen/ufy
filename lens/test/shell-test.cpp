@@ -17,6 +17,8 @@
 
 #include "../../unify/test/session/test-harness.hpp"
 
+#include <cctype>
+
 #include "../src/app/layouts.hpp"
 #include "../src/model/model.hpp"
 #include "../src/model/transcript.hpp"
@@ -379,34 +381,189 @@ int main()
                       "screen -- the panel truncated instead of wrapping" );
     } );
 
-    // -- the menu ----------------------------------------------------------
+    // -- the menu bar ------------------------------------------------------
+    //
+    // UI.md section 1. The bar is a frame region with state, and its
+    // drop-downs are the one overlay: opening the menu moves no tile and no
+    // focus, which several of these assert directly.
 
-    registry.add( "H F10 opens a menu that lists every command once", []() {
+    registry.add( "H F10 gives the bar the keyboard, and drops nothing down",
+                  []() {
         Model model = makeModel();
+        const std::size_t tiles = model.layout().tileCount();
+        const TileId focused = model.layout().focused();
+
         type( model, "F10" );
 
-        UT_CHECK_MSG( model.menuActive(), "F10 did not open the menu" );
+        UT_CHECK_MSG( model.menuActive(), "F10 did not activate the menu bar" );
+        UT_CHECK_MSG( !model.menuOpen(),
+                      "F10 should light the bar, not open a drop-down" );
+        UT_CHECK_EQ( model.menuBar().heading, 0 );
+        UT_CHECK_MSG( model.layout().tileCount() == tiles,
+                      "the menu created a tile; it is an overlay now" );
+        UT_CHECK_MSG( model.layout().focused() == focused,
+                      "the menu moved tile focus" );
+    } );
 
-        const std::vector<Model::MenuRow> rows = model.menuRows();
-
-        std::size_t commandRows = 0;
-        for ( const Model::MenuRow& row : rows ) {
-            if ( !row.isHeading() ) { ++commandRows; }
+    registry.add( "Enter or Down on the bar opens the lit heading", []() {
+        for ( const char* opener : { "Enter", "Down" } ) {
+            Model model = makeModel();
+            type( model, "F10" );
+            type( model, "Right" );
+            type( model, opener );
+            UT_CHECK_MSG( model.menuOpen(), opener << " did not open it" );
+            UT_CHECK_EQ( model.menuBar().heading, 1 );
+            UT_CHECK_EQ( model.menuBar().selected, 0 );
         }
-        UT_CHECK_MSG( commandRows == model.commands().size(),
-                      "the menu shows " << commandRows << " of "
-                          << model.commands().size() << " commands" );
+    } );
 
-        /* Every heading the menu bar draws appears, even the empty ones --
-         * a heading that vanished would make the bar look like a lie. */
-        const std::vector<std::string> categories = menuCategories();
-        for ( const std::string& category : categories ) {
-            bool found = false;
-            for ( const Model::MenuRow& row : rows ) {
-                if ( row.isHeading() && row.heading == category ) { found = true; }
+    registry.add( "Left and Right walk the bar and wrap at both ends", []() {
+        Model model = makeModel();
+        const int count = (int) menuHeadings().size();
+
+        type( model, "F10" );
+        type( model, "Left" );
+        UT_CHECK_EQ( model.menuBar().heading, count - 1 );
+        type( model, "Right" );
+        UT_CHECK_EQ( model.menuBar().heading, 0 );
+
+        /* With a drop-down open, sideways keeps it open, on the neighbour. */
+        type( model, "Enter" );
+        type( model, "Right" );
+        UT_CHECK( model.menuOpen() );
+        UT_CHECK_EQ( model.menuBar().heading, 1 );
+    } );
+
+    registry.add( "M-<letter> opens each heading directly", []() {
+        const std::vector<MenuHeading> headings = menuHeadings();
+        for ( std::size_t i = 0; i < headings.size(); ++i ) {
+            Model model = makeModel();
+            const std::string keys =
+                std::string( "M-" ) + headings[i].defaultLetter;
+            type( model, keys.c_str() );
+
+            UT_CHECK_MSG( model.menuOpen(),
+                          keys << " did not open the " << headings[i].name
+                               << " menu" );
+            UT_CHECK_EQ( model.menuBar().heading, (int) i );
+
+            /* And from inside another open menu, too. */
+            type( model, "M-f" );
+            UT_CHECK_EQ( model.menuBar().heading, 0 );
+        }
+    } );
+
+    registry.add( "World and Window do not fight over W", []() {
+        Model model = makeModel();
+        type( model, "M-w" );
+        UT_CHECK_EQ( menuCategories()[ (std::size_t) model.menuBar().heading ],
+                     std::string( "World" ) );
+        model.closeMenu();
+        type( model, "M-n" );
+        UT_CHECK_EQ( menuCategories()[ (std::size_t) model.menuBar().heading ],
+                     std::string( "Window" ) );
+    } );
+
+    registry.add( "the underlined letter follows the binding in effect", []() {
+        const std::vector<MenuHeading> headings = menuHeadings();
+        const Keymap defaults = defaultKeymap();
+        for ( const MenuHeading& heading : headings ) {
+            const int at = menuMnemonic( heading, defaults );
+            UT_CHECK_MSG( at >= 0, heading.name << " has no mnemonic" );
+            UT_CHECK_EQ( (char) std::tolower(
+                             (unsigned char) heading.name[ (std::size_t) at ] ),
+                         heading.defaultLetter );
+        }
+
+        /* Rebound to M-o: the underline moves to the o of Window. */
+        const MenuHeading& window = headings[6];
+        UT_CHECK_EQ( window.name, std::string( "Window" ) );
+        Keymap rebound;
+        KeySeq seq;
+        UT_CHECK( parseKeySeq( "M-o", seq ) );
+        UT_CHECK( rebound.bind( seq, window.commandId ).empty() );
+        UT_CHECK_EQ( menuMnemonic( window, rebound ), 4 );
+
+        /* Bound to something that is not a letter of the name: no
+         * underline, rather than one no key answers to. */
+        Keymap elsewhere;
+        UT_CHECK( parseKeySeq( "C-x w", seq ) );
+        UT_CHECK( elsewhere.bind( seq, window.commandId ).empty() );
+        UT_CHECK_EQ( menuMnemonic( window, elsewhere ), -1 );
+    } );
+
+    registry.add( "on the bar, the bare letter opens its heading", []() {
+        Model model = makeModel();
+        type( model, "F10" );
+        typeText( model, "n" );
+        UT_CHECK( model.menuOpen() );
+        UT_CHECK_EQ( menuCategories()[ (std::size_t) model.menuBar().heading ],
+                     std::string( "Window" ) );
+    } );
+
+    registry.add( "a bare letter is still text while the menu is closed", []() {
+        Model model = makeModel();
+        Buffer* transcript = model.transcript();
+        UT_CHECK( transcript != NULL );
+        while ( model.focusedBuffer() != transcript ) { type( model, "Tab" ); }
+
+        typeText( model, "f" );
+        UT_CHECK_MSG( !model.menuActive(), "typing f opened the menu" );
+        UT_CHECK_EQ( transcript->transcript.input, std::string( "f" ) );
+    } );
+
+    registry.add( "Esc steps back one level, C-g and F10 close at once", []() {
+        Model model = makeModel();
+        type( model, "M-f" );
+        type( model, "Esc" );
+        UT_CHECK_MSG( model.menuActive() && !model.menuOpen(),
+                      "Esc in a drop-down should return to the bar" );
+        type( model, "Esc" );
+        UT_CHECK( !model.menuActive() );
+
+        for ( const char* closer : { "C-g", "F10" } ) {
+            type( model, "M-f" );
+            type( model, closer );
+            UT_CHECK_MSG( !model.menuActive(),
+                          closer << " should close the whole menu" );
+            type( model, "F10" );
+            type( model, closer );
+            UT_CHECK_MSG( !model.menuActive(),
+                          closer << " should close the bar too" );
+        }
+    } );
+
+    registry.add( "Up and Down wrap inside a drop-down", []() {
+        Model model = makeModel();
+        type( model, "M-n" );
+        const int count = (int) model.menuItems( model.menuBar().heading ).size();
+        UT_CHECK( count > 1 );
+
+        type( model, "Up" );
+        UT_CHECK_EQ( model.menuBar().selected, count - 1 );
+        type( model, "Down" );
+        UT_CHECK_EQ( model.menuBar().selected, 0 );
+    } );
+
+    registry.add( "every command is in exactly one drop-down, bar the openers",
+                  []() {
+        Model model = makeModel();
+        const int headings = (int) menuHeadings().size();
+
+        for ( const Command& command : model.commands().all() ) {
+            int seen = 0;
+            for ( int h = 0; h < headings; ++h ) {
+                for ( const Command* item : model.menuItems( h ) ) {
+                    if ( item == &command ) { ++seen; }
+                }
             }
-            UT_CHECK_MSG( found, "the menu is missing the '" << category
-                                     << "' heading that the bar draws" );
+            const bool opener = command.id().compare( 0, 5, "menu." ) == 0;
+            UT_CHECK_MSG( seen == ( opener ? 0 : 1 ),
+                          "'" << command.id() << "' appears in " << seen
+                              << " drop-downs" );
+            UT_CHECK_MSG( command.inMenu() != opener,
+                          "'" << command.id() << "' should "
+                              << ( opener ? "not " : "" ) << "be in the menu" );
         }
     } );
 
@@ -427,86 +584,100 @@ int main()
         }
     } );
 
-    registry.add( "the menu opens on a command, not on a heading", []() {
-        Model model = makeModel();
-        type( model, "F10" );
-
-        const Buffer* menu = findPanel( model, PanelKind::Menu );
-        UT_CHECK( menu != NULL );
-
-        const std::vector<Model::MenuRow> rows = model.menuRows();
-        UT_CHECK( menu->menu.selected >= 0
-                  && menu->menu.selected < (int) rows.size() );
-        UT_CHECK_MSG( !rows[ (std::size_t) menu->menu.selected ].isHeading(),
-                      "the menu opened with a heading selected, so Enter "
-                      "would do nothing" );
-    } );
-
-    registry.add( "menu navigation skips headings", []() {
-        Model model = makeModel();
-        type( model, "F10" );
-
-        const std::vector<Model::MenuRow> rows = model.menuRows();
-        for ( int i = 0; i < 20; ++i ) {
-            type( model, "Down" );
-            const Buffer* menu = findPanel( model, PanelKind::Menu );
-            if ( !menu ) { break; }
-            UT_CHECK_MSG(
-                !rows[ (std::size_t) menu->menu.selected ].isHeading(),
-                "menu navigation landed on a heading after " << i + 1
-                    << " steps down" );
-        }
-    } );
-
-    registry.add( "F10 closes the menu as well as opening it", []() {
-        Model model = makeModel();
-        type( model, "F10" );
-        UT_CHECK( model.menuActive() );
-        type( model, "F10" );
-        UT_CHECK_MSG( !model.menuActive(),
-                      "F10 must close the menu too, or pressing it by "
-                      "accident is a trap" );
-    } );
-
-    registry.add( "Esc closes the menu and leaves the layout as it was", []() {
+    registry.add( "Enter runs the item against the tile you were in", []() {
         Model model = makeModel();
         const std::size_t before = model.layout().tileCount();
-        type( model, "F10" );
-        type( model, "Esc" );
-        UT_CHECK( !model.menuActive() );
-        UT_CHECK_EQ( model.layout().tileCount(), before );
-    } );
+        const TileId focused = model.layout().focused();
 
-    registry.add( "Enter in the menu runs the selected command", []() {
-        Model model = makeModel();
-        const std::size_t before = model.layout().tileCount();
-
-        type( model, "F10" );
-        /* Walk to a window command, which has a visible effect. */
-        const Command* target = model.commands().find( "window.split-rows" );
-        UT_CHECK( target != NULL );
-
-        const std::vector<Model::MenuRow> rows = model.menuRows();
+        type( model, "M-n" );
+        const std::vector<const Command*> items =
+            model.menuItems( model.menuBar().heading );
         int wanted = -1;
-        for ( std::size_t i = 0; i < rows.size(); ++i ) {
-            if ( rows[i].command && rows[i].command->id() == "window.split-rows" ) {
-                wanted = (int) i;
-            }
+        for ( std::size_t i = 0; i < items.size(); ++i ) {
+            if ( items[i]->id() == "window.split-rows" ) { wanted = (int) i; }
         }
         UT_CHECK( wanted >= 0 );
-
-        Buffer* menu = model.buffer(
-            model.layout().bufferOf( model.layout().focused() ) );
-        UT_CHECK( menu != NULL && menu->kind == PanelKind::Menu );
-        menu->menu.selected = wanted;
+        while ( model.menuBar().selected != wanted ) { type( model, "Down" ); }
 
         type( model, "Enter" );
 
         UT_CHECK_MSG( !model.menuActive(), "running a command left the menu open" );
-        UT_CHECK_MSG( model.layout().tileCount() == before + 1,
-                      "the split ran against the wrong tile: "
-                          << model.layout().tileCount() << " vs "
-                          << before + 1 );
+        UT_CHECK_EQ( model.layout().tileCount(), before + 1 );
+        UT_CHECK_MSG( model.layout().bufferOf( model.layout().focused() )
+                          == model.layout().bufferOf( focused ),
+                      "the split ran against some other tile" );
+    } );
+
+    registry.add( "an empty drop-down says so and Enter does nothing", []() {
+        Model model = makeModel();
+        type( model, "M-e" );   /* Edit: nothing registered there yet */
+        UT_CHECK( model.menuItems( model.menuBar().heading ).empty() );
+        const std::size_t tiles = model.layout().tileCount();
+        type( model, "Enter" );
+        UT_CHECK_EQ( model.layout().tileCount(), tiles );
+        UT_CHECK_EQ( model.message(), std::string( "nothing here yet" ) );
+
+        const std::string screen = view( model ).toText();
+        UT_CHECK_MSG( screen.find( kMenuEmptyText ) != std::string::npos,
+                      "the empty drop-down does not say it is empty" );
+    } );
+
+    registry.add( "every drop-down fits, under its heading, at 80x24", []() {
+        Model model = makeModel( "browse", 80, 24 );
+        const Rect area = model.tileArea();
+        const int count = (int) menuHeadings().size();
+
+        for ( int h = 0; h < count; ++h ) {
+            model.openMenuHeading( h );
+            const Rect box = model.menuDropdownRect();
+
+            UT_CHECK_MSG( box.x >= 0 && box.right() <= model.width(),
+                          "heading " << h << " drops off the side" );
+            UT_CHECK_MSG( box.y == area.y && box.bottom() <= area.bottom(),
+                          "heading " << h << " covers the status or hint line" );
+
+            /* Under its heading, unless pushed left by the right edge. */
+            const int column = menuHeadingColumn( (std::size_t) h );
+            UT_CHECK_MSG( box.x == column - 1 || box.right() == model.width(),
+                          "heading " << h << " is not anchored under itself" );
+        }
+    } );
+
+    registry.add( "the open drop-down is drawn over the tiles", []() {
+        Model model = makeModel();
+        type( model, "M-n" );
+
+        const CellGrid grid = view( model );
+        const Rect box = model.menuDropdownRect();
+        const std::vector<const Command*> items =
+            model.menuItems( model.menuBar().heading );
+
+        std::string firstRow;
+        for ( int x = box.x + 2; x < box.right() - 1; ++x ) {
+            const Cell& cell = grid.at( x, box.y + 1 );
+            if ( cell.ch != 0 ) { firstRow += encodeUtf8( cell.ch ); }
+        }
+        UT_CHECK_MSG( firstRow.find( items[0]->title() ) == 0,
+                      "the drop-down's first row reads '" << firstRow << "'" );
+        UT_CHECK_MSG( grid.at( box.x + 2, box.y + 1 ).attr.reverse,
+                      "the selected item is not highlighted" );
+
+        /* And the lit heading is drawn out of reverse, so it shows in
+         * monochrome as well as in colour. */
+        const int column = menuHeadingColumn( (std::size_t) model.menuBar().heading );
+        UT_CHECK( !grid.at( column, 0 ).attr.reverse );
+        UT_CHECK( grid.at( 1, 0 ).attr.reverse );   /* File, not lit */
+    } );
+
+    registry.add( "the status line explains the highlighted item", []() {
+        Model model = makeModel();
+        type( model, "M-n" );
+        const Command* item = model.menuItems( model.menuBar().heading )[0];
+
+        const std::string screen = view( model ).toText();
+        const std::string start = item->help().substr( 0, 30 );
+        UT_CHECK_MSG( screen.find( start ) != std::string::npos,
+                      "the status line does not show '" << start << "'" );
     } );
 
     // -- the palette -------------------------------------------------------

@@ -5,6 +5,7 @@
 #include "model.hpp"
 #include "text-wrap.hpp"
 
+#include <algorithm>
 #include <cctype>
 #include <sstream>
 
@@ -114,7 +115,6 @@ std::string Model::contextualTopicId() const
     switch( focused->kind ) {
     case PanelKind::Help:       return "help";
     case PanelKind::Palette:    return "keys";
-    case PanelKind::Menu:       return "keys";
     case PanelKind::Transcript: return "getting-started";
     case PanelKind::Placeholder:
         break;
@@ -379,6 +379,21 @@ ScrollView Model::observeFocusedScroll( bool& out_valid ) const
     out_valid = false;
     ScrollView view;
 
+    /*
+     * While a drop-down is open it has the keyboard, so it is what "the
+     * focused panel" means to anyone watching the cursor -- the tile under
+     * it is not receiving keys and its viewport is not moving.
+     */
+    if( menuOpen() ) {
+        const Rect box = menuDropdownRect();
+        view.cursorLine = m_menu.selected;
+        view.topLine = m_menu.top;
+        view.viewportRows = box.h - 2;
+        view.totalLines = (int) menuItems( m_menu.heading ).size();
+        out_valid = view.totalLines > 0 && view.viewportRows > 0;
+        return view;
+    }
+
     const Buffer* buffer = focusedBuffer();
     if( !buffer ) {
         return view;
@@ -406,14 +421,6 @@ ScrollView Model::observeFocusedScroll( bool& out_valid ) const
         view.topLine = buffer->help.top;
         view.viewportRows = inner.h;
         view.totalLines = map.totalRows;
-        out_valid = true;
-        return view;
-    }
-    case PanelKind::Menu: {
-        view.cursorLine = buffer->menu.selected;
-        view.topLine = buffer->menu.top;
-        view.viewportRows = inner.h;
-        view.totalLines = (int) menuRows().size();
         out_valid = true;
         return view;
     }
@@ -557,64 +564,99 @@ void Model::openHelp( const std::string& topicId, bool takeLargestTile )
 
 void Model::openMenu()
 {
-    if( menuActive() ) {
+    /*
+     * Borland's F10: the bar takes the keyboard with the first heading lit
+     * and nothing dropped down yet. Always the FIRST heading rather than the
+     * last one used, so F10 Enter means the same thing every time and can
+     * be learnt with the fingers.
+     */
+    m_menu = MenuBarState();
+    m_menu.mode = MenuBarState::Mode::Bar;
+}
+
+
+void Model::openMenuHeading( int heading )
+{
+    const int count = (int) menuHeadings().size();
+    if( heading < 0 || heading >= count ) {
         return;
     }
-    if( kNoBuffer == m_menuBuffer ) {
-        m_menuBuffer = addBuffer( "Menu", {}, PanelKind::Menu );
-    }
-    Buffer* menu = buffer( m_menuBuffer );
-    if( menu ) {
-        menu->menu.selected = 0;
-        /* Start on the first real command, not on the File heading. */
-        const std::vector<MenuRow> rows = menuRows();
-        for( std::size_t i = 0; i < rows.size(); ++i ) {
-            if( !rows[i].isHeading() ) {
-                menu->menu.selected = (int) i;
-                break;
-            }
-        }
-    }
-
-    m_menuTile = m_layout.splitFocused( splitDirectionForNewPanel(),
-                                        m_menuBuffer, 0.5 );
+    m_menu.mode = MenuBarState::Mode::Open;
+    m_menu.heading = heading;
+    m_menu.selected = 0;
+    m_menu.top = 0;
 }
 
 
 void Model::closeMenu()
 {
-    if( !menuActive() ) {
-        return;
-    }
-    if( m_layout.focus( m_menuTile ) ) {
-        m_layout.closeFocused();
-    }
-    m_menuTile = kNoTile;
+    m_menu = MenuBarState();
 }
 
 
-std::vector<Model::MenuRow> Model::menuRows() const
+std::vector<const Command*> Model::menuItems( int heading ) const
 {
-    std::vector<MenuRow> rows;
+    std::vector<const Command*> items;
 
     const std::vector<std::string> categories = menuCategories();
+    if( heading < 0 || heading >= (int) categories.size() ) {
+        return items;
+    }
+
     const std::vector<Command>& all = m_commands.all();
-
-    for( std::size_t c = 0; c < categories.size(); ++c ) {
-        MenuRow heading;
-        heading.heading = categories[c];
-        rows.push_back( heading );
-
-        for( std::size_t i = 0; i < all.size(); ++i ) {
-            if( all[i].category() != categories[c] ) {
-                continue;
-            }
-            MenuRow row;
-            row.command = &all[i];
-            rows.push_back( row );
+    for( std::size_t i = 0; i < all.size(); ++i ) {
+        if( all[i].inMenu()
+            && all[i].category() == categories[ (std::size_t) heading ] ) {
+            items.push_back( &all[i] );
         }
     }
-    return rows;
+    return items;
+}
+
+
+Rect Model::menuDropdownRect() const
+{
+    if( !menuOpen() ) {
+        return Rect();
+    }
+
+    const std::vector<MenuHeading> headings = menuHeadings();
+    const std::vector<const Command*> items = menuItems( m_menu.heading );
+
+    /*
+     * Wide enough for the widest "Title   Key" line plus a column of
+     * padding either side, and never narrower than the heading it hangs
+     * from, so the box does not look like it belongs to something else.
+     */
+    int content = displayWidth( headings[ (std::size_t) m_menu.heading ].name );
+    if( items.empty() ) {
+        content = std::max( content, displayWidth( kMenuEmptyText ) );
+    }
+    for( std::size_t i = 0; i < items.size(); ++i ) {
+        int width = displayWidth( items[i]->title() );
+        const KeySeq binding = m_keymap.bindingFor( items[i]->id() );
+        if( !binding.empty() ) {
+            width += kMenuKeyGap + displayWidth( toString( binding ) );
+        }
+        content = std::max( content, width );
+    }
+
+    int w = content + 2 /* padding */ + 2 /* border */;
+    if( w > m_width ) { w = m_width; }
+
+    /* Never taller than the tile area: it may cover tiles, never the
+     * status or hint line, which have to stay truthful while it is open. */
+    const Rect area = tileArea();
+    int h = ( items.empty() ? 1 : (int) items.size() ) + 2;
+    if( h > area.h ) { h = area.h; }
+
+    /* The border sits one column left of the heading's first letter, so
+     * the item text lines up under the heading text. */
+    int x = menuHeadingColumn( (std::size_t) m_menu.heading ) - 1;
+    if( x + w > m_width ) { x = m_width - w; }
+    if( x < 0 ) { x = 0; }
+
+    return Rect( x, area.y, w, h );
 }
 
 
@@ -832,11 +874,6 @@ void followCursor( Model& model, Buffer& buffer )
                                          buffer.help.top );
         return;
     }
-    case PanelKind::Menu:
-        buffer.menu.top = ensureVisible( buffer.menu.selected,
-                                         (int) model.menuRows().size(),
-                                         inner.h, buffer.menu.top );
-        return;
     case PanelKind::Palette:
         /* One row is the prompt; the rest is the list. */
         buffer.palette.top = ensureVisible( buffer.palette.selected,
@@ -850,63 +887,148 @@ void followCursor( Model& model, Buffer& buffer )
 }
 
 
-/** The menu's keys. Modal while open, exactly like the palette. */
-std::vector<CommandRequest> foldMenu( Model& model, Buffer& menu, const Key& key )
+/** Keep the open drop-down's selection inside its visible rows. */
+void followMenu( Model& model )
+{
+    if( !model.menuOpen() ) {
+        return;
+    }
+    MenuBarState& menu = model.menuBar();
+    const Rect box = model.menuDropdownRect();
+    const int count = (int) model.menuItems( menu.heading ).size();
+    menu.top = ensureVisible( menu.selected, count, box.h - 2, menu.top );
+}
+
+
+/**
+ * The menu bar's keys. Modal while the bar has the keyboard, exactly like
+ * the palette: nothing else sees a key until it closes.
+ *
+ * The keys are Borland's. On the bar, Left/Right choose a heading and
+ * Enter or Down drops it; in a drop-down, Up/Down choose an item (wrapping,
+ * since the list is short and the top and bottom are one key apart either
+ * way), Left/Right move to the neighbouring drop-down, Enter runs. Esc steps
+ * back one level; C-g and the menu key itself close everything.
+ */
+std::vector<CommandRequest> foldMenu( Model& model, const Key& key )
 {
     std::vector<CommandRequest> requests;
-    const std::vector<Model::MenuRow> rows = model.menuRows();
+    MenuBarState& menu = model.menuBar();
+    const int headingCount = (int) menuHeadings().size();
 
-    if( isCancel( key ) || key.code == Key::Code::F10 ) {
-        /* F10 closes as well as opens: a menu key that only opened would
-         * make the menu a trap for anyone who pressed it by accident. */
+    /*
+     * The bindings that open the menu still work inside it, read from the
+     * live keymap so a rebinding in the config is honoured here too. The
+     * key that opens the bar closes it -- a menu key that only opened would
+     * make the menu a trap for anyone who pressed it by accident -- and
+     * M-<letter> jumps straight to that heading from anywhere in the menu.
+     */
+    KeySeq single;
+    single.push_back( key );
+    const std::string bound = model.keymap().lookup( single );
+    if( bound == "menu.open"
+        || ( key.code == Key::Code::Char && key.ctrl && key.ch == U'g' ) ) {
         model.closeMenu();
         return requests;
     }
-
-    const auto step = [ & ]( int direction ) {
-        int at = menu.menu.selected;
-        for( int guard = 0; guard < (int) rows.size(); ++guard ) {
-            at += direction;
-            if( at < 0 || at >= (int) rows.size() ) {
-                return;   /* stop at the ends rather than wrapping past a
-                           * heading, which reads as skipping an entry */
-            }
-            if( !rows[ (std::size_t) at ].isHeading() ) {
-                menu.menu.selected = at;
-                return;
-            }
+    if( bound.compare( 0, 5, "menu." ) == 0 ) {
+        const Command* command = model.commands().find( bound );
+        if( command ) {
+            return command->run( model );
         }
-    };
+    }
 
-    if( key.code == Key::Code::Down ) {
-        step( 1 );
-        followCursor( model, menu );
+    if( key.code == Key::Code::Escape ) {
+        if( model.menuOpen() ) {
+            menu.mode = MenuBarState::Mode::Bar;   /* back to the bar */
+        } else {
+            model.closeMenu();
+        }
         return requests;
     }
-    if( key.code == Key::Code::Up ) {
-        step( -1 );
-        followCursor( model, menu );
+
+    if( key.code == Key::Code::Left || key.code == Key::Code::Right ) {
+        const int step = ( key.code == Key::Code::Left ) ? -1 : 1;
+        const int next = ( menu.heading + step + headingCount ) % headingCount;
+        if( model.menuOpen() ) {
+            /* Moving sideways keeps the drop-down open, on the neighbour. */
+            model.openMenuHeading( next );
+        } else {
+            menu.heading = next;
+        }
+        return requests;
+    }
+
+    if( !model.menuOpen() ) {
+        if( key.code == Key::Code::Enter || key.code == Key::Code::Down ) {
+            model.openMenuHeading( menu.heading );
+            return requests;
+        }
+
+        /*
+         * On the bar, the underlined letter alone opens its heading, as in
+         * the IDEs this borrows from. Only on the bar: inside a drop-down a
+         * letter has no meaning yet, and guessing one would be worse than
+         * doing nothing.
+         */
+        if( key.code == Key::Code::Char && !key.ctrl && !key.alt
+            && key.ch < 0x80 ) {
+            const std::vector<MenuHeading> headings = menuHeadings();
+            const char wanted = (char) std::tolower( (int) key.ch );
+            for( std::size_t i = 0; i < headings.size(); ++i ) {
+                const int at = menuMnemonic( headings[i], model.keymap() );
+                if( at >= 0
+                    && (char) std::tolower(
+                           (unsigned char) headings[i].name[ (std::size_t) at ] )
+                           == wanted ) {
+                    model.openMenuHeading( (int) i );
+                    return requests;
+                }
+            }
+        }
+        return requests;
+    }
+
+    /* A drop-down is open. */
+    const std::vector<const Command*> items = model.menuItems( menu.heading );
+    const int count = (int) items.size();
+
+    if( key.code == Key::Code::Down || key.code == Key::Code::Up ) {
+        if( count > 0 ) {
+            const int step = ( key.code == Key::Code::Up ) ? -1 : 1;
+            menu.selected = ( menu.selected + step + count ) % count;
+        }
+        followMenu( model );
+        return requests;
+    }
+    if( key.code == Key::Code::Home || key.code == Key::Code::PageUp ) {
+        menu.selected = 0;
+        followMenu( model );
+        return requests;
+    }
+    if( key.code == Key::Code::End || key.code == Key::Code::PageDown ) {
+        menu.selected = count > 0 ? count - 1 : 0;
+        followMenu( model );
         return requests;
     }
 
     if( key.code == Key::Code::Enter ) {
-        const Command* chosen = NULL;
-        if( menu.menu.selected >= 0 && menu.menu.selected < (int) rows.size() ) {
-            chosen = rows[ (std::size_t) menu.menu.selected ].command;
+        if( menu.selected < 0 || menu.selected >= count ) {
+            model.setMessage( "nothing here yet" );
+            return requests;
         }
+        const Command* chosen = items[ (std::size_t) menu.selected ];
 
         /* Closed before the command runs, for the same reason the palette
-         * is: otherwise a layout command operates on the menu's own tile. */
+         * is: a command that opens a dialog or a menu of its own must find
+         * the keyboard free, not still held by this one. */
         model.closeMenu();
 
-        if( chosen ) {
-            if( !chosen->enabled( model ) ) {
-                model.setMessage( chosen->title() + " is not available here" );
-                return requests;
-            }
-            return chosen->run( model );
+        if( !chosen->enabled( model ) ) {
+            model.setMessage( chosen->title() + " is not available here" );
+            return requests;
         }
-        return requests;
+        return chosen->run( model );
     }
 
     return requests;
@@ -1147,10 +1269,7 @@ std::vector<CommandRequest> Model::foldInner( Model& model,
         }
     }
     if( model.menuActive() ) {
-        Buffer* menu = model.buffer( model.m_menuBuffer );
-        if( menu ) {
-            return foldMenu( model, *menu, event.key );
-        }
+        return foldMenu( model, event.key );
     }
 
     KeySeq attempt = model.m_pending;
@@ -1237,6 +1356,8 @@ std::vector<CommandRequest> fold( Model& model, const Event& event )
     if( focused ) {
         followCursor( model, *focused );
     }
+    /* The drop-down too: a resize can shrink it under its selection. */
+    followMenu( model );
     return requests;
 }
 
@@ -1315,12 +1436,29 @@ void registerShellCommands( Model& model )
                    } ) );
 
     table.add( Command( "menu.open", "Menu",
-                        "Open the menu bar. Every menu entry is a command "
-                        "from this same table." )
+                        "Move to the menu bar. Left and Right choose a "
+                        "heading, Enter opens it, Esc steps back. Every menu "
+                        "entry is a command from this same table." )
+                   .notInMenu()
                    .onRun( []( Model& m ) {
                        m.openMenu();
                        return std::vector<CommandRequest>();
                    } ) );
+
+    /* One command per heading, so M-<letter> is an ordinary rebindable
+     * binding rather than a key the menu special-cases. */
+    const std::vector<MenuHeading> headings = menuHeadings();
+    for( std::size_t i = 0; i < headings.size(); ++i ) {
+        const int index = (int) i;
+        table.add( Command( headings[i].commandId, headings[i].name + " menu",
+                            "Open the " + headings[i].name + " menu on the "
+                            "menu bar." )
+                       .notInMenu()
+                       .onRun( [ index ]( Model& m ) {
+                           m.openMenuHeading( index );
+                           return std::vector<CommandRequest>();
+                       } ) );
+    }
 
     table.add( Command( "command.palette", "Commands…",
                         "Show every registered command with its description "

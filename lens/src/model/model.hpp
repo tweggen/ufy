@@ -50,7 +50,6 @@ enum class PanelKind {
     Placeholder,   //!< a named box, until the real panel arrives
     Help,
     Palette,
-    Menu,
     Transcript
 };
 
@@ -78,19 +77,33 @@ struct PaletteState {
     int top = 0;      //!< see HelpState::top
 };
 
-/** The menu's own state -- one flat, grouped list rather than a tree. */
-struct MenuState {
-    int top = 0;      //!< see HelpState::top
+/**
+ * The menu bar's state -- UI.md section 1.
+ *
+ * Not a buffer and not a tile. The bar is a frame region, and its drop-downs
+ * are the one sanctioned overlay (UI.md section 1, "The one overlay"), so
+ * they belong to the frame rather than to the tiling tree: opening the menu
+ * moves no tile and changes no focus, which is what lets cancelling it leave
+ * the layout exactly as it was without having to put anything back.
+ */
+struct MenuBarState {
+    enum class Mode {
+        Closed,   //!< the bar is just a picture
+        Bar,      //!< the bar has the keyboard; a heading is highlighted
+        Open      //!< and its drop-down is showing
+    };
 
-    /**
-     * Index into the FLATTENED rows, headings included.
-     *
-     * Headings are rows too, so the list draws in one pass; navigation
-     * skips them, which is cheaper and less error-prone than keeping a
-     * second index that has to stay in step.
-     */
-    int selected = 0;
+    Mode mode = Mode::Closed;
+    int  heading = 0;    //!< index into menuHeadings()
+    int  selected = 0;   //!< index into the open heading's items
+    int  top = 0;        //!< first item drawn; see HelpState::top
 };
+
+/** What an empty drop-down says, rather than showing nothing. */
+constexpr const char* kMenuEmptyText = "(nothing here yet)";
+
+/** Columns between an item's title and its key, in a drop-down. */
+constexpr int kMenuKeyGap = 3;
 
 /** What a buffer is: a panel kind and the title it shows. */
 struct Buffer {
@@ -108,7 +121,6 @@ struct Buffer {
 
     HelpState       help;
     PaletteState    palette;
-    MenuState       menu;
     TranscriptState transcript;
 };
 
@@ -247,7 +259,7 @@ public:
     /**
      * The biggest non-stub tile on screen.
      *
-     * Where a new panel goes, so that opening help or the menu from a narrow
+     * Where a new panel goes, so that opening help or the palette from a narrow
      * side tile does not produce a narrow panel.
      */
     TileId largestTile() const;
@@ -256,21 +268,41 @@ public:
     void closePalette();
     bool paletteActive() const { return m_paletteTile != kNoTile; }
 
-    // -- the menu ------------------------------------------------------------
+    // -- the menu bar --------------------------------------------------------
 
+    /** Give the bar the keyboard, first heading highlighted, nothing open. */
     void openMenu();
+
+    /** Give the bar the keyboard with `heading`'s drop-down already open. */
+    void openMenuHeading( int heading );
+
     void closeMenu();
-    bool menuActive() const { return m_menuTile != kNoTile; }
 
-    /** One row of the menu: a heading, or a command under it. */
-    struct MenuRow {
-        std::string    heading;    //!< set on a heading row
-        const Command* command = NULL;
-        bool isHeading() const { return command == NULL; }
-    };
+    /** True while the bar has the keyboard, drop-down open or not. */
+    bool menuActive() const { return m_menu.mode != MenuBarState::Mode::Closed; }
+    bool menuOpen() const   { return m_menu.mode == MenuBarState::Mode::Open; }
 
-    /** The menu, flattened: every heading, and the commands under each. */
-    std::vector<MenuRow> menuRows() const;
+    const MenuBarState& menuBar() const { return m_menu; }
+    MenuBarState&       menuBar()       { return m_menu; }
+
+    /**
+     * The commands under one heading, in table order.
+     *
+     * Every command whose category is that heading, except the ones that
+     * only open the menu (Command::notInMenu).
+     */
+    std::vector<const Command*> menuItems( int heading ) const;
+
+    /**
+     * Where the open drop-down sits, border included; empty when closed.
+     *
+     * Model, not view, because fold needs it too: scrolling the drop-down is
+     * a response to a keystroke and has to know how many rows it shows.
+     * Anchored under its heading, pushed left if it would run off the right
+     * edge, and never taller than the tile area -- the overlay obeys the
+     * same "cannot clip at 80x24" rule the tiles get from the solver.
+     */
+    Rect menuDropdownRect() const;
 
     /** Commands matching the palette's current input, in table order. */
     std::vector<const Command*> paletteMatches() const;
@@ -363,14 +395,14 @@ private:
      */
     TileId m_paletteTile = kNoTile;
     BufferId m_paletteBuffer = kNoBuffer;
-    TileId m_menuTile = kNoTile;
-    BufferId m_menuBuffer = kNoBuffer;
     BufferId m_helpBuffer = kNoBuffer;
 
     /// The tile help borrowed, and what it was showing. See openHelp().
     TileId   m_borrowedTile = kNoTile;
     BufferId m_displacedBuffer = kNoBuffer;
     BufferId m_transcriptBuffer = kNoBuffer;
+
+    MenuBarState m_menu;
 
     us::Capabilities m_caps;
 };

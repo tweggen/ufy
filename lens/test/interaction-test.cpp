@@ -203,8 +203,10 @@ int main()
     // -- the same invariants, on every scrolling panel ----------------------
 
     registry.add( "the menu obeys the scrolling invariants", []() {
-        Driver driver( "browse", 80, 24 );   /* small, so it must scroll */
-        pressOrFail( driver, "F10" );
+        /* The longest drop-down, at the smallest geometry. It wraps, so
+         * twenty presses go round it more than once. */
+        Driver driver( "browse", 80, 24 );
+        pressOrFail( driver, "M-n" );
 
         for ( int i = 0; i < 20; ++i ) {
             pressOrFail( driver, "Down" );
@@ -245,7 +247,7 @@ int main()
         const char* keys[] = {
             "Down", "Up", "Enter", "Backspace", "Tab", "S-Tab",
             "F1", "F10", "M-x", "Esc", "C-x 2", "C-x 3", "C-x 0",
-            "Left", "Right", "Home", "End"
+            "Left", "Right", "Home", "End", "M-f", "M-n", "M-h"
         };
         const std::size_t keyCount = sizeof( keys ) / sizeof( keys[0] );
 

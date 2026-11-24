@@ -82,11 +82,14 @@ void Driver::record( const std::string& key )
     step.tiles = m_model.layout().tileCount();
     step.message = m_model.message();
 
+    /* The menu bar is not a tile, but while it is active it is where the
+     * keys go, which is what "the focused panel" means to a test. */
     const Buffer* focused = m_model.focusedBuffer();
-    if( focused ) {
+    if( m_model.menuActive() ) {
+        step.focusedPanel = "Menu";
+    } else if( focused ) {
         switch( focused->kind ) {
         case PanelKind::Help:        step.focusedPanel = "Help"; break;
-        case PanelKind::Menu:        step.focusedPanel = "Menu"; break;
         case PanelKind::Palette:     step.focusedPanel = "Palette"; break;
         case PanelKind::Transcript:  step.focusedPanel = "Transcript"; break;
         case PanelKind::Placeholder: step.focusedPanel = focused->title; break;

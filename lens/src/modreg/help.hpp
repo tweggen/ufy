@@ -67,8 +67,45 @@ std::string renderHintLine( const std::vector<Hint>& hints, int width );
 std::string generateKeymapPage( const CommandTable& table,
                                 const Keymap& keymap );
 
+/**
+ * One menu-bar heading: its name, the command that opens it, and the letter
+ * its default `M-` binding uses.
+ *
+ * The letter is the DEFAULT only. What the bar underlines is derived from
+ * the binding actually in effect (menuMnemonic), so rebinding `menu.window`
+ * in the config moves the underline with it instead of leaving the bar
+ * advertising a key that no longer works.
+ */
+struct MenuHeading {
+    std::string name;
+    std::string commandId;      //!< "menu.file", "menu.window", ...
+    char        defaultLetter;  //!< lower case; `M-<letter>` opens it
+};
+
 /** The menu-bar headings, in the order UI.md section 1 draws them. */
+std::vector<MenuHeading> menuHeadings();
+
+/** The headings' names alone, in the same order. */
 std::vector<std::string> menuCategories();
+
+/**
+ * Column of the heading's first letter in row 0.
+ *
+ * The bar's layout lives here, next to the table it lays out, because both
+ * the bar and the drop-down anchored under it need it, and a drop-down that
+ * computed its own column would drift from the heading it belongs to.
+ */
+int menuHeadingColumn( std::size_t index );
+
+/**
+ * Index into `heading.name` of the letter to underline, or -1.
+ *
+ * Read off the live binding: if the heading's command is bound to a single
+ * `M-<letter>` and that letter occurs in the name, it is the first such
+ * occurrence (case-insensitive). Otherwise nothing is underlined, because an
+ * underline that no key answers to is a control that lies.
+ */
+int menuMnemonic( const MenuHeading& heading, const Keymap& keymap );
 
 } // namespace lens
 

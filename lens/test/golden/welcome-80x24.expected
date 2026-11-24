@@ -6,7 +6,7 @@
 │                    ││THE KEYS THAT MATTER                                    │
 │                    ││                                                        │
 │                    ││  F1          help on whatever has focus. You are here. │
-│                    ││  F10         the menu.                                 │
+│                    ││  F10         the menu bar.  M-<letter> opens one menu. │
 │                    ││  M-x         every command there is, searc more ▾ Down │
 │                    │└────────────────────────────────────────────────────────┘
 │                    │┌ Diagnostics ───────────────────────────────────────────┐

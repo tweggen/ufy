@@ -304,8 +304,13 @@ const char* const kQuit = "\x18\x03";
 /** Something only the welcome screen's browse layout draws. */
 const char* const kWelcomeMarker = "Catalogue";
 
-/** Something only the menu draws -- the panel title, box corner included. */
-const char* const kMenuMarker = "\xE2\x94\x8C Menu";
+/**
+ * Something only the active menu bar draws: its own hint line. F10 lights
+ * the bar without dropping anything down, so there is no box to look for;
+ * the hint line is drawn in plain attributes, so no SGR sequence can land
+ * in the middle of it.
+ */
+const char* const kMenuMarker = "Enter Open  Esc Close";
 
 } // namespace
 

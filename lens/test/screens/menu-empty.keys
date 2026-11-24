@@ -1,0 +1,4 @@
+# M-e: Edit has nothing registered under it yet, and says so rather than
+# dropping down an empty box -- a heading with nothing under it would make
+# the bar look like it was lying about what exists.
+M-e

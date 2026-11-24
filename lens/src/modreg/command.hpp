@@ -101,6 +101,17 @@ public:
     Command& enabledWhen( Predicate predicate );
     bool enabled( const Model& model ) const;
 
+    /**
+     * Leave this command out of the menu bar's drop-downs.
+     *
+     * For the commands that OPEN the menu (F10, M-f, ...): listing "File
+     * menu" inside the File menu is a door that opens onto itself. They stay
+     * in `M-x` and on the generated keymap page, so this hides nothing from
+     * discovery -- it only stops the menu describing itself.
+     */
+    Command& notInMenu();
+    bool inMenu() const { return m_inMenu; }
+
     Command& onRun( Handler handler );
     std::vector<CommandRequest> run( Model& model ) const;
 
@@ -110,6 +121,7 @@ private:
     std::string m_help;
     std::string m_helpTopic;
     std::string m_category;
+    bool        m_inMenu = true;
     Predicate   m_enabled;
     Handler     m_run;
 };

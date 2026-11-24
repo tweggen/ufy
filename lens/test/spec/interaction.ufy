@@ -174,9 +174,12 @@ press(  help_scroll, 4, "Up" );
 expect( help_scroll, 4, still, cursor );
 expect( help_scroll, 4, still, top );
 
-case( menu_scroll, "the menu scrolls without ever losing the cursor" );
-geometry( menu_scroll, 80, 24 );        // small, so the list must scroll
-press(  menu_scroll, 1, "F10" );
+// The drop-down wraps rather than stopping at its ends, so thirty presses
+// go round it several times -- and the cursor must be on screen after every
+// one, wrap included.
+case( menu_scroll, "the menu's drop-down never loses the cursor" );
+geometry( menu_scroll, 80, 24 );
+press(  menu_scroll, 1, "M-n" );
 expect( menu_scroll, 1, panel, "Menu" );
 press(  menu_scroll, 2, "Down", 30 );
 expect( menu_scroll, 2, visible );
@@ -199,11 +202,15 @@ case( palette_scroll, "the palette scrolls without ever losing the cursor",
 // leak a tile each time -- damage that accumulates over a session is
 // exactly what no single-frame golden can see.
 //
-// The browse layout has four tiles; a modal panel borrows a fifth. Both
+// The browse layout has four tiles; the palette borrows a fifth. Both
 // numbers are written down: after five open-and-cancel cycles the counts
 // must be the SAME two, which is what "no tile leaked" means. `still` would
 // not say this -- it compares against the previous key, and the previous key
 // legitimately changed the count.
+//
+// The menu borrows no tile at all -- it is the one overlay (UI.md section 1)
+// -- so its count is 4 throughout, and what it must give back is the
+// keyboard: Esc steps back one level, so two of them return to Catalogue.
 // ---------------------------------------------------------------------------
 
 // Nested, and the reason is the middle of it: two of these steps check
@@ -211,13 +218,14 @@ case( palette_scroll, "the palette scrolls without ever losing the cursor",
 // a press with no expect beside it and a step number nobody reads; nested it
 // is `step( "F10" )`, which is also the one place the empty-list trap shows
 // up in a real case rather than in a note.
-case( menu_modal, "the menu gives the layout back when cancelled", [
-    step( "F10", [ panel( "Menu" ), tiles( 5 ) ] ),
-    step( "Esc", [ tiles( 4 ) ] ),
+case( menu_modal, "the menu gives the keyboard back when cancelled", [
+    step( "F10", [ panel( "Menu" ), tiles( 4 ) ] ),
+    step( "Esc", [ panel( "Catalogue" ), tiles( 4 ) ] ),
     step( "F10" ),
     step( "Esc" ),
-    step( "F10", [ panel( "Menu" ), tiles( 5 ) ] ),
-    step( "Esc", [ tiles( 4 ) ] )
+    step( "M-f", [ panel( "Menu" ), tiles( 4 ) ] ),
+    step( "Esc", [ panel( "Menu" ) ] ),
+    step( "Esc", [ panel( "Catalogue" ), tiles( 4 ) ] )
 ] );
 
 case( palette_modal, "the palette gives the layout back when cancelled" );

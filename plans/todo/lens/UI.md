@@ -33,7 +33,65 @@ generated from the command table (§6), so a module's commands appear there
 without lens knowing about them.
 
 Everything else is tiles. There are no overlapping windows and no floating
-palettes; dialogs are tiles too (§4).
+palettes; dialogs are tiles too (§4). The one exception is the menu bar's
+drop-downs, below.
+
+### 1.1 The menu bar, and the one overlay
+
+> **Decision (2026-11-23).** The first implementation kept the no-overlay
+> rule and gave up the Borland menu: `F10` opened a tile listing every
+> heading and its commands. That met the letter of this section and missed
+> its point — a menu bar you cannot move along is a picture of one. The
+> menu bar now behaves as Borland's did, and its drop-downs are **the one
+> sanctioned overlay**. Nothing else may overlap; the rule in §1 and §4
+> stands for every other surface.
+
+**Why an exception here and nowhere else.** The case against overlays is
+that they can land off-screen, clip at 80×24, and hide work. A drop-down
+is exempt from all three by construction: it is anchored under row 0, its
+size comes from the command table, it is clamped to the tile area (pushed
+left at the right edge, never taller than rows 1..h-3, never over the
+status or hint line), and it exists only while the bar holds the keyboard.
+It is transient in a way no dialog is, so it cannot accumulate or hide
+work.
+
+**State.** The bar is a frame region with state, not a tile: *closed*,
+*bar* (a heading is lit, nothing dropped down), or *open* (its drop-down is
+showing). Opening it moves no tile and changes no focus, so cancelling it
+gives the layout back without having to restore anything.
+
+**Keys.**
+
+| Where | Key | Does |
+| --- | --- | --- |
+| anywhere | `F10` | light the bar on File |
+| anywhere | `M-<letter>` | open that heading's drop-down directly |
+| bar | `Left` / `Right` | choose a heading (wraps) |
+| bar | `Enter` / `Down` | drop the lit heading down |
+| bar | the underlined letter | drop that heading down |
+| drop-down | `Up` / `Down` | choose an item (wraps); `Home` / `End` jump |
+| drop-down | `Left` / `Right` | move to the neighbouring drop-down, open |
+| drop-down | `Enter` | close the menu, then run the item |
+| either | `Esc` | step back one level: drop-down → bar → closed |
+| either | `C-g`, `F10` | close the menu at once |
+
+**Mnemonics.** File `M-f`, Edit `M-e`, World `M-w`, Query `M-q`, Image
+`M-i`, Debug `M-d`, Window `M-n`, Help `M-h`. World and Window both start
+with W; World keeps it, Window takes its n, as Borland's bars resolved the
+same collision. Each is an ordinary command (`menu.file`, …,
+`menu.window`), so it rebinds in `lens.toml` like anything else, and the
+bar underlines whatever letter the binding *in effect* uses — if a
+rebinding names no letter of the heading, nothing is underlined rather than
+an underline no key answers to.
+
+**What a drop-down shows.** The commands whose category is that heading,
+in table order, each with its binding; disabled ones greyed, never hidden.
+An empty heading says *(nothing here yet)* rather than vanishing. The
+commands that only open the menu (`menu.open`, `menu.*`) are left out — a
+"File menu" entry inside the File menu is a door onto itself — but stay in
+`M-x` and on the generated keymap page. While a drop-down is open the
+status line shows the highlighted command's help text, and the hint line
+shows the menu's own keys.
 
 ## 2. Tiling
 
@@ -150,7 +208,8 @@ combining-mark corpus.
 - **Dialogs** (open file, save image, confirm destructive load) are
   temporary tiles that take focus, not overlays. They obey the same tiling
   solver, so they cannot land off-screen or clip at 80×24 — a class of bug
-  that simply does not arise.
+  that simply does not arise. (The menu bar's drop-downs are the single
+  exception, and §1.1 says why it does not reopen that class of bug.)
 - `Esc` always cancels the innermost thing; `Ctrl-g` aborts to the
   transcript from anywhere.
 

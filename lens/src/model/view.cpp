@@ -15,18 +15,119 @@ namespace lens {
 
 namespace {
 
-/** UI.md section 1: the menu bar's fixed entries. */
-const char* const kMenuBar =
-    " File  Edit  World  Query  Image  Debug  Window  Help";
-
-
+/**
+ * UI.md section 1: the menu bar.
+ *
+ * Every heading has its mnemonic underlined, always -- not only while the
+ * bar has the keyboard -- because the point of a mnemonic is that you can
+ * use it without first opening the menu to find out what it is. The active
+ * heading is drawn OUT of reverse video, so it stands out in the monochrome
+ * tier as well as in colour (ARCHITECTURE section 6.2).
+ */
 void drawMenuBar( CellGrid& grid, const Model& model )
 {
-    Attr attr;
-    attr.reverse = true;
+    Attr bar;
+    bar.reverse = true;
+    grid.fill( 0, 0, model.width(), 1, U' ', bar );
 
-    grid.fill( 0, 0, model.width(), 1, U' ', attr );
-    grid.drawText( 0, 0, kMenuBar, model.width(), attr );
+    const std::vector<MenuHeading> headings = menuHeadings();
+    for( std::size_t i = 0; i < headings.size(); ++i ) {
+        const int column = menuHeadingColumn( i );
+        const bool active = model.menuActive()
+                         && (int) i == model.menuBar().heading;
+
+        Attr attr = bar;
+        if( active ) {
+            attr.reverse = false;
+            attr.bold = true;
+            /* One column of margin either side, so the lit heading reads
+             * as a selected cell rather than as recoloured letters. */
+            grid.fill( column - 1, 0, (int) headings[i].name.size() + 2, 1,
+                       U' ', attr );
+        }
+        grid.drawText( column, 0, headings[i].name,
+                       model.width() - column, attr );
+
+        const int mnemonic = menuMnemonic( headings[i], model.keymap() );
+        if( mnemonic >= 0 ) {
+            Attr underlined = attr;
+            underlined.underline = true;
+            grid.drawText( column + mnemonic, 0,
+                           headings[i].name.substr( (std::size_t) mnemonic, 1 ),
+                           model.width() - column - mnemonic, underlined );
+        }
+    }
+}
+
+
+/**
+ * The open drop-down: the one overlay (UI.md section 1).
+ *
+ * Drawn after the tiles, over them, inside the rectangle the model computed
+ * -- so it is the model, not the renderer, that guarantees it fits.
+ */
+void drawMenuDropdown( CellGrid& grid, const Model& model )
+{
+    const Rect box = model.menuDropdownRect();
+    if( box.w < 3 || box.h < 3 ) {
+        return;
+    }
+    const MenuBarState& menu = model.menuBar();
+    const std::vector<const Command*> items = model.menuItems( menu.heading );
+
+    /* An overlay must erase what is under it, or tile text shows through
+     * the gaps between items. */
+    grid.fill( box.x, box.y, box.w, box.h, U' ', Attr() );
+
+    Attr border;
+    border.bold = true;
+    grid.drawBox( box.x, box.y, box.w, box.h, std::string(), border );
+
+    const Rect inner( box.x + 1, box.y + 1, box.w - 2, box.h - 2 );
+
+    if( items.empty() ) {
+        Attr empty;
+        empty.colour = Colour::Dim;
+        grid.drawText( inner.x + 1, inner.y, kMenuEmptyText, inner.w - 2, empty );
+        return;
+    }
+
+    const int scroll = ensureVisible( menu.selected, (int) items.size(),
+                                      inner.h, menu.top );
+
+    for( int row = 0; row < inner.h; ++row ) {
+        const int index = scroll + row;
+        if( index >= (int) items.size() ) { break; }
+        const Command& command = *items[ (std::size_t) index ];
+
+        Attr attr;
+        if( index == menu.selected ) {
+            attr.reverse = true;
+        } else if( !command.enabled( model ) ) {
+            /* Disabled, not hidden -- same rule as the palette. */
+            attr.colour = Colour::Dim;
+        }
+
+        grid.fill( inner.x, inner.y + row, inner.w, 1, U' ', attr );
+        grid.drawText( inner.x + 1, inner.y + row, command.title(),
+                       inner.w - 2, attr );
+
+        const KeySeq binding = model.keymap().bindingFor( command.id() );
+        if( !binding.empty() ) {
+            const std::string keys = toString( binding );
+            const int at = inner.x + inner.w - 1 - displayWidth( keys );
+            grid.drawText( at, inner.y + row, keys, displayWidth( keys ), attr );
+        }
+    }
+
+    /* Say when there is more, on the border, where it covers no item. */
+    if( scroll > 0 ) {
+        grid.drawText( box.x + box.w - 3, box.y, "\xe2\x96\xb4", 1, border );
+    }
+    if( scroll + inner.h < (int) items.size() ) {
+        grid.drawText( box.x + box.w - 3, box.y + box.h - 1, "\xe2\x96\xbe", 1,
+                       border );
+    }
 }
 
 
@@ -46,6 +147,21 @@ void drawStatusLine( CellGrid& grid, const Model& model )
     std::string text = model.message().empty() ? model.status() : model.message();
     if( model.message().empty() && !model.capabilities().coreName.empty() ) {
         text = model.sessionStatus();
+    }
+
+    /*
+     * While a drop-down is open, what the highlighted item DOES -- the
+     * status line of the Borland IDEs, which is how their menus explained
+     * themselves without a manual. Generated from the command's own help
+     * text, so it cannot drift from the command.
+     */
+    if( model.message().empty() && model.menuOpen() ) {
+        const std::vector<const Command*> items =
+            model.menuItems( model.menuBar().heading );
+        const int selected = model.menuBar().selected;
+        if( selected >= 0 && selected < (int) items.size() ) {
+            text = items[ (std::size_t) selected ]->help();
+        }
     }
     grid.drawText( 1, y, text, model.width() - 2, attr );
 }
@@ -73,6 +189,12 @@ void drawHintLine( CellGrid& grid, const Model& model )
             ( palette && palette->kind == PanelKind::Palette )
                 ? palette->palette.input : std::string();
         text = "M-x " + input + "_";
+    } else if( model.menuOpen() ) {
+        /* The menu's own keys, which no command table entry describes:
+         * they are fixed by foldMenu, not bindings. */
+        text = "Up/Down Choose  Left/Right Next menu  Enter Run  Esc Back";
+    } else if( model.menuActive() ) {
+        text = "Left/Right Choose  Enter Open  Esc Close";
     } else if( !model.pendingKeys().empty() ) {
         text = toString( model.pendingKeys() ) + "-";
     } else {
@@ -256,66 +378,6 @@ void drawPalette( CellGrid& grid, const Model& model, const Buffer& buffer,
 }
 
 
-/** The menu: the bar's headings, with the commands under each. */
-void drawMenu( CellGrid& grid, const Model& model, const Buffer& buffer,
-               const Rect& inner )
-{
-    const std::vector<Model::MenuRow> rows = model.menuRows();
-
-    const int scroll = ensureVisible( buffer.menu.selected,
-                                      (int) rows.size(), inner.h,
-                                      buffer.menu.top );
-
-    for( int row = 0; row < inner.h; ++row ) {
-        const int index = scroll + row;
-        if( index >= (int) rows.size() ) { break; }
-        const Model::MenuRow& entry = rows[ (std::size_t) index ];
-
-        if( entry.isHeading() ) {
-            Attr heading;
-            heading.bold = true;
-            heading.underline = true;
-            grid.drawText( inner.x, inner.y + row, entry.heading, inner.w,
-                           heading );
-            continue;
-        }
-
-        const KeySeq binding = model.keymap().bindingFor( entry.command->id() );
-        std::string line = "  " + entry.command->title();
-        if( !binding.empty() ) {
-            line += "   " + toString( binding );
-        }
-
-        Attr attr;
-        if( index == buffer.menu.selected ) {
-            attr.reverse = true;
-        } else if( !entry.command->enabled( model ) ) {
-            attr.colour = Colour::Dim;
-        }
-        grid.drawText( inner.x, inner.y + row, line, inner.w, attr );
-    }
-
-    /*
-     * A heading with nothing under it says so. The menu bar draws all eight
-     * headings, so a menu that silently omitted the empty ones would look
-     * like the bar was lying about what exists.
-     */
-    for( int row = 0; row < inner.h; ++row ) {
-        const int index = scroll + row;
-        if( index + 1 >= (int) rows.size() ) { break; }
-        if( !rows[ (std::size_t) index ].isHeading() ) { continue; }
-        if( !rows[ (std::size_t) index + 1 ].isHeading() ) { continue; }
-
-        Attr empty;
-        empty.colour = Colour::Dim;
-        const std::string heading = rows[ (std::size_t) index ].heading;
-        grid.drawText( inner.x + (int) heading.size() + 1, inner.y + row,
-                       "(nothing here yet)",
-                       inner.w - (int) heading.size() - 1, empty );
-    }
-}
-
-
 /** The Transcript: what happened, then the prompt at the bottom. */
 void drawTranscript( CellGrid& grid, const Buffer& buffer, const Rect& inner,
                      bool focused )
@@ -447,9 +509,6 @@ void drawTile( CellGrid& grid, const Model& model, const Placement& placement,
     case PanelKind::Palette:
         drawPalette( grid, model, *buffer, inner );
         return;
-    case PanelKind::Menu:
-        drawMenu( grid, model, *buffer, inner );
-        return;
     case PanelKind::Transcript:
         drawTranscript( grid, *buffer, inner, focused );
         return;
@@ -473,8 +532,6 @@ CellGrid view( const Model& model )
         return grid;
     }
 
-    drawMenuBar( grid, model );
-
     const Rect area = model.tileArea();
     const Solution solution = solve( model.layout(), area );
 
@@ -486,6 +543,10 @@ CellGrid view( const Model& model )
 
     drawStatusLine( grid, model );
     drawHintLine( grid, model );
+
+    /* Last, because the drop-down is drawn OVER the tiles. */
+    drawMenuBar( grid, model );
+    drawMenuDropdown( grid, model );
 
     return grid;
 }

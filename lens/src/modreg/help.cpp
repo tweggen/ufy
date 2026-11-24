@@ -4,6 +4,7 @@
 
 #include "help.hpp"
 
+#include <cctype>
 #include <sstream>
 
 namespace lens {
@@ -126,23 +127,82 @@ std::string generateKeymapPage( const CommandTable& table,
     return page.str();
 }
 
-std::vector<std::string> menuCategories()
+std::vector<MenuHeading> menuHeadings()
 {
     /*
      * Fixed, and in the bar's order. Deriving them from the registered
      * commands instead would make the menu's headings appear and disappear
      * as modules load, so a user could not learn where anything lives.
+     *
+     * World and Window both start with W. World keeps it, being the thing
+     * lens is about; Window takes its n, as Borland's bars resolved the same
+     * collision with a letter from the middle of the word.
      */
+    static const struct { const char* name; const char* id; char letter; }
+        kHeadings[] = {
+            { "File",   "menu.file",   'f' },
+            { "Edit",   "menu.edit",   'e' },
+            { "World",  "menu.world",  'w' },
+            { "Query",  "menu.query",  'q' },
+            { "Image",  "menu.image",  'i' },
+            { "Debug",  "menu.debug",  'd' },
+            { "Window", "menu.window", 'n' },
+            { "Help",   "menu.help",   'h' },
+        };
+
+    std::vector<MenuHeading> headings;
+    for( std::size_t i = 0; i < sizeof( kHeadings ) / sizeof( kHeadings[0] ); ++i ) {
+        MenuHeading heading;
+        heading.name = kHeadings[i].name;
+        heading.commandId = kHeadings[i].id;
+        heading.defaultLetter = kHeadings[i].letter;
+        headings.push_back( heading );
+    }
+    return headings;
+}
+
+
+std::vector<std::string> menuCategories()
+{
     std::vector<std::string> categories;
-    categories.push_back( "File" );
-    categories.push_back( "Edit" );
-    categories.push_back( "World" );
-    categories.push_back( "Query" );
-    categories.push_back( "Image" );
-    categories.push_back( "Debug" );
-    categories.push_back( "Window" );
-    categories.push_back( "Help" );
+    const std::vector<MenuHeading> headings = menuHeadings();
+    for( std::size_t i = 0; i < headings.size(); ++i ) {
+        categories.push_back( headings[i].name );
+    }
     return categories;
+}
+
+
+int menuHeadingColumn( std::size_t index )
+{
+    /* " File  Edit  World ..." -- one space of margin, two between. */
+    const std::vector<MenuHeading> headings = menuHeadings();
+    int column = 1;
+    for( std::size_t i = 0; i < index && i < headings.size(); ++i ) {
+        column += (int) headings[i].name.size() + 2;
+    }
+    return column;
+}
+
+
+int menuMnemonic( const MenuHeading& heading, const Keymap& keymap )
+{
+    const KeySeq seq = keymap.bindingFor( heading.commandId );
+    if( seq.size() != 1 ) {
+        return -1;
+    }
+    const Key& key = seq[0];
+    if( key.code != Key::Code::Char || !key.alt || key.ctrl || key.ch >= 0x80 ) {
+        return -1;
+    }
+
+    const char wanted = (char) std::tolower( (int) key.ch );
+    for( std::size_t i = 0; i < heading.name.size(); ++i ) {
+        if( (char) std::tolower( (unsigned char) heading.name[i] ) == wanted ) {
+            return (int) i;
+        }
+    }
+    return -1;
 }
 
 } // namespace lens
