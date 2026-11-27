@@ -473,8 +473,25 @@ ScrollView Model::observeFocusedScroll( bool& out_valid ) const
         out_valid = true;
         return view;
     }
+    case PanelKind::Transcript: {
+        /*
+         * Only while a past line is selected. At the prompt the transcript
+         * is a log pinned to its newest line with the cursor in the input,
+         * not a list with a line cursor, and reporting one would make the
+         * invariants assert about a cursor nobody can see.
+         */
+        const TranscriptState& t = buffer->transcript;
+        if( t.selected < 0 ) {
+            break;
+        }
+        view.cursorLine = t.selected;
+        view.topLine = t.top;
+        view.viewportRows = transcriptHistoryRows( inner.h );
+        view.totalLines = (int) t.entries.size();
+        out_valid = view.viewportRows > 0;
+        return view;
+    }
     case PanelKind::Placeholder:
-    case PanelKind::Transcript:
         break;
     }
     return view;
@@ -920,8 +937,16 @@ void followCursor( Model& model, Buffer& buffer )
                                             (int) model.paletteMatches().size(),
                                             inner.h - 1, buffer.palette.top );
         return;
+    case PanelKind::Transcript: {
+        TranscriptState& t = buffer.transcript;
+        if( t.selected < 0 ) {
+            return;
+        }
+        t.top = ensureVisible( t.selected, (int) t.entries.size(),
+                               transcriptHistoryRows( inner.h ), t.top );
+        return;
+    }
     case PanelKind::Placeholder:
-    case PanelKind::Transcript:
         return;
     }
 }
@@ -1132,6 +1157,37 @@ void foldHelp( Model& model, Buffer& help, const Key& key )
     }
 }
 
+/** The Input entry before `from`, or -1. */
+int previousInput( const TranscriptState& t, int from )
+{
+    for( int i = from - 1; i >= 0; --i ) {
+        if( t.entries[ (std::size_t) i ].kind == TranscriptEntry::Kind::Input ) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+
+/** The Input entry after `from`, or -1 -- which is the prompt. */
+int nextInput( const TranscriptState& t, int from )
+{
+    for( int i = from + 1; i < (int) t.entries.size(); ++i ) {
+        if( t.entries[ (std::size_t) i ].kind == TranscriptEntry::Kind::Input ) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+
+/** Where the view sits when it is pinned to the newest line. */
+int pinnedTop( const TranscriptState& t, int rows )
+{
+    const int top = (int) t.entries.size() - rows;
+    return top > 0 ? top : 0;
+}
+
 /**
  * The transcript's keys.
  *
@@ -1144,6 +1200,44 @@ std::vector<CommandRequest> foldTranscript( Model& model, Buffer& buffer,
 {
     std::vector<CommandRequest> requests;
     TranscriptState& t = buffer.transcript;
+
+    /*
+     * G2.5: the cursor over past input. PageUp and PageDown rather than the
+     * arrows, because Up and Down already walk the history into the prompt
+     * -- which is the other way to get an old line back, for when you want
+     * to edit it first.
+     */
+    if( key.code == Key::Code::PageUp && !key.ctrl && !key.alt ) {
+        const int from = t.selected >= 0 ? t.selected
+                                         : (int) t.entries.size();
+        const int found = previousInput( t, from );
+        if( found < 0 ) {
+            model.setMessage( t.selected < 0 ? "no earlier input to re-run"
+                                             : "this is the oldest input" );
+            return requests;
+        }
+        if( t.selected < 0 ) {
+            /* Start from where the eye already is: the pinned bottom. */
+            t.top = pinnedTop( t, transcriptHistoryRows(
+                model.innerRectOf( model.layout().focused() ).h ) );
+        }
+        t.selected = found;
+        return requests;
+    }
+    if( key.code == Key::Code::PageDown && !key.ctrl && !key.alt ) {
+        if( t.selected >= 0 ) {
+            t.selected = nextInput( t, t.selected );
+        }
+        return requests;
+    }
+    if( t.selected >= 0 ) {
+        if( key.code == Key::Code::Escape ) {
+            t.selected = -1;
+            return requests;
+        }
+        /* Anything else is aimed at the prompt: go back there, then do it. */
+        t.selected = -1;
+    }
 
     if( key.code == Key::Code::Enter ) {
         const std::string line = t.input;
@@ -1453,6 +1547,49 @@ std::vector<CommandRequest> cancelLiveQuery( Model& model )
     return requests;
 }
 
+/**
+ * `F5` -- G2.5. Re-run the selected past line through the SAME function
+ * Enter uses, so the request is identical by construction rather than by a
+ * reconstruction that happens to agree today.
+ */
+std::vector<CommandRequest> rerunTranscriptLine( Model& model )
+{
+    std::vector<CommandRequest> requests;
+    Buffer* buffer = model.transcript();
+    if( !buffer ) {
+        model.setMessage( "this layout has no transcript" );
+        return requests;
+    }
+    TranscriptState& t = buffer->transcript;
+
+    if( t.selected >= 0 && t.selected < (int) t.entries.size()
+        && t.entries[ (std::size_t) t.selected ].kind
+               == TranscriptEntry::Kind::Input ) {
+        const std::string source = t.entries[ (std::size_t) t.selected ].source;
+
+        /*
+         * Whatever was half-typed at the prompt survives. Re-running an old
+         * line is a side trip; losing the line you were in the middle of
+         * writing would make it an expensive one.
+         */
+        const std::string keptInput = t.input;
+        const std::size_t keptCursor = t.cursor;
+        requests = submitTranscriptLine( model, *buffer, source );
+        t.input = keptInput;
+        t.cursor = keptCursor;
+        t.selected = -1;
+        return requests;
+    }
+
+    t.selected = -1;
+    if( t.input.find_first_not_of( " \t" ) == std::string::npos ) {
+        model.setMessage( "nothing to run \xc2\xb7 PageUp picks an earlier line" );
+        return requests;
+    }
+    const std::string line = t.input;
+    return submitTranscriptLine( model, *buffer, line );
+}
+
 } // namespace
 
 
@@ -1575,6 +1712,14 @@ void registerShellCommands( Model& model )
                        m.setMessage( "nothing to abort" );
                        return std::vector<CommandRequest>();
                    } ) );
+
+    table.add( Command( "transcript.rerun", "Run line",
+                        "Run the past input line under the transcript cursor "
+                        "again -- PageUp and PageDown move it -- exactly as it "
+                        "was first submitted. With no past line selected, run "
+                        "what is typed at the prompt." )
+                   .helpTopic( "transcript" )
+                   .onRun( []( Model& m ) { return rerunTranscriptLine( m ); } ) );
 
     table.add( Command( "query.cancel", "Cancel query",
                         "Stop waiting for the running query's solutions. The "

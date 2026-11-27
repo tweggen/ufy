@@ -103,8 +103,22 @@ struct TranscriptState {
      */
     std::vector<us::QueryId> detached;
 
-    /** Scroll offset from the bottom; 0 means pinned to the newest line. */
-    int scrollBack = 0;
+    /**
+     * The past input line the cursor is on, as an index into `entries`, or
+     * -1 when the cursor is at the prompt -- G2.5.
+     *
+     * Only ever an Input entry: the cursor is there to pick something to
+     * re-run, and a solution row is not something you can run. PageUp and
+     * PageDown move it from input to input; F5 re-runs the line under it.
+     */
+    int selected = -1;
+
+    /**
+     * The first entry drawn while a past line is selected; see
+     * HelpState::top for why this is model state. At the prompt the
+     * transcript is pinned to its newest line and this is not consulted.
+     */
+    int top = 0;
 
     /** Solutions delivered for the live query, for the status line. */
     std::uint64_t produced = 0;
@@ -112,6 +126,18 @@ struct TranscriptState {
     /** True once the live query reached a terminal status. */
     bool finished = true;
 };
+
+/**
+ * How many rows of a transcript tile show history: all but the prompt's.
+ *
+ * One definition, used by fold, by the interaction projection and by the
+ * renderer. If those three disagreed about how tall the list is, the tests
+ * would assert a viewport the user never sees.
+ */
+inline int transcriptHistoryRows( int innerHeight )
+{
+    return innerHeight > 1 ? innerHeight - 1 : 0;
+}
 
 /** The prompt, matching `unify-run`'s so nobody has to unlearn it. */
 extern const char* const kTranscriptPrompt;

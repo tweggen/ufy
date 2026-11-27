@@ -391,10 +391,20 @@ void drawTranscript( CellGrid& grid, const Buffer& buffer, const Rect& inner,
      * a REPL.
      */
     const int promptRow = inner.y + inner.h - 1;
-    const int historyRows = inner.h - 1;
+    const int historyRows = transcriptHistoryRows( inner.h );
 
+    /*
+     * Pinned to the newest line at the prompt; while a past line is
+     * selected, wherever fold left the viewport -- clamped, so a resize
+     * between keystrokes cannot leave the cursor off screen. The same rule
+     * as every other list panel (scroll.hpp).
+     */
     const int total = (int) t.entries.size();
-    int first = total - historyRows - t.scrollBack;
+    const bool browsing = t.selected >= 0 && t.selected < total;
+    int first = total - historyRows;
+    if( browsing ) {
+        first = ensureVisible( t.selected, total, historyRows, t.top );
+    }
     if( first < 0 ) { first = 0; }
 
     for( int row = 0; row < historyRows; ++row ) {
@@ -421,6 +431,9 @@ void drawTranscript( CellGrid& grid, const Buffer& buffer, const Rect& inner,
         case TranscriptEntry::Kind::Solution:
             break;
         }
+        if( browsing && index == t.selected ) {
+            attr.reverse = true;
+        }
 
         grid.drawText( inner.x, inner.y + row, entry.text, inner.w, attr );
     }
@@ -438,7 +451,9 @@ void drawTranscript( CellGrid& grid, const Buffer& buffer, const Rect& inner,
     int at = promptWidth;
     at += grid.drawText( inner.x + at, promptRow, before, inner.w - at, Attr() );
 
-    if( focused ) {
+    /* One cursor on screen at a time: while a past line is selected, the
+     * highlight is on it and the prompt shows no block. */
+    if( focused && !browsing ) {
         Attr cursor;
         cursor.reverse = true;
         const std::string under = after.empty() ? " " : after.substr( 0, 1 );

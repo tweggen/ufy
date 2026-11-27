@@ -56,6 +56,39 @@ void type( Model& model, const char* keys )
     }
 }
 
+/** Like type(), but returns every request the keys asked for. */
+std::vector<CommandRequest> typeKeys( Model& model, const char* keys )
+{
+    std::vector<CommandRequest> all;
+    KeySeq seq;
+    if ( !parseKeySeq( keys, seq ) ) {
+        UT_FAIL( "the test itself has a bad key sequence: '" << keys << "'" );
+    }
+    for ( const Key& key : seq ) {
+        Event event;
+        event.kind = Event::Kind::Key;
+        event.key = key;
+        const std::vector<CommandRequest> some = fold( model, event );
+        all.insert( all.end(), some.begin(), some.end() );
+    }
+    return all;
+}
+
+/** Tab until the transcript has focus. */
+void focusTranscript( Model& model )
+{
+    Buffer* transcript = model.transcript();
+    if ( !transcript ) {
+        UT_FAIL( "this layout has no transcript" );
+    }
+    for ( int i = 0; i < 16 && model.focusedBuffer() != transcript; ++i ) {
+        type( model, "Tab" );
+    }
+    if ( model.focusedBuffer() != transcript ) {
+        UT_FAIL( "could not focus the transcript" );
+    }
+}
+
 /** Type printable characters one at a time, as a user would. */
 void typeText( Model& model, const std::string& text )
 {
@@ -499,6 +532,133 @@ int main()
         UT_CHECK( model.menuOpen() );
         UT_CHECK_EQ( menuCategories()[ (std::size_t) model.menuBar().heading ],
                      std::string( "Window" ) );
+    } );
+
+    // -- G2.5: re-running past input in place --------------------------------
+
+    registry.add( "G2.5 F5 on a past line re-issues the identical request", []() {
+        Model model = makeModel();
+        focusTranscript( model );
+
+        typeText( model, "colour( $x )" );
+        const std::vector<CommandRequest> original = typeKeys( model, "Enter" );
+        UT_CHECK_EQ( original.size(), (std::size_t) 1 );
+
+        typeText( model, "shade( blue );" );
+        const std::vector<CommandRequest> definition = typeKeys( model, "Enter" );
+        UT_CHECK_EQ( definition.size(), (std::size_t) 1 );
+
+        /* PageUp twice: past the definition, onto the goal. */
+        type( model, "PageUp" );
+        type( model, "PageUp" );
+        const std::vector<CommandRequest> again = typeKeys( model, "F5" );
+
+        UT_CHECK_EQ( again.size(), (std::size_t) 1 );
+        UT_CHECK_EQ( again[0].kind, original[0].kind );
+        UT_CHECK_EQ( again[0].text, original[0].text );
+        UT_CHECK_EQ( again[0].handle, original[0].handle );
+
+        /* A definition re-runs as a definition, not as a goal. */
+        type( model, "PageUp" );
+        type( model, "PageUp" );
+        const std::vector<CommandRequest> redefined = typeKeys( model, "F5" );
+        UT_CHECK_EQ( redefined.size(), (std::size_t) 1 );
+        UT_CHECK_EQ( redefined[0].kind, definition[0].kind );
+        UT_CHECK_EQ( redefined[0].text, definition[0].text );
+    } );
+
+    registry.add( "G2.5 F5 keeps the line you were halfway through typing", []() {
+        Model model = makeModel();
+        focusTranscript( model );
+        TranscriptState& t = model.transcript()->transcript;
+
+        typeText( model, "colour( $x )" );
+        type( model, "Enter" );
+        typeText( model, "half a th" );
+        type( model, "PageUp" );
+        ( void ) typeKeys( model, "F5" );
+
+        UT_CHECK_EQ( t.input, std::string( "half a th" ) );
+        UT_CHECK_EQ( t.cursor, t.input.size() );
+        UT_CHECK_EQ( t.selected, -1 );
+    } );
+
+    registry.add( "G2.5 the transcript cursor visits only past input", []() {
+        Model model = makeModel();
+        focusTranscript( model );
+        TranscriptState& t = model.transcript()->transcript;
+
+        typeText( model, "a( 1 );" );
+        type( model, "Enter" );
+        /* Rows that are not input -- what a session would have folded in. */
+        TranscriptEntry row;
+        row.kind = TranscriptEntry::Kind::Solution;
+        row.text = "$x = 1";
+        t.entries.push_back( row );
+        t.entries.push_back( row );
+        typeText( model, "a( $x )" );
+        type( model, "Enter" );
+        t.entries.push_back( row );
+
+        type( model, "PageUp" );
+        UT_CHECK( t.selected >= 0 );
+        UT_CHECK_EQ( t.entries[ (std::size_t) t.selected ].source,
+                     std::string( "a( $x )" ) );
+        type( model, "PageUp" );
+        UT_CHECK_EQ( t.entries[ (std::size_t) t.selected ].source,
+                     std::string( "a( 1 );" ) );
+
+        /* At the oldest line PageUp stays put, and says why. */
+        type( model, "PageUp" );
+        UT_CHECK_EQ( t.entries[ (std::size_t) t.selected ].source,
+                     std::string( "a( 1 );" ) );
+        UT_CHECK_MSG( !model.message().empty(),
+                      "PageUp at the oldest input said nothing" );
+
+        /* PageDown walks forward, and past the newest returns to the prompt. */
+        type( model, "PageDown" );
+        UT_CHECK_EQ( t.entries[ (std::size_t) t.selected ].source,
+                     std::string( "a( $x )" ) );
+        type( model, "PageDown" );
+        UT_CHECK_EQ( t.selected, -1 );
+    } );
+
+    registry.add( "G2.5 Esc or typing leaves the past line for the prompt", []() {
+        Model model = makeModel();
+        focusTranscript( model );
+        TranscriptState& t = model.transcript()->transcript;
+
+        typeText( model, "a( 1 );" );
+        type( model, "Enter" );
+
+        type( model, "PageUp" );
+        UT_CHECK( t.selected >= 0 );
+        type( model, "Esc" );
+        UT_CHECK_EQ( t.selected, -1 );
+
+        type( model, "PageUp" );
+        typeText( model, "q" );
+        UT_CHECK_EQ( t.selected, -1 );
+        UT_CHECK_EQ( t.input, std::string( "q" ) );
+    } );
+
+    registry.add( "G2.5 F5 with nothing selected and nothing typed asks nothing",
+                  []() {
+        Model model = makeModel();
+        focusTranscript( model );
+        const std::vector<CommandRequest> requests = typeKeys( model, "F5" );
+        UT_CHECK( requests.empty() );
+        UT_CHECK_MSG( !model.message().empty(), "F5 on nothing said nothing" );
+    } );
+
+    registry.add( "G2.5 F5 at the prompt runs what is typed, like Enter", []() {
+        Model model = makeModel();
+        focusTranscript( model );
+        typeText( model, "colour( $x )" );
+        const std::vector<CommandRequest> requests = typeKeys( model, "F5" );
+        UT_CHECK_EQ( requests.size(), (std::size_t) 1 );
+        UT_CHECK_EQ( requests[0].kind, std::string( "solve" ) );
+        UT_CHECK_EQ( requests[0].text, std::string( "colour( $x )" ) );
     } );
 
     registry.add( "G2.6 only the live query's end ends the live state", []() {

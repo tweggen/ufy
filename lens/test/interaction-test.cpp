@@ -234,6 +234,44 @@ int main()
 
     // -- a random walk, which is where the NEXT bug gets caught -------------
 
+    registry.add( "the transcript cursor obeys the scrolling invariants", []() {
+        /*
+         * G2.5 gave the transcript a cursor over past input, and with it the
+         * same problem every list panel has. Forty lines in an 80x24 run
+         * layout is several screens of them, which is the case where a
+         * cursor-only offset would have pinned the highlight to an edge.
+         */
+        Driver driver( "run", 80, 24 );
+        for ( int i = 0; i < 16 && driver.last().focusedPanel != "Transcript"; ++i ) {
+            pressOrFail( driver, "Tab" );
+        }
+        UT_CHECK_EQ( driver.last().focusedPanel, std::string( "Transcript" ) );
+
+        for ( int i = 0; i < 40; ++i ) {
+            std::ostringstream line;
+            line << "line( " << i << " );";
+            for ( char c : line.str() ) {
+                driver.pressChar( (char32_t) (unsigned char) c );
+            }
+            pressOrFail( driver, "Enter" );
+        }
+
+        for ( int i = 0; i < 45; ++i ) {
+            pressOrFail( driver, "PageUp" );
+            UT_CHECK_MSG( driver.last().scrollValid,
+                          "the transcript is not reporting a viewport" );
+            checkScrollInvariants( driver, "transcript up" );
+        }
+        for ( int i = 0; i < 39; ++i ) {
+            pressOrFail( driver, "PageDown" );
+            checkScrollInvariants( driver, "transcript down" );
+        }
+        /* And one more leaves the past for the prompt. */
+        pressOrFail( driver, "PageDown" );
+        UT_CHECK_MSG( !driver.last().scrollValid,
+                      "at the prompt the transcript has no line cursor" );
+    } );
+
     registry.add( "a seeded random walk never breaks an invariant", []() {
         /*
          * The layout suite's property test found a real bug no hand-written
@@ -247,7 +285,8 @@ int main()
         const char* keys[] = {
             "Down", "Up", "Enter", "Backspace", "Tab", "S-Tab",
             "F1", "F10", "M-x", "Esc", "C-x 2", "C-x 3", "C-x 0",
-            "Left", "Right", "Home", "End", "M-f", "M-n", "M-h"
+            "Left", "Right", "Home", "End", "M-f", "M-n", "M-h",
+            "PageUp", "PageDown", "F5", "C-c"
         };
         const std::size_t keyCount = sizeof( keys ) / sizeof( keys[0] );
 

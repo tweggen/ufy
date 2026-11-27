@@ -297,6 +297,7 @@ Keymap defaultKeymap()
         { "Tab",    "window.focus-next" },
         { "S-Tab",  "window.focus-prev" },
         { "F1",     "help.contextual" },
+        { "F5",     "transcript.rerun" },
         { "F10",    "menu.open" },
         { "M-x",    "command.palette" },
         { "C-g",    "app.abort" },
