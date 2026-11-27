@@ -465,6 +465,9 @@ ScrollView Model::observeFocusedScroll( bool& out_valid ) const
         return view;
     }
     case PanelKind::Palette: {
+        if( !buffer->palette.prompt.empty() ) {
+            break;   /* a question, not a list */
+        }
         view.cursorLine = buffer->palette.selected;
         view.topLine = buffer->palette.top;
         /* One row is the prompt; the rest is the list. */
@@ -730,7 +733,11 @@ void Model::openPalette()
     if( palette ) {
         palette->palette.input.clear();
         palette->palette.selected = 0;
+        palette->palette.top = 0;
+        palette->palette.prompt.clear();
+        palette->title = "M-x";
     }
+    m_promptAccept = PromptAccept();
 
     /*
      * A tile, not an overlay. It goes below the focused tile so the work
@@ -740,6 +747,61 @@ void Model::openPalette()
      */
     m_paletteTile =
         m_layout.splitFocused( splitDirectionForNewPanel(), m_paletteBuffer, 0.5 );
+}
+
+
+void Model::openPrompt( const std::string& label, const std::string& initial,
+                        PromptAccept accept )
+{
+    closePalette();
+    openPalette();
+
+    Buffer* palette = buffer( m_paletteBuffer );
+    if( !palette ) {
+        return;
+    }
+    palette->palette.prompt = label;
+    palette->palette.input = initial;
+    /* The tile is titled with the question, minus its colon. */
+    std::string title = label;
+    while( !title.empty()
+           && ( title.back() == ' ' || title.back() == ':' ) ) {
+        title.pop_back();
+    }
+    palette->title = title;
+    m_promptAccept = accept;
+}
+
+
+bool Model::promptActive() const
+{
+    if( !paletteActive() ) {
+        return false;
+    }
+    const Buffer* palette = buffer( m_paletteBuffer );
+    return palette && !palette->palette.prompt.empty();
+}
+
+
+/**
+ * Enter at a prompt: close it FIRST, then hand over the text -- for the
+ * reason foldPalette closes before running a command: whatever the handler
+ * does to the layout must happen to the tile the user was looking at, not
+ * to the prompt's own.
+ */
+std::vector<CommandRequest> acceptPrompt( Model& model )
+{
+    const Buffer* palette = model.buffer( model.m_paletteBuffer );
+    const std::string text = palette ? palette->palette.input : std::string();
+    const PromptAccept accept = model.m_promptAccept;
+
+    model.closePalette();
+    model.m_promptAccept = PromptAccept();
+
+    if( !accept ) {
+        return std::vector<CommandRequest>();
+    }
+    return accept( model, text );
 }
 
 
@@ -799,6 +861,47 @@ bool isCancel( const Key& key )
 
 
 /**
+ * The minibuffer while it is asking a question. One line of text and three
+ * keys that mean something: Enter accepts, Esc and C-g cancel, C-u clears --
+ * the last because a prompt usually opens with a suggestion in it, and
+ * backspacing over a suggestion one character at a time is how people learn
+ * to dread a default.
+ */
+std::vector<CommandRequest> foldPrompt( Model& model, Buffer& palette,
+                                        const Key& key )
+{
+    std::string& input = palette.palette.input;
+
+    if( isCancel( key ) ) {
+        model.closePalette();
+        return std::vector<CommandRequest>();
+    }
+    if( key.code == Key::Code::Enter ) {
+        return acceptPrompt( model );
+    }
+    if( key.code == Key::Code::Char && key.ctrl && key.ch == U'u' ) {
+        input.clear();
+        return std::vector<CommandRequest>();
+    }
+    if( key.code == Key::Code::Backspace ) {
+        /* A codepoint, not a byte -- see foldTranscript. */
+        if( !input.empty() ) {
+            std::size_t at = input.size() - 1;
+            while( at > 0 && ( (unsigned char) input[at] & 0xC0 ) == 0x80 ) {
+                --at;
+            }
+            input.erase( at );
+        }
+        return std::vector<CommandRequest>();
+    }
+    if( key.code == Key::Code::Char && !key.ctrl && !key.alt && key.ch >= 0x20 ) {
+        input += encodeUtf8( key.ch );
+    }
+    return std::vector<CommandRequest>();
+}
+
+
+/**
  * The palette's keys. Modal on purpose: while a minibuffer is open, almost
  * every key is input, and a global binding firing out from under someone who
  * is typing a command name is the classic minibuffer bug.
@@ -807,6 +910,11 @@ std::vector<CommandRequest> foldPalette( Model& model, Buffer& palette,
                                          const Key& key )
 {
     std::vector<CommandRequest> requests;
+
+    if( !palette.palette.prompt.empty() ) {
+        return foldPrompt( model, palette, key );
+    }
+
     const std::vector<const Command*> matches = model.paletteMatches();
 
     if( isCancel( key ) ) {
@@ -1720,6 +1828,37 @@ void registerShellCommands( Model& model )
                         "what is typed at the prompt." )
                    .helpTopic( "transcript" )
                    .onRun( []( Model& m ) { return rerunTranscriptLine( m ); } ) );
+
+    table.add( Command( "transcript.write-file", "Write transcript\xe2\x80\xa6",
+                        "Save the transcript as plain text, one line per "
+                        "line on screen: what was typed, what came back, and "
+                        "what went wrong. Asks for the file name." )
+                   .helpTopic( "transcript" )
+                   .enabledWhen( []( const Model& m ) { return m.transcript() != NULL; } )
+                   .onRun( []( Model& m ) {
+                       m.openPrompt( "Write transcript to: ", "transcript.txt",
+                           []( Model& model, const std::string& path ) {
+                               std::vector<CommandRequest> requests;
+                               if( path.find_first_not_of( " \t" )
+                                   == std::string::npos ) {
+                                   model.setMessage( "no file name given; "
+                                                     "nothing written" );
+                                   return requests;
+                               }
+                               const Buffer* transcript = model.transcript();
+                               if( !transcript ) {
+                                   return requests;
+                               }
+                               CommandRequest request;
+                               request.kind = "write-file";
+                               request.path = path;
+                               request.text =
+                                   transcriptText( transcript->transcript );
+                               requests.push_back( request );
+                               return requests;
+                           } );
+                       return std::vector<CommandRequest>();
+                   } ) );
 
     table.add( Command( "query.cancel", "Cancel query",
                         "Stop waiting for the running query's solutions. The "

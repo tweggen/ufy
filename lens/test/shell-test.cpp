@@ -661,6 +661,82 @@ int main()
         UT_CHECK_EQ( requests[0].text, std::string( "colour( $x )" ) );
     } );
 
+    // -- G2.9: the transcript as text -----------------------------------------
+
+    registry.add( "G2.9 transcript.write-file asks where, then asks for the "
+                  "transcript's text", []() {
+        Model model = makeModel();
+        focusTranscript( model );
+        typeText( model, "colour( red );" );
+        type( model, "Enter" );
+        TranscriptEntry row;
+        row.kind = TranscriptEntry::Kind::Status;
+        row.text = "-- defined colour/1";
+        model.transcript()->transcript.entries.push_back( row );
+
+        /* Through M-x, the way the criterion names it. */
+        type( model, "M-x" );
+        typeText( model, "transcript.write-file" );
+        type( model, "Enter" );
+
+        UT_CHECK_MSG( model.promptActive(), "no prompt for the file name" );
+        const Buffer* prompt = model.focusedBuffer();
+        UT_CHECK( prompt != NULL && prompt->kind == PanelKind::Palette );
+        UT_CHECK_EQ( prompt->palette.input, std::string( "transcript.txt" ) );
+
+        type( model, "C-u" );
+        UT_CHECK_EQ( model.focusedBuffer()->palette.input, std::string() );
+        typeText( model, "out.txt" );
+        const std::vector<CommandRequest> requests = typeKeys( model, "Enter" );
+
+        UT_CHECK( !model.promptActive() );
+        UT_CHECK_EQ( requests.size(), (std::size_t) 1 );
+        UT_CHECK_EQ( requests[0].kind, std::string( "write-file" ) );
+        UT_CHECK_EQ( requests[0].path, std::string( "out.txt" ) );
+        UT_CHECK_EQ( requests[0].text,
+                     std::string( "?- colour( red );\n-- defined colour/1\n" ) );
+
+        /* And focus is back where it was, not on a closed tile. */
+        UT_CHECK( model.focusedBuffer() == model.transcript() );
+    } );
+
+    registry.add( "G2.9 Esc at the file prompt writes nothing", []() {
+        Model model = makeModel();
+        type( model, "M-x" );
+        typeText( model, "transcript.write-file" );
+        type( model, "Enter" );
+        UT_CHECK( model.promptActive() );
+        const std::vector<CommandRequest> requests = typeKeys( model, "Esc" );
+        UT_CHECK( requests.empty() );
+        UT_CHECK( !model.promptActive() );
+        UT_CHECK( !model.paletteActive() );
+    } );
+
+    registry.add( "G2.9 an empty file name is refused, not written", []() {
+        Model model = makeModel();
+        type( model, "M-x" );
+        typeText( model, "transcript.write-file" );
+        type( model, "Enter" );
+        type( model, "C-u" );
+        const std::vector<CommandRequest> requests = typeKeys( model, "Enter" );
+        UT_CHECK( requests.empty() );
+        UT_CHECK_MSG( !model.message().empty(), "an empty name said nothing" );
+    } );
+
+    registry.add( "G2.9 the prompt edits by codepoint, not by byte", []() {
+        Model model = makeModel();
+        type( model, "M-x" );
+        typeText( model, "transcript.write-file" );
+        type( model, "Enter" );
+        type( model, "C-u" );
+        Event event;
+        event.kind = Event::Kind::Key;
+        event.key = Key::character( U'\u00e9' );   /* two bytes in UTF-8 */
+        ( void ) fold( model, event );
+        type( model, "Backspace" );
+        UT_CHECK_EQ( model.focusedBuffer()->palette.input, std::string() );
+    } );
+
     registry.add( "G2.6 only the live query's end ends the live state", []() {
         /*
          * A superseded query can still report -- a demand or a cancel aimed

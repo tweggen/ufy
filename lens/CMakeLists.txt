@@ -248,6 +248,7 @@ add_executable(unify-lens
     "${CMAKE_CURRENT_SOURCE_DIR}/src/app/main.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/app/layouts.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/app/session-bridge.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/app/local-requests.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/app/driver.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/app/spec.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/model/model.cpp"
@@ -454,6 +455,17 @@ if(BASH_PROGRAM)
             TIMEOUT 120
         )
     endforeach()
+
+    # G2.9: the transcript written to disk by the shipped binary with a real
+    # engine. Not a golden screen, because the file is not on the screen.
+    add_test(
+        NAME lens-transcript-write
+        COMMAND "${BASH_PROGRAM}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/test/check-transcript-write.sh"
+                "$<TARGET_FILE:unify-lens>"
+                "${LENS_GOLDEN_DIR}/transcript-write.txt"
+    )
+    set_tests_properties(lens-transcript-write PROPERTIES TIMEOUT 120)
 
     # G1.4: below 80x24 lens exits with the pinned message and a non-zero
     # status, and does not render. Its own test because "it refuses" cannot

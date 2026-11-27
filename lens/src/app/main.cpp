@@ -13,6 +13,7 @@
  */
 
 #include "layouts.hpp"
+#include "local-requests.hpp"
 #include "spec.hpp"
 #include "session-bridge.hpp"
 
@@ -457,7 +458,9 @@ int runScript( const Options& options )
 
             const std::vector<CommandRequest> requests = fold( model, event );
             for( std::size_t r = 0; r < requests.size(); ++r ) {
-                bridge.issue( model, requests[r] );
+                if( !performLocalRequest( model, requests[r] ) ) {
+                    bridge.issue( model, requests[r] );
+                }
             }
             if( !requests.empty() ) {
                 settle();
@@ -557,7 +560,9 @@ int runInteractive( const Options& options )
 
         const std::vector<CommandRequest> requests = fold( model, event );
         for( std::size_t i = 0; i < requests.size(); ++i ) {
-            bridge.issue( model, requests[i] );
+            if( !performLocalRequest( model, requests[i] ) ) {
+                bridge.issue( model, requests[i] );
+            }
         }
 
         if( model.quitting() ) {

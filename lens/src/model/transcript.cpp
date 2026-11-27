@@ -221,4 +221,14 @@ std::vector<TranscriptEntry> renderDiagnostic( const us::Diagnostic& diagnostic 
     return entries;
 }
 
+std::string transcriptText( const TranscriptState& transcript )
+{
+    std::string text;
+    for( std::size_t i = 0; i < transcript.entries.size(); ++i ) {
+        text += transcript.entries[i].text;
+        text += '\n';
+    }
+    return text;
+}
+
 } // namespace lens

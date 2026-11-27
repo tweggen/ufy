@@ -1,0 +1,10 @@
+?- colour( red );
+-- defined colour/1
+?- colour( $x )
+$x = red
+-- 1 solution
+?- colour(
+<session>:1:1: parse error
+query {
+^
+-- failed: the goal did not parse

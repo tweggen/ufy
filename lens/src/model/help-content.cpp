@@ -216,6 +216,9 @@ void HelpBook::addBuiltinTopics()
         "status line answers it: \"cancel detaches only\" means this engine",
         "keeps computing a goal it has started until lens exits.",
         "",
+        "M-x transcript.write-file saves the transcript as plain text,",
+        "exactly the lines on screen, to a file you name.",
+        "",
         "See [[keys]] for every binding and [[getting-started]].",
     } );
 

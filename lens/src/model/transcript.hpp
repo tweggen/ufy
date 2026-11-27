@@ -171,6 +171,16 @@ std::string renderBindings(
  */
 std::vector<TranscriptEntry> renderDiagnostic( const us::Diagnostic& diagnostic );
 
+/**
+ * The transcript as plain text, one line per entry -- G2.9.
+ *
+ * Exactly the lines on screen, prompts included, in order. Not a
+ * re-rendering and not a program: someone reading the file should see what
+ * they saw, and a file that could be fed back to the engine would have to
+ * leave out the answers, which are the point of keeping a transcript.
+ */
+std::string transcriptText( const TranscriptState& transcript );
+
 } // namespace lens
 
 #endif // _LENS_MODEL_TRANSCRIPT_HPP
