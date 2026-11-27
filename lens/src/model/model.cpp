@@ -1465,6 +1465,28 @@ std::vector<CommandRequest> submitTranscriptLine( Model& model, Buffer& buffer,
      * and getting it wrong costs a diagnostic rather than a wrong answer.
      */
     CommandRequest request;
+
+    /*
+     * `? goal;` is unify-run's query shorthand, and the history file is
+     * shared with it (G2.8) -- so a line recalled from a unify-run session
+     * has to mean here what it meant there. Without this it would end in
+     * `;`, be taken for a definition, and fail to parse.
+     */
+    const std::string::size_type first = line.find_first_not_of( " \t" );
+    if( first != std::string::npos && line[first] == '?' ) {
+        std::string goal = line.substr( first + 1 );
+        std::string::size_type last = goal.find_last_not_of( " \t" );
+        if( last != std::string::npos && goal[last] == ';' ) {
+            goal.erase( last );
+        }
+        request.kind = "solve";
+        request.text = goal;
+        requests.push_back( request );
+        t.finished = false;
+        t.produced = 0;
+        return requests;
+    }
+
     const bool looksLikeDefinition =
         line.find( '{' ) != std::string::npos
         || ( !line.empty() && line[ line.size() - 1 ] == ';' );

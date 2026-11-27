@@ -661,6 +661,55 @@ int main()
         UT_CHECK_EQ( requests[0].text, std::string( "colour( $x )" ) );
     } );
 
+    // -- G2.8: the history file, shared with unify-run -i ---------------------
+
+    registry.add( "G2.8 a readline history file reads back line for line", []() {
+        const std::vector<std::string> lines =
+            parseHistory( "? colour( $x );\ncolour( red );\n" );
+        UT_CHECK_EQ( lines.size(), (std::size_t) 2 );
+        UT_CHECK_EQ( lines[0], std::string( "? colour( $x );" ) );
+        UT_CHECK_EQ( lines[1], std::string( "colour( red );" ) );
+
+        /* CRLF, blank lines and a missing final newline all read the same. */
+        const std::vector<std::string> rough =
+            parseHistory( "a( 1 );\r\n\n   \nb( 2 );" );
+        UT_CHECK_EQ( rough.size(), (std::size_t) 2 );
+        UT_CHECK_EQ( rough[0], std::string( "a( 1 );" ) );
+        UT_CHECK_EQ( rough[1], std::string( "b( 2 );" ) );
+
+        UT_CHECK( parseHistory( "" ).empty() );
+    } );
+
+    registry.add( "G2.8 the history file keeps the newest 1000 lines, as "
+                  "unify-run does", []() {
+        std::vector<std::string> lines;
+        for ( int i = 0; i < 1005; ++i ) {
+            lines.push_back( "line( " + std::to_string( i ) + " );" );
+        }
+        const std::vector<std::string> kept = parseHistory( formatHistory( lines ) );
+        UT_CHECK_EQ( kept.size(), kHistoryLimit );
+        UT_CHECK_EQ( kept.front(), std::string( "line( 5 );" ) );
+        UT_CHECK_EQ( kept.back(), std::string( "line( 1004 );" ) );
+
+        /* And the format is exactly readline's: one line, one newline. */
+        UT_CHECK_EQ( formatHistory( { "a( 1 );", "b" } ),
+                     std::string( "a( 1 );\nb\n" ) );
+    } );
+
+    registry.add( "G2.8 a unify-run query line means the same thing here", []() {
+        Model model = makeModel();
+        focusTranscript( model );
+        typeText( model, "? colour( $x );" );
+        const std::vector<CommandRequest> requests = typeKeys( model, "Enter" );
+        UT_CHECK_EQ( requests.size(), (std::size_t) 1 );
+        UT_CHECK_EQ( requests[0].kind, std::string( "solve" ) );
+        UT_CHECK_EQ( requests[0].text, std::string( " colour( $x )" ) );
+
+        /* History keeps what was TYPED, so unify-run reads it back as typed. */
+        UT_CHECK_EQ( model.transcript()->transcript.history.back(),
+                     std::string( "? colour( $x );" ) );
+    } );
+
     // -- G2.9: the transcript as text -----------------------------------------
 
     registry.add( "G2.9 transcript.write-file asks where, then asks for the "

@@ -37,6 +37,7 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <vector>
 
 #include <fcntl.h>
 #include <poll.h>
@@ -55,6 +56,10 @@ using namespace unify_test;
 
 /** The binary under test, from argv[1]. */
 std::string g_lensBinary;
+
+/** unify-run, from argv[2], and whether it was built with readline (argv[3]). */
+std::string g_unifyRunBinary;
+bool g_unifyRunHasReadline = false;
 
 /**
  * Everything a terminal emulator sends that is not text.
@@ -131,7 +136,19 @@ std::string tail( const std::string& text, std::size_t limit = 600 )
  */
 class LensOnPty {
 public:
-    LensOnPty( int columns, int rows )
+    /**
+     * @param program, arguments
+     *     What to run. Empty means unify-lens as the original three cases
+     *     run it; the history cases run unify-run -i, because readline only
+     *     engages on a terminal and the file it keeps is what G2.8 is about.
+     * @param home
+     *     $HOME for the child, or empty to inherit. A test must never touch
+     *     the real ~/.unify_history.
+     */
+    LensOnPty( int columns, int rows,
+               const std::string& program = std::string(),
+               const std::vector<std::string>& arguments = {},
+               const std::string& home = std::string() )
     {
         m_master = ::posix_openpt( O_RDWR | O_NOCTTY );
         if( m_master < 0 ) {
@@ -186,9 +203,22 @@ public:
 
             ::setenv( "TERM", "xterm-256color", 1 );
             ::unsetenv( "COLORTERM" );
+            if( !home.empty() ) {
+                ::setenv( "HOME", home.c_str(), 1 );
+            }
 
-            ::execl( g_lensBinary.c_str(), g_lensBinary.c_str(),
-                     "--no-session", "--welcome", (char*) NULL );
+            if( program.empty() ) {
+                ::execl( g_lensBinary.c_str(), g_lensBinary.c_str(),
+                         "--no-session", "--welcome", (char*) NULL );
+            } else {
+                std::vector<char*> argv;
+                argv.push_back( const_cast<char*>( program.c_str() ) );
+                for( const std::string& argument : arguments ) {
+                    argv.push_back( const_cast<char*>( argument.c_str() ) );
+                }
+                argv.push_back( NULL );
+                ::execv( program.c_str(), argv.data() );
+            }
             ::_exit( 127 );
         }
     }
@@ -276,6 +306,18 @@ public:
             /* Keep reading: a full pty buffer would block the child's exit. */
             drainFor( kSliceMs );
 
+            /*
+             * Once the child has closed its end, poll() reports the hang-up
+             * at once instead of waiting -- so without this the "ms" budget
+             * is spent in a few hundred empty spins, long before a child
+             * that is still saving its history has exited. Found by the
+             * G2.8 cases: unify-run closes the terminal, then writes
+             * ~/.unify_history, then exits.
+             */
+            if( m_eof ) {
+                ::usleep( kSliceMs * 1000 );
+            }
+
             const pid_t done = ::waitpid( m_child, &out_status, WNOHANG );
             if( done == m_child ) {
                 m_child = -1;
@@ -312,6 +354,90 @@ const char* const kWelcomeMarker = "Catalogue";
  */
 const char* const kMenuMarker = "Enter Open  Esc Close";
 
+/** A fresh directory to stand in for $HOME; removed by the caller. */
+std::string makeTemporaryHome()
+{
+    char pattern[] = "/tmp/lens-history-XXXXXX";
+    const char* made = ::mkdtemp( pattern );
+    if( !made ) {
+        UT_FAIL( "mkdtemp failed: " << std::strerror( errno ) );
+    }
+    return made;
+}
+
+
+void removeTemporaryHome( const std::string& home )
+{
+    const std::string file = home + "/.unify_history";
+    ::unlink( file.c_str() );
+    ::unlink( ( file + ".lens-tmp" ).c_str() );
+    ::rmdir( home.c_str() );
+}
+
+
+std::string readFile( const std::string& path )
+{
+    std::string contents;
+    std::FILE* file = std::fopen( path.c_str(), "rb" );
+    if( !file ) {
+        return contents;
+    }
+    char buffer[ 4096 ];
+    std::size_t got = 0;
+    while( ( got = std::fread( buffer, 1, sizeof( buffer ), file ) ) > 0 ) {
+        contents.append( buffer, got );
+    }
+    std::fclose( file );
+    return contents;
+}
+
+
+/** Run unify-lens headlessly with HOME set; returns the final screen. */
+std::string runLensScript( const std::string& home, const std::string& keys )
+{
+    const std::string script = home + "/script.keys";
+    {
+        std::FILE* file = std::fopen( script.c_str(), "wb" );
+        if( !file ) {
+            UT_FAIL( "cannot write " << script );
+        }
+        std::fputs( keys.c_str(), file );
+        std::fclose( file );
+    }
+    const std::string command =
+        "HOME='" + home + "' '" + g_lensBinary + "' --geometry 80x24 "
+        "--layout run --no-session --no-welcome "
+        "--history '" + home + "/.unify_history' --script '" + script + "'";
+
+    std::string screen;
+    std::FILE* pipe = ::popen( command.c_str(), "r" );
+    if( !pipe ) {
+        UT_FAIL( "popen failed" );
+    }
+    char buffer[ 4096 ];
+    std::size_t got = 0;
+    while( ( got = std::fread( buffer, 1, sizeof( buffer ), pipe ) ) > 0 ) {
+        screen.append( buffer, got );
+    }
+    const int status = ::pclose( pipe );
+    ::unlink( script.c_str() );
+    UT_CHECK_MSG( status == 0, "unify-lens --script exited " << status );
+    return screen;
+}
+
+
+void requireReadline()
+{
+    if( g_unifyRunBinary.empty() ) {
+        UT_SKIP( "no unify-run binary was given to this test" );
+    }
+    if( !g_unifyRunHasReadline ) {
+        UT_SKIP( "unify-run was built without GNU readline, so `unify-run -i` "
+                 "keeps no history file to share -- install the readline "
+                 "headers (libreadline-dev) to run this case" );
+    }
+}
+
 } // namespace
 
 
@@ -323,6 +449,12 @@ int main( int argc, char** argv )
         return 2;
     }
     g_lensBinary = argv[1];
+    if( argc >= 3 ) {
+        g_unifyRunBinary = argv[2];
+    }
+    if( argc >= 4 ) {
+        g_unifyRunHasReadline = std::string( argv[3] ) == "readline";
+    }
 
     Registry registry;
 
@@ -399,6 +531,56 @@ int main( int argc, char** argv )
         UT_CHECK_MSG( WIFEXITED( status ) && WEXITSTATUS( status ) == 0,
                       "lens exited abnormally after C-x C-c (status "
                           << status << ")" );
+    } );
+
+    // -- G2.8: one history file, two front ends ------------------------------
+
+    registry.add( "G2.8 a line typed into unify-run -i is recalled by lens", []() {
+        requireReadline();
+        const std::string home = makeTemporaryHome();
+        {
+            LensOnPty repl( 80, 24, g_unifyRunBinary, { "-i" }, home );
+            UT_CHECK_MSG( repl.waitFor( "ufy> ", 10000 ),
+                          "unify-run never prompted:\n" << tail( repl.text() ) );
+            repl.send( "probe_from_repl( 7 );\r" );
+            UT_CHECK_MSG( repl.waitFor( "ufy> ", 10000 ),
+                          "no second prompt:\n" << tail( repl.text() ) );
+            repl.send( ":quit\r" );
+            int status = 0;
+            UT_CHECK_MSG( repl.waitExit( 10000, status ),
+                          "unify-run did not exit on :quit" );
+        }
+
+        const std::string written = readFile( home + "/.unify_history" );
+        UT_CHECK_MSG( written.find( "probe_from_repl( 7 );\n" ) != std::string::npos,
+                      "unify-run's history file holds: '" << written << "'" );
+
+        /* Up twice: past `:quit`, which readline records like any line. */
+        const std::string screen = runLensScript( home, "Up\nUp\n" );
+        UT_CHECK_MSG( screen.find( "?- probe_from_repl( 7 );" ) != std::string::npos,
+                      "lens did not recall it; final screen:\n" << screen );
+        removeTemporaryHome( home );
+    } );
+
+    registry.add( "G2.8 a line typed into lens is recalled by unify-run -i", []() {
+        requireReadline();
+        const std::string home = makeTemporaryHome();
+
+        ( void ) runLensScript( home, "type probe_from_lens( 3 );\nEnter\n" );
+        UT_CHECK_EQ( readFile( home + "/.unify_history" ),
+                     std::string( "probe_from_lens( 3 );\n" ) );
+
+        LensOnPty repl( 80, 24, g_unifyRunBinary, { "-i" }, home );
+        UT_CHECK_MSG( repl.waitFor( "ufy> ", 10000 ),
+                      "unify-run never prompted:\n" << tail( repl.text() ) );
+        repl.clear();
+        repl.send( "\x1B[A" );   /* Up, as a terminal sends it */
+        UT_CHECK_MSG( repl.waitFor( "probe_from_lens( 3 );", 10000 ),
+                      "readline did not recall lens's line:\n" << tail( repl.text() ) );
+        repl.send( "\x15:quit\r" );   /* C-u clears the recalled line first */
+        int status = 0;
+        UT_CHECK( repl.waitExit( 10000, status ) );
+        removeTemporaryHome( home );
     } );
 
     return registry.run( "lens on a real pseudo-terminal" ) == 0 ? 0 : 1;

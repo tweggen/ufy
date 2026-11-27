@@ -249,6 +249,7 @@ add_executable(unify-lens
     "${CMAKE_CURRENT_SOURCE_DIR}/src/app/layouts.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/app/session-bridge.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/app/local-requests.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/app/history-file.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/app/driver.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/app/spec.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/model/model.cpp"
@@ -317,9 +318,18 @@ if(UNIX AND LENS_BUILD_TERM)
     )
     target_compile_options(lens-pty-interaction-test PRIVATE -Wall -Wextra)
 
+    # The G2.8 cases also drive unify-run -i, and can only do so where it was
+    # built with readline -- without it the REPL keeps no history file, so
+    # they skip and say why rather than passing over nothing.
+    if(UNIFY_USE_READLINE AND UNIFY_READLINE_INCLUDE_DIR AND UNIFY_READLINE_LIBRARY)
+        set(LENS_UNIFY_RUN_READLINE readline)
+    else()
+        set(LENS_UNIFY_RUN_READLINE no-readline)
+    endif()
     add_test(
         NAME lens-pty-interaction
         COMMAND lens-pty-interaction-test "$<TARGET_FILE:unify-lens>"
+                "$<TARGET_FILE:unify-run>" "${LENS_UNIFY_RUN_READLINE}"
     )
     set_tests_properties(lens-pty-interaction PROPERTIES
         SKIP_RETURN_CODE 77
@@ -466,6 +476,16 @@ if(BASH_PROGRAM)
                 "${LENS_GOLDEN_DIR}/transcript-write.txt"
     )
     set_tests_properties(lens-transcript-write PROPERTIES TIMEOUT 120)
+
+    # G2.8: the history file, read and written by the shipped binary. The
+    # unify-run half needs a terminal and is in lens-pty-interaction.
+    add_test(
+        NAME lens-history
+        COMMAND "${BASH_PROGRAM}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/test/check-history.sh"
+                "$<TARGET_FILE:unify-lens>"
+    )
+    set_tests_properties(lens-history PROPERTIES TIMEOUT 60)
 
     # G1.4: below 80x24 lens exits with the pinned message and a non-zero
     # status, and does not render. Its own test because "it refuses" cannot

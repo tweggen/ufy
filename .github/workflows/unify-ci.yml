@@ -215,12 +215,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # libreadline-dev: not for lens, for unify-run. The G2.8 cases in
+      # lens-pty-interaction check that lens and `unify-run -i` share one
+      # ~/.unify_history, and without readline the REPL keeps no history
+      # file at all -- so they would skip and the gate would go unchecked.
       - name: Install build dependencies
         run: |
           if command -v sudo >/dev/null 2>&1; then SUDO=sudo; else SUDO=; fi
           $SUDO apt-get update
           $SUDO apt-get install -y --no-install-recommends \
-            build-essential cmake git libboost-all-dev
+            build-essential cmake git libboost-all-dev libreadline-dev
 
       - name: Configure
         run: |

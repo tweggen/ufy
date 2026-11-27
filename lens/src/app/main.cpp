@@ -12,6 +12,7 @@
  * whose bugs are otherwise reported as "the screen looked wrong".
  */
 
+#include "history-file.hpp"
 #include "layouts.hpp"
 #include "local-requests.hpp"
 #include "spec.hpp"
@@ -55,6 +56,17 @@ struct Options {
     std::string specPath;
 
     bool        help = false;
+
+    /**
+     * Where transcript history is kept -- G2.8. `$HOME/.unify_history`
+     * interactively, the file `unify-run -i` keeps, so history carries
+     * across the two front ends. Under `--script` there is none unless one
+     * is named: a test run must never touch the user's real history, and a
+     * golden must not depend on what that history happens to contain.
+     */
+    std::string historyPath;
+    bool        historyNamed = false;
+    bool        noHistory = false;
 
     /**
      * Start a real engine.
@@ -106,6 +118,10 @@ void printUsage( std::FILE* out )
         "                        and viewport are, instead of the screen\n"
         "  --trace=screen        after each step print the whole screen\n"
         "  --no-session          do not start an engine\n"
+        "  --history FILE        keep transcript history in FILE (default\n"
+        "                        interactively: $HOME/.unify_history, shared\n"
+        "                        with unify-run -i; under --script: none)\n"
+        "  --no-history          neither read nor write a history file\n"
         "  -h, --help            show this text\n"
         "\n"
         "Layouts: " );
@@ -193,6 +209,13 @@ bool parseArgs( int argc, char** argv, Options& out, std::string& out_error )
                 out_error = "--trace must be 'model' or 'screen'";
                 return false;
             }
+        } else if( name == "--history" ) {
+            const char* v = NULL;
+            if( !takeValue( v ) ) { out_error = "--history needs a file"; return false; }
+            out.historyPath = v;
+            out.historyNamed = true;
+        } else if( name == "--no-history" ) {
+            out.noHistory = true;
         } else if( name == "--welcome" ) {
             out.welcome = true;
         } else if( name == "--no-welcome" ) {
@@ -335,6 +358,57 @@ void buildModel( Model& model, const Options& options, int width, int height )
 }
 
 
+/** The history file this run uses, or empty for none. */
+std::string historyPathFor( const Options& options, bool interactive )
+{
+    if( options.noHistory ) {
+        return std::string();
+    }
+    if( options.historyNamed ) {
+        return options.historyPath;
+    }
+    return interactive ? defaultHistoryPath() : std::string();
+}
+
+
+/**
+ * Put the file's lines into the transcript's history, so Up recalls what
+ * was typed last time -- here or in unify-run. A file that cannot be read
+ * costs this session its recall and nothing else, so it is a message, not
+ * a refusal to start.
+ */
+void loadHistory( Model& model, const std::string& path )
+{
+    Buffer* transcript = model.transcript();
+    if( path.empty() || !transcript ) {
+        return;
+    }
+    std::vector<std::string> lines;
+    std::string error;
+    if( !loadHistoryFile( path, lines, error ) ) {
+        model.setMessage( error );
+        return;
+    }
+    transcript->transcript.history = lines;
+    transcript->transcript.historyIndex = lines.size();
+}
+
+
+/** Write the history back. Returns an error string, or empty. */
+std::string saveHistory( const Model& model, const std::string& path )
+{
+    const Buffer* transcript = model.transcript();
+    if( path.empty() || !transcript ) {
+        return std::string();
+    }
+    std::string error;
+    if( !saveHistoryFile( path, transcript->transcript.history, error ) ) {
+        return "cannot save history: " + error;
+    }
+    return std::string();
+}
+
+
 /** One `--trace=model` record: what a user would perceive right now. */
 std::string traceLine( const Model& model, const std::string& what )
 {
@@ -383,6 +457,8 @@ int runScript( const Options& options )
 
     Model model;
     buildModel( model, options, options.width, options.height );
+    const std::string historyPath = historyPathFor( options, false );
+    loadHistory( model, historyPath );
 
     SessionBridge bridge;
     if( options.session ) {
@@ -474,6 +550,14 @@ int runScript( const Options& options )
 
     settle();
 
+    {
+        const std::string historyError = saveHistory( model, historyPath );
+        if( !historyError.empty() ) {
+            std::fprintf( stderr, "unify-lens: %s\n", historyError.c_str() );
+            return 1;
+        }
+    }
+
     if( !options.trace.empty() ) {
         return 0;   /* you asked for the film, not the frame */
     }
@@ -511,6 +595,22 @@ int runInteractive( const Options& options )
 
     Model model;
     buildModel( model, options, width, height );
+    const std::string historyPath = historyPathFor( options, true );
+    loadHistory( model, historyPath );
+
+    /*
+     * Saved on every way out of the loop, and reported only once the
+     * terminal is back to normal -- a message printed while the alternate
+     * screen is up is a message nobody sees.
+     */
+    const auto finish = [ & ]( int status ) {
+        const std::string historyError = saveHistory( model, historyPath );
+        terminal.reset();
+        if( !historyError.empty() ) {
+            std::fprintf( stderr, "unify-lens: %s\n", historyError.c_str() );
+        }
+        return status;
+    };
 
     SessionBridge bridge;
     if( options.session ) {
@@ -547,9 +647,10 @@ int runInteractive( const Options& options )
             event.key = te.key;
         } else if( te.kind == TerminalEvent::Kind::Resize ) {
             if( te.width < Model::kMinWidth || te.height < Model::kMinHeight ) {
+                const int status = finish( 1 );
                 std::fprintf( stderr, "%s\n",
                     Model::tooSmallMessage( te.width, te.height ).c_str() );
-                return 1;
+                return status;
             }
             event.kind = Event::Kind::Resize;
             event.width = te.width;
@@ -570,7 +671,7 @@ int runInteractive( const Options& options )
         }
     }
 
-    return 0;
+    return finish( 0 );
 }
 #endif
 

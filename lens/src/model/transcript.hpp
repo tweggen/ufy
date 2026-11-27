@@ -172,6 +172,27 @@ std::string renderBindings(
 std::vector<TranscriptEntry> renderDiagnostic( const us::Diagnostic& diagnostic );
 
 /**
+ * How many history lines are kept -- `unify-run`'s `stifle_history( 1000 )`
+ * (unify-repl.cpp). The same number, so the file does not grow or shrink
+ * depending on which of the two front ends last wrote it.
+ */
+constexpr std::size_t kHistoryLimit = 1000;
+
+/**
+ * The lines of a `$HOME/.unify_history` file, oldest first -- G2.8.
+ *
+ * The format is GNU readline's `write_history()` as `unify-run -i` calls it:
+ * one entry per line, newline-terminated, no timestamps (the REPL never sets
+ * `history_write_timestamps`). Blank lines are skipped, since neither front
+ * end ever records one, and a CR before the newline is dropped so a file
+ * that passed through a Windows editor still reads back as the same lines.
+ */
+std::vector<std::string> parseHistory( const std::string& contents );
+
+/** The file `parseHistory()` reads: the newest kHistoryLimit lines. */
+std::string formatHistory( const std::vector<std::string>& lines );
+
+/**
  * The transcript as plain text, one line per entry -- G2.9.
  *
  * Exactly the lines on screen, prompts included, in order. Not a
