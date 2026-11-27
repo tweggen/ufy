@@ -186,12 +186,39 @@ unify-lens [options]
   --script FILE         replay a key script, dump the screen, exit
   --session             start a Unify engine (default interactively)
   --welcome             open help at startup (default interactively)
-  --no-session / --no-welcome
+  --history FILE        keep transcript history in FILE
+  --no-session / --no-welcome / --no-history
   -h, --help            show this text
 ```
 
 Below **80×24** lens exits with a message rather than rendering something
 illegible.
+
+### The transcript
+
+Type a goal and press Enter to solve it, or a definition (a line ending in
+`;` or containing `{`) to add it to the world. `unify-run`'s `? goal;`
+shorthand works too.
+
+| Key | |
+| --- | --- |
+| `Up` / `Down` | walk through earlier input, into the prompt |
+| `PageUp` / `PageDown` | put the cursor on an earlier input line |
+| `F5` | run the line under the cursor again, exactly as it was submitted |
+| `C-c`, `C-g` | stop the running query |
+| `F1` | help on the builtin or reserved word under the cursor |
+| `M-x transcript.write-file` | save the transcript as plain text |
+| `M-x query.more` | the next batch of solutions |
+
+Solutions arrive a batch at a time, so a goal with ten thousand answers does
+not freeze the screen. Stopping a query detaches the transcript at once; the
+status line says `cancel detaches only` while the engine cannot actually stop
+a goal it has started.
+
+History lives in `$HOME/.unify_history`, the same file in the same format as
+`unify-run -i`'s, so `Up` recalls what you typed last time in either
+program. Under `--script` no history file is read or written unless
+`--history` names one.
 
 ### `--script`
 
@@ -275,10 +302,14 @@ whole grid per step when you need the film rather than the summary.
 | `lens-grid` | The character grid: UTF-8, display width, clipping, boxes. |
 | `lens-shell` | `fold`, the Help panel and the `M-x` palette: contextual help, no dead links, palette modality and filtering. |
 | `lens-interaction` | What happens *between* frames: that a keystroke visibly does something, that scrolling is minimal, that a modal panel gives focus back — plus a seeded random walk asserting those invariants after every key. See the file's comment for why the other two categories cannot see these bugs. |
-| `lens-pty-interaction` | The real `unify-lens` binary on a real pseudo-terminal: that a keystroke produces a frame *without* a second keystroke, and that `C-x C-c` leaves cleanly. The only test that exercises `src/term/`; POSIX only, skipped where no pty can be opened. |
+| `lens-session` | The transcript against a **real engine**, asserted on the model: a 10,000-solution goal delivers one batch and leaves the keyboard serviced, `cancel` detaches and reaches `Aborted`, and every builtin the engine reports has a help topic. |
+| `lens-pty-interaction` | The real `unify-lens` binary on a real pseudo-terminal: that a keystroke produces a frame *without* a second keystroke, and that `C-x C-c` leaves cleanly. The only test that exercises `src/term/`; POSIX only, skipped where no pty can be opened. Also drives `unify-run -i` there, to check the two front ends share one history file both ways — those cases skip, saying why, when `unify-run` was built without readline. |
+| `lens-history` | That the shipped binary reads and writes a history file, and that `--script` leaves `$HOME` alone. |
+| `lens-transcript-write` | `M-x transcript.write-file` end to end, with a real engine, into a path with a space in it. |
+| `lens-help-extract` | That the build-time extractor of builtin and keyword help still *refuses* a language document it can no longer read, rather than quietly emitting fewer topics. |
 | `lens-spec` | The interaction cases lens states in Unify — `test/spec/interaction.ufy`, run through the shipped binary's `--spec`. |
 | `lens-spec-runner` | That `--spec` still fails when it should: one fixture per way a spec can be wrong (a false expectation, a misspelled one, an orphan id, no cases, a parse error, keys that are not keys). |
-| `lens-screen-*` | Seventeen golden screens: four stock layouts at 120×40 and 80×24, plus tiling gestures, maximise, a resize round trip, an unfinished chord, help at both geometries, and the palette open and filtered. |
+| `lens-screen-*` | Twenty-five golden screens: four stock layouts at 120×40 and 80×24, plus tiling gestures, maximise, a resize round trip, an unfinished chord, help and the welcome page at both geometries, the palette open and filtered, the menu bar, and three transcripts against a real engine. |
 | `lens-too-small` | That lens refuses below 80×24 — and renders at exactly 80×24, so the gate is not an off-by-one. |
 | `lens-resize-roundtrip` | That shrinking to 80×24 and back restores the screen *exactly*, not merely to something valid. |
 | `lens-layering` | That FTXUI stays inside `src/term/`, and that `model/` and `panels/` include no engine header. |
@@ -320,7 +351,7 @@ than by convention.
 
 ## Status
 
-*Last updated 2026-09-10.*
+*Last updated 2026-11-27.*
 
 Gate **G0** (the session boundary) is closed; see
 [`../plans/todo/lens/ACCEPTANCE.md`](../plans/todo/lens/ACCEPTANCE.md), and
@@ -330,11 +361,12 @@ Gate **G1** (the shell) is closed: tiling, the four stock layouts,
 degradation, `--script`, the command table, the generated help surfaces, the
 Help panel `F1` opens and the `M-x` command palette.
 
-Gate **G2** (the transcript) is half open: define a fact, ask a question,
-see the binding, against a real engine. Parse errors and program output land
-in the transcript rather than on lens's streams. Still to come under G2:
-`F5` re-run, cancel, history-file interop with `unify-run -i`, writing the
-transcript to a file, and the 10,000-solution responsiveness bound.
+Gate **G2** (the transcript) is closed: define a fact, ask a question, see
+the binding, against a real engine; parse errors and program output in the
+transcript rather than on lens's streams; `F5` re-run of a past line;
+cancel; one history file shared with `unify-run -i`; the transcript written
+to a file; ten thousand solutions without a frozen screen; and `F1` on a
+builtin opening the language documents' own words about it.
 
 Since 2026-09-08 a binding arrives as a **term tree** rather than as text —
 `point( 1, 2 )` is a compound with two integers, not nine characters —

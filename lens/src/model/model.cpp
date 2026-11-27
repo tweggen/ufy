@@ -99,6 +99,40 @@ void Model::rebuildHelp()
 }
 
 
+namespace {
+
+/**
+ * The identifier the cursor is in or just after, or empty.
+ *
+ * "Just after" counts, because that is where the cursor is when you have
+ * just typed a name and want to know what it does. A `$variable` is not a
+ * name anything documents, so the `$` ends the word rather than joining it.
+ */
+std::string wordAt( const std::string& text, std::size_t cursor )
+{
+    const auto isWord = []( char c ) {
+        return std::isalnum( (unsigned char) c ) || c == '_';
+    };
+    if( cursor > text.size() ) {
+        cursor = text.size();
+    }
+    std::size_t begin = cursor;
+    while( begin > 0 && isWord( text[ begin - 1 ] ) ) {
+        --begin;
+    }
+    std::size_t end = cursor;
+    while( end < text.size() && isWord( text[end] ) ) {
+        ++end;
+    }
+    if( begin == end || ( begin > 0 && text[ begin - 1 ] == '$' ) ) {
+        return std::string();
+    }
+    return text.substr( begin, end - begin );
+}
+
+} // namespace
+
+
 std::string Model::contextualTopicId() const
 {
     /*
@@ -115,7 +149,24 @@ std::string Model::contextualTopicId() const
     switch( focused->kind ) {
     case PanelKind::Help:       return "help";
     case PanelKind::Palette:    return "keys";
-    case PanelKind::Transcript: return "transcript";
+    case PanelKind::Transcript: {
+        /*
+         * UI.md section 5.2: in the transcript, F1 answers for the word
+         * under the cursor -- a builtin, a reserved word -- because that is
+         * the question being asked when someone presses it mid-line.
+         */
+        const std::string word = wordAt( focused->transcript.input,
+                                         focused->transcript.cursor );
+        if( !word.empty() && m_helpBook ) {
+            if( m_helpBook->topic( "builtin." + word ) ) {
+                return "builtin." + word;
+            }
+            if( m_helpBook->topic( "keyword." + word ) ) {
+                return "keyword." + word;
+            }
+        }
+        return "transcript";
+    }
     case PanelKind::Placeholder:
         break;
     }

@@ -661,6 +661,106 @@ int main()
         UT_CHECK_EQ( requests[0].text, std::string( "colour( $x )" ) );
     } );
 
+    // -- G2 H: the transcript's help ------------------------------------------
+
+    registry.add( "G2 H every transcript command has an M-x entry and a topic",
+                  []() {
+        Model model = makeModel();
+        int checked = 0;
+        for ( const Command& command : model.commands().all() ) {
+            const bool transcriptCommand =
+                command.id().rfind( "transcript.", 0 ) == 0
+                || command.id().rfind( "query.", 0 ) == 0;
+            if ( !transcriptCommand ) {
+                continue;
+            }
+            ++checked;
+
+            /* M-x finds it by typing its id. */
+            type( model, "M-x" );
+            typeText( model, command.id() );
+            bool listed = false;
+            for ( const Command* match : model.paletteMatches() ) {
+                if ( match->id() == command.id() ) { listed = true; }
+            }
+            type( model, "Esc" );
+            UT_CHECK_MSG( listed, command.id() << " is not in M-x" );
+
+            UT_CHECK_MSG( !command.helpTopic().empty(),
+                          command.id() << " links no help topic" );
+            UT_CHECK_MSG( model.helpBook()->topic( command.helpTopic() ) != NULL,
+                          command.id() << " links help topic '"
+                              << command.helpTopic() << "', which does not exist" );
+        }
+        /* rerun, write-file, cancel, more -- and a floor, so a rename that
+         * left this loop matching nothing cannot pass it. */
+        UT_CHECK_MSG( checked >= 4, "only " << checked << " transcript commands" );
+    } );
+
+    registry.add( "G2 H F1 on a builtin under the cursor opens its extracted "
+                  "topic", []() {
+        Model model = makeModel();
+        focusTranscript( model );
+
+        /* In the middle of the word. */
+        typeText( model, "print( 1 )" );
+        type( model, "Home" );
+        type( model, "Right" );
+        type( model, "Right" );
+        UT_CHECK_EQ( model.contextualTopicId(), std::string( "builtin.print" ) );
+        type( model, "F1" );
+        const Buffer* help = findPanel( model, PanelKind::Help );
+        UT_CHECK( help != NULL );
+        UT_CHECK_EQ( help->help.topicId, std::string( "builtin.print" ) );
+
+        /* The topic is the spec's own words, not a copy written here. */
+        const HelpTopic* topic = model.helpBook()->topic( "builtin.print" );
+        UT_CHECK( topic != NULL );
+        bool fromSpec = false;
+        for ( const std::string& line : topic->lines ) {
+            if ( line.find( "variadic in practice" ) != std::string::npos ) {
+                fromSpec = true;
+            }
+        }
+        UT_CHECK_MSG( fromSpec, "builtin.print does not carry SPEC.md's text" );
+    } );
+
+    registry.add( "G2 H F1 just after a reserved word opens its topic", []() {
+        Model model = makeModel();
+        focusTranscript( model );
+        typeText( model, "$all = findall" );
+        UT_CHECK_EQ( model.contextualTopicId(), std::string( "keyword.findall" ) );
+    } );
+
+    registry.add( "G2 H F1 on a word that names nothing opens the transcript's "
+                  "page", []() {
+        Model model = makeModel();
+        focusTranscript( model );
+        typeText( model, "colour( red )" );
+        type( model, "Home" );
+        UT_CHECK_EQ( model.contextualTopicId(), std::string( "transcript" ) );
+    } );
+
+    registry.add( "G2 H the language index links every extracted topic", []() {
+        Model model = makeModel();
+        const HelpTopic* index = model.helpBook()->topic( "language" );
+        UT_CHECK( index != NULL );
+        std::size_t builtins = 0;
+        std::size_t keywords = 0;
+        for ( const HelpTopic& topic : model.helpBook()->topics() ) {
+            if ( topic.id.rfind( "builtin.", 0 ) == 0 ) { ++builtins; }
+            if ( topic.id.rfind( "keyword.", 0 ) == 0 ) { ++keywords; }
+        }
+        std::size_t links = 0;
+        for ( const std::string& line : index->lines ) {
+            links += HelpBook::linksOn( line ).size();
+        }
+        /* SPEC.md section 9: "All thirteen". */
+        UT_CHECK_EQ( builtins, (std::size_t) 13 );
+        UT_CHECK_MSG( keywords >= 10, "only " << keywords << " reserved words" );
+        UT_CHECK_EQ( links, builtins + keywords + 1 );   /* + transcript */
+    } );
+
     // -- G2.8: the history file, shared with unify-run -i ---------------------
 
     registry.add( "G2.8 a readline history file reads back line for line", []() {

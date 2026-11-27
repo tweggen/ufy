@@ -336,6 +336,29 @@ int main()
                       "status line: " << rig.model().sessionStatus() );
     } );
 
+    // -- H: help that cannot fall behind the engine --------------------------
+
+    registry.add( "G2 H every builtin the core reports has a help topic", []() {
+        /*
+         * UI.md section 5.3's test: the extractor proves PRESENCE, not
+         * correctness, and presence is checked against the one list that
+         * cannot be wrong about what exists -- the engine's own describe().
+         * A builtin added to the engine and not to SPEC.md section 9 fails
+         * here, which is the point.
+         */
+        Rig rig;
+        const std::vector<us::PredicateKey>& builtins =
+            rig.model().capabilities().builtins;
+        UT_CHECK_MSG( !builtins.empty(), "the core reports no builtins at all" );
+        for ( const us::PredicateKey& key : builtins ) {
+            UT_CHECK_MSG( rig.model().helpBook()->topic( "builtin." + key.name )
+                              != NULL,
+                          "builtin '" << key.name << "/" << key.arity
+                              << "' has no help topic -- document it in "
+                                 "unify/SPEC.md section 9" );
+        }
+    } );
+
     return registry.run( "lens session: the transcript against a real engine (G2)" ) == 0
                ? 0
                : 1;

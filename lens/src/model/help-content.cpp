@@ -27,6 +27,21 @@ HelpBook::HelpBook( const CommandTable& commands, const Keymap& keymap )
 {
     addBuiltinTopics();
     addGeneratedTopics( commands, keymap );
+    addLanguageTopics();
+}
+
+
+void HelpBook::addLanguageTopics()
+{
+    /*
+     * Generated at build time by tools/help-extract.cpp from unify/SPEC.md
+     * and unify/LANGUAGE.md. Not written here: see that file for why lens
+     * extracts the language reference rather than restating it.
+     */
+    static const std::vector<HelpTopic> kLanguage = {
+#include "language-help.inc"
+    };
+    m_topics.insert( m_topics.end(), kLanguage.begin(), kLanguage.end() );
 }
 
 
@@ -223,6 +238,10 @@ void HelpBook::addBuiltinTopics()
         "",
         "M-x transcript.write-file saves the transcript as plain text,",
         "exactly the lines on screen, to a file you name.",
+        "",
+        "F1 with the cursor on a builtin or a reserved word -- print,",
+        "findall, foreach -- opens that word's page, taken from the",
+        "language's own documents. [[language]] lists them all.",
         "",
         "See [[keys]] for every binding and [[getting-started]].",
     } );

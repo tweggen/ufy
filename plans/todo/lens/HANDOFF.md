@@ -14,11 +14,10 @@ caveat, because it still governs the parts nobody has reached yet.
 
 ## 0. Where this actually stands
 
-**Gates G0 and G1 are CLOSED. G2 is half open. G3–G9 are untouched.**
+**Gates G0, G1 and G2 are CLOSED. G3–G9 are untouched.**
 
-Everything is on branch `lens-g0-engine-items`, 32 commits ahead of `main`,
-which has never been merged. The branch name stopped being accurate around
-the time G1 closed; renaming or merging it is a decision waiting for you.
+*(Revised 2026-11-27.)* `lens-g0-engine-items` was merged into `main` as
+PR #1. The menu bar and G2's remaining criteria are on `lens-menu-bar`.
 
 ```bash
 # The engine
@@ -29,7 +28,7 @@ ctest --test-dir build/unify --output-on-failure        # 29/29
 # lens, which builds the engine as a subproject
 cmake -S lens -B build/lens -DCMAKE_BUILD_TYPE=RelWithDebInfo
 cmake --build build/lens --parallel
-ctest --test-dir build/lens --output-on-failure         # 63/63 -- see below
+ctest --test-dir build/lens --output-on-failure         # 69/69 -- see below
 
 # and the thing itself
 ./build/lens/unify-lens
@@ -39,9 +38,14 @@ If either is not green on your machine, stop and fix that first. Every gate
 below rests on the suites being the regression net.
 
 The two counts overlap: `lens/CMakeLists.txt` builds the engine as a
-subproject, so the 63 in `build/lens` is the engine's 29 **plus** 34 lens
-tests (23 golden screens and 11 others). Building lens therefore runs both
-suites, which is what the `lens-linux` CI job relies on.
+subproject, so `build/lens` runs the engine's suite **plus** lens's own (25
+golden screens and the rest). Building lens therefore runs both suites,
+which is what the `lens-linux` CI job relies on.
+
+The G2.8 cases in `lens-pty-interaction` need `unify-run` built with GNU
+readline, since without it `unify-run -i` keeps no history file. Where the
+headers are missing they **skip and say so**. CI installs `libreadline-dev`
+for this reason.
 
 CI runs both, plus ASan/UBSan, plus **a real MSVC build on Windows**
 (`.github/workflows/unify-ci.yml`, four jobs, all green). Its `.forgejo`
@@ -54,7 +58,7 @@ both files say why.
 | --- | --- |
 | **G0 — Boundary** | Closed 2026-09-06. `vault-unify-session.hpp`, `LocalSession`, `FakeSession`, the contract suite: **57 passed, 0 failed, 3 skipped** over three subjects. The three skips are transport-shaped and an in-process session can never satisfy them. |
 | **G1 — Shell** | Closed 2026-09-07. Tiling, four stock layouts, 80×24 degradation, `--script`, the command table, generated help, the `F1` Help panel, the `M-x` palette. |
-| **G2 — Transcript** | G2.1, G2.2, G2.3, G2.7 done. Define a fact, ask a question, see the binding, against a real engine; parse errors and program output land in the transcript rather than on lens's streams. |
+| **G2 — Transcript** | Closed 2026-11-27. Define, query, see the binding; diagnostics and program output in the transcript; one batch of 10,000 solutions at a time; `C-c` cancel that detaches and says the engine cannot stop; `F5` re-run of a past line; `$HOME/.unify_history` shared with `unify-run -i` both ways; `transcript.write-file` through a minibuffer prompt; `F1` on a builtin opening help extracted from SPEC.md and LANGUAGE.md at build time. |
 | **Engine items** | E1, E2, E4, E7, E10, E14, E16 done. |
 
 **Engine item E7 (structured solution values) landed 2026-09-08** in seven
@@ -65,14 +69,10 @@ Bindings now cross the boundary as trees rather than as strings.
 
 ### What is next, in the order I would do it
 
-1. **Finish G2.** Six criteria left and three of them are small. It is the
-   panel a user actually uses, and a gate left half-closed is the one most
-   likely to rot. `submitTranscriptLine()` was already factored out for
-   G2.5, so `F5` re-run is nearly free.
-2. **G5 — Inspect.** It was blocked on having term trees to expand and E7
+1. **G5 — Inspect.** It was blocked on having term trees to expand and E7
    delivered them, so it just got much cheaper. G5.4's floor is already
    raised.
-3. **G3 — Browser**, which needs E3/E5 and is where the catalogue work
+2. **G3 — Browser**, which needs E3/E5 and is where the catalogue work
    (E2, done) finally shows on screen.
 
 Everything else — G4, G6–G9, engine items E3, E5, E6, E9, E11, E12, E13,
@@ -82,6 +82,20 @@ are larger than they look**: `RuntimeContext` binds one `Engine` and
 `load` needs a real shutdown path before either can start.
 
 ### Loose ends, none of them blocking
+
+- **A goal that does not parse is reported against the engine's wrapper**,
+  `<session>:1:1: parse error` over `query {`, not against what the user
+  typed. It has been that way since G2.2; recording G2.9's golden made it
+  visible. `LocalSession` wraps the goal before parsing (`wrapGoal`), so
+  the column is the wrapper's too.
+- **The builtin help is written for implementers.** F1 on `print` shows
+  SPEC.md section 9 as it stands: class names, source paths. Accurate, and
+  extracted so it stays accurate, but a user-facing paragraph per builtin
+  belongs in LANGUAGE.md and the extractor would pick it up.
+- `-Wdangling-reference` (GCC 14+) fires on `UT_CHECK_EQ` in
+  `unify/test/session/test-harness.hpp:196` wherever an argument is a
+  member of a returned reference. Harmless, since the temporary outlives
+  the macro, but it is a warning, and the rule is zero.
 
 - **Two parser defects, recorded in `unify/ROADMAP.md`, unfixed.** A
   negative literal in a data position **silently** loses its sign
@@ -133,7 +147,10 @@ the last three was added *after* a bug got past the ones before it.
 | `lens-layout`, `lens-modreg`, `lens-grid`, `lens-shell` (78 cases) | Model tests. Assert on the model, never on pixels. |
 | `lens-screen-*` (23) | Golden screens. Layout and degradation only — deliberately *not* the oracle for behaviour, so a cosmetic change does not re-record a dozen files. |
 | `lens-interaction` (8) | What happens *between* frames, including a seeded random walk. Written after a user reported that pressing Up after Down did nothing the first time — a bug no single-frame assertion can see. |
-| `lens-pty-interaction` (3) | The real binary on a real pseudo-terminal. The only thing that exercises `src/term/`. Written after two bugs lived there unseen. POSIX only. |
+| `lens-session` (8) | A Model and a SessionBridge over a **real** LocalSession, driven the way `--script` drives them and asserted on the model. For claims about the pair that no engine-free test can make: 10,000 solutions, cancel, that every builtin `describe()` reports has a help topic. |
+| `lens-pty-interaction` (5) | The real binary on a real pseudo-terminal. The only thing that exercises `src/term/`. Written after two bugs lived there unseen. POSIX only. Two cases drive `unify-run -i` too, for the shared history file; they skip without readline. |
+| `lens-history`, `lens-transcript-write` | The shipped binary and a file on disk: a file is not on the screen, so it cannot be a golden screen. |
+| `lens-help-extract` (6 fixtures) | That the build-time help extractor still REFUSES a document it cannot read. The same discipline as `lens-spec-runner`. |
 | `lens-spec` (9 cases) | Interaction cases **written in Unify** and run by the shipped binary (`unify-lens --spec`). |
 | `lens-spec-runner` (13 fixtures) | That `--spec` still *fails* when it should. A runner that quietly passes everything is worse than none: it looks like coverage. |
 

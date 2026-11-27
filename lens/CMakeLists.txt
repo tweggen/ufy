@@ -117,7 +117,35 @@ set_tests_properties(lens-modreg PROPERTIES TIMEOUT 120)
 # only thing the terminal layer ever draws.
 # ---------------------------------------------------------------------------
 
+# The language reference, extracted at build time -- UI.md section 5.3's
+# third source of help. One topic per builtin from SPEC.md section 9 and one
+# per reserved word from LANGUAGE.md's reference table, so F1 on `findall`
+# shows what the documents say rather than a copy that has fallen behind
+# them. The extractor is strict on purpose: a document it can no longer read
+# stops the build, rather than quietly emitting fewer topics.
+add_executable(lens-help-extract "${CMAKE_CURRENT_SOURCE_DIR}/tools/help-extract.cpp")
+if(NOT MSVC)
+    target_compile_options(lens-help-extract PRIVATE -Wall -Wextra)
+endif()
+set(LENS_HELP_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
+set(LENS_LANGUAGE_HELP "${LENS_HELP_GENERATED_DIR}/language-help.inc")
+add_custom_command(
+    OUTPUT "${LENS_LANGUAGE_HELP}"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${LENS_HELP_GENERATED_DIR}"
+    COMMAND lens-help-extract
+            "${LENS_UNIFY_DIR}/SPEC.md"
+            "${LENS_UNIFY_DIR}/LANGUAGE.md"
+            "${LENS_LANGUAGE_HELP}"
+    COMMAND "${CMAKE_COMMAND}" -E touch "${LENS_LANGUAGE_HELP}"
+    DEPENDS lens-help-extract
+            "${LENS_UNIFY_DIR}/SPEC.md"
+            "${LENS_UNIFY_DIR}/LANGUAGE.md"
+    COMMENT "Extracting the language reference into lens's help"
+    VERBATIM
+)
+
 add_library(lens-model STATIC
+    "${LENS_LANGUAGE_HELP}"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/model/cell-grid.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/model/help-content.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/model/transcript.cpp"
@@ -131,6 +159,7 @@ target_include_directories(lens-model PUBLIC
     "${LENS_UNIFY_DIR}/include"
 )
 target_include_directories(lens-model PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_include_directories(lens-model PRIVATE "${LENS_HELP_GENERATED_DIR}")
 if(NOT MSVC)
     target_compile_options(lens-model PRIVATE -Wall -Wextra)
 endif()
@@ -476,6 +505,17 @@ if(BASH_PROGRAM)
                 "${LENS_GOLDEN_DIR}/transcript-write.txt"
     )
     set_tests_properties(lens-transcript-write PROPERTIES TIMEOUT 120)
+
+    # The help extractor's own gate: it must still REFUSE a document it can
+    # no longer read, or its strictness is strictness in name only.
+    add_test(
+        NAME lens-help-extract
+        COMMAND "${BASH_PROGRAM}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/test/check-help-extract.sh"
+                "$<TARGET_FILE:lens-help-extract>"
+                "${CMAKE_CURRENT_SOURCE_DIR}/test/help-extract"
+    )
+    set_tests_properties(lens-help-extract PROPERTIES TIMEOUT 60)
 
     # G2.8: the history file, read and written by the shipped binary. The
     # unify-run half needs a terminal and is in lens-pty-interaction.

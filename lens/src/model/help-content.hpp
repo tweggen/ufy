@@ -14,11 +14,11 @@
  *                     table, so it cannot disagree with the bindings.
  *
  * The third -- builtin and keyword topics extracted at build time from
- * unify/LANGUAGE.md and SPEC.md -- arrives with the panels that need it. The
- * important property of that source is that lens will EXTRACT from those
- * documents rather than restate them, so `F1` on `findall` shows what the
- * spec says and cannot fall behind it. A hand-copied help text is wrong
- * within a month.
+ * unify/LANGUAGE.md and SPEC.md by tools/help-extract.cpp -- is merged in as
+ * `builtin.<name>`, `keyword.<name>` and a `language` index. The important
+ * property of that source is that lens EXTRACTS from those documents rather
+ * than restating them, so `F1` on `findall` shows what the spec says and
+ * cannot fall behind it. A hand-copied help text is wrong within a month.
  *
  * Topics link to each other with `[[topic-id]]`. That is the whole markup:
  * a help system with a syntax to learn is a help system nobody reads.
@@ -87,6 +87,7 @@ public:
 
 private:
     void addBuiltinTopics();
+    void addLanguageTopics();
     void addGeneratedTopics( const CommandTable& commands,
                              const Keymap& keymap );
 
