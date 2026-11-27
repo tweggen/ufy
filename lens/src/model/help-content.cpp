@@ -182,7 +182,31 @@ void HelpBook::addBuiltinTopics()
         "  Help          this",
         "",
         "Most of them are still to come; a tile showing placeholder text",
-        "says which gate brings it. See [[getting-started]].",
+        "says which gate brings it. See [[transcript]] for the one you type",
+        "into, and [[getting-started]].",
+    } );
+
+    add( m_topics, "transcript", "The transcript", {
+        "The REPL. Type a goal and press Enter to solve it; type a",
+        "definition -- a line ending in ; or containing { -- to add it to",
+        "the world. What comes back is shown underneath: one row per",
+        "solution, the program's own output, and any errors.",
+        "",
+        "  Enter        solve or define the line",
+        "  Up / Down    walk back and forth through earlier input",
+        "  C-c          stop the running query",
+        "  C-g          abort: stops the running query too",
+        "",
+        "Solutions arrive one batch at a time, so a goal with ten thousand",
+        "answers cannot freeze the screen. When a batch ends with more to",
+        "come, the transcript says so; M-x query.more fetches the next one.",
+        "",
+        "Stopping a query detaches the transcript at once. Whether the",
+        "engine can actually stop the goal is a separate question, and the",
+        "status line answers it: \"cancel detaches only\" means this engine",
+        "keeps computing a goal it has started until lens exits.",
+        "",
+        "See [[keys]] for every binding and [[getting-started]].",
     } );
 
     add( m_topics, "help", "Help", {

@@ -501,6 +501,35 @@ int main()
                      std::string( "Window" ) );
     } );
 
+    registry.add( "G2.6 only the live query's end ends the live state", []() {
+        /*
+         * A superseded query can still report -- a demand or a cancel aimed
+         * at it, or simply a core that is behind. Its terminal status used
+         * to mark the transcript finished whatever query it was for, which
+         * would report the CURRENT query idle while its rows were still on
+         * their way.
+         */
+        Model model = makeModel();
+        TranscriptState& t = model.transcript()->transcript;
+        t.liveQuery = 7;
+        t.finished = false;
+
+        us::QueryStatus status;
+        status.state = us::QueryStatus::State::Exhausted;
+        us::Event event;
+        event.header.query = (us::QueryId) 3;
+        event.body = status;
+        model.foldSession( event );
+
+        UT_CHECK_MSG( !t.finished, "a superseded query's end finished the live one" );
+        UT_CHECK_EQ( t.liveQuery, (us::QueryId) 7 );
+
+        event.header.query = (us::QueryId) 7;
+        model.foldSession( event );
+        UT_CHECK( t.finished );
+        UT_CHECK_EQ( t.liveQuery, us::kNoQuery );
+    } );
+
     registry.add( "a bare letter is still text while the menu is closed", []() {
         Model model = makeModel();
         Buffer* transcript = model.transcript();

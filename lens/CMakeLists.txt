@@ -168,6 +168,28 @@ endif()
 add_test(NAME lens-interaction COMMAND lens-interaction-test)
 set_tests_properties(lens-interaction PROPERTIES TIMEOUT 120)
 
+# The transcript against a REAL engine (gate G2). Every other model test runs
+# with no engine at all, which is what the boundary is for -- and it means
+# none of them can say what ten thousand solutions or a cancel that crosses
+# to a core which cannot stop actually do. This suite holds the pair: a Model
+# and a SessionBridge, driven the way --script drives them, and asserted on
+# the model rather than on a grid.
+add_executable(lens-session-test
+    "${CMAKE_CURRENT_SOURCE_DIR}/test/session-test.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/app/layouts.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/app/session-bridge.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/model/model.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/model/view.cpp"
+)
+target_link_libraries(lens-session-test PRIVATE lens-model lens-modreg lens-layout
+                                              vault-unify-core)
+target_include_directories(lens-session-test PRIVATE "${LENS_UNIFY_DIR}/src")
+if(NOT MSVC)
+    target_compile_options(lens-session-test PRIVATE -Wall -Wextra)
+endif()
+add_test(NAME lens-session COMMAND lens-session-test)
+set_tests_properties(lens-session PROPERTIES TIMEOUT 300)
+
 add_executable(lens-grid-test "${CMAKE_CURRENT_SOURCE_DIR}/test/grid-test.cpp")
 target_link_libraries(lens-grid-test PRIVATE lens-model)
 if(NOT MSVC)

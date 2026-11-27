@@ -115,7 +115,7 @@ std::string Model::contextualTopicId() const
     switch( focused->kind ) {
     case PanelKind::Help:       return "help";
     case PanelKind::Palette:    return "keys";
-    case PanelKind::Transcript: return "getting-started";
+    case PanelKind::Transcript: return "transcript";
     case PanelKind::Placeholder:
         break;
     }
@@ -169,10 +169,21 @@ void Model::foldSession( const us::Event& event )
     }
     TranscriptState& t = buffer->transcript;
 
+    const us::QueryId eventQuery =
+        event.header.query ? *event.header.query : us::kNoQuery;
+    const std::vector<us::QueryId>::iterator detachedAt =
+        std::find( t.detached.begin(), t.detached.end(), eventQuery );
+    const bool fromDetached =
+        eventQuery != us::kNoQuery && detachedAt != t.detached.end();
+
     if( const us::Solution* solution = std::get_if<us::Solution>( &event.body ) ) {
+        if( fromDetached ) {
+            /* The user stopped this query; see TranscriptState::detached. */
+            return;
+        }
         TranscriptEntry entry;
         entry.kind = TranscriptEntry::Kind::Solution;
-        entry.query = event.header.query ? *event.header.query : us::kNoQuery;
+        entry.query = eventQuery;
         entry.text = renderBindings( solution->bindings );
         if( entry.text.empty() ) {
             /*
@@ -192,15 +203,44 @@ void Model::foldSession( const us::Event& event )
         const bool terminal = status->state != us::QueryStatus::State::Running
                            && status->state != us::QueryStatus::State::Blocked;
         if( !terminal ) {
+            /*
+             * A batch ended and more are waiting for demand. Said in the
+             * transcript, because otherwise the last row of a batch looks
+             * exactly like the last row of the answer -- and the status
+             * line's "running" alone does not tell anyone how to get the
+             * rest, or how to stop.
+             */
+            if( eventQuery == t.liveQuery && eventQuery != us::kNoQuery
+                && status->produced > 0 ) {
+                TranscriptEntry entry;
+                entry.kind = TranscriptEntry::Kind::Info;
+                entry.query = eventQuery;
+                std::ostringstream os;
+                os << "-- " << status->produced
+                   << " so far \xc2\xb7 M-x query.more for more \xc2\xb7 "
+                      "C-c stops";
+                entry.text = os.str();
+                t.entries.push_back( entry );
+            }
             return;
         }
 
-        t.finished = true;
-        t.liveQuery = us::kNoQuery;
+        /*
+         * Only the LIVE query's end ends the live state. A query that was
+         * superseded or detached can still report, and its report belongs in
+         * the transcript, but it must not mark the current one finished.
+         */
+        if( eventQuery == t.liveQuery ) {
+            t.finished = true;
+            t.liveQuery = us::kNoQuery;
+        }
+        if( fromDetached ) {
+            t.detached.erase( detachedAt );
+        }
 
         TranscriptEntry entry;
         entry.kind = TranscriptEntry::Kind::Status;
-        entry.query = event.header.query ? *event.header.query : us::kNoQuery;
+        entry.query = eventQuery;
 
         std::ostringstream text;
         switch( status->state ) {
@@ -1362,6 +1402,60 @@ std::vector<CommandRequest> fold( Model& model, const Event& event )
 }
 
 
+namespace {
+
+/** True while the transcript has a query whose rows are still to come. */
+bool hasLiveQuery( const Model& model )
+{
+    const Buffer* buffer = model.transcript();
+    return buffer && !buffer->transcript.finished
+        && buffer->transcript.liveQuery != us::kNoQuery;
+}
+
+
+/**
+ * Detach from the live query and ask the core to cancel it -- G2.6.
+ *
+ * The UI detaches FIRST and unconditionally, rather than waiting for the
+ * core's `Aborted`: a front end that waited would be exactly as stuck as the
+ * engine when the goal does not terminate, which is the case cancel is for.
+ * The core's answer still arrives and lands in the transcript, because it is
+ * the core's own statement of what happened.
+ */
+std::vector<CommandRequest> cancelLiveQuery( Model& model )
+{
+    std::vector<CommandRequest> requests;
+    Buffer* buffer = model.transcript();
+    if( !hasLiveQuery( model ) ) {
+        model.setMessage( "no query is running" );
+        return requests;
+    }
+
+    TranscriptState& t = buffer->transcript;
+    CommandRequest request;
+    request.kind = "cancel";
+    request.handle = (std::uint64_t) t.liveQuery;
+    requests.push_back( request );
+
+    t.detached.push_back( t.liveQuery );
+    t.liveQuery = us::kNoQuery;
+    t.finished = true;
+
+    /*
+     * Plan section 6: do not ship a cancel that silently lies. This core
+     * cannot stop a goal that is still computing, so the message says what
+     * actually happened rather than "cancelled".
+     */
+    model.setMessage( model.capabilities().realCancel
+                          ? "query cancelled"
+                          : "query detached \xc2\xb7 this engine cannot stop "
+                            "a running goal yet" );
+    return requests;
+}
+
+} // namespace
+
+
 void registerShellCommands( Model& model )
 {
     CommandTable& table = model.commands();
@@ -1473,10 +1567,37 @@ void registerShellCommands( Model& model )
                         "transcript." )
                    .onRun( []( Model& m ) {
                        /* Esc and C-g both reach the palette directly while
-                        * it is open; this is the case where nothing modal is
-                        * running and there is simply nothing to abort. */
+                        * it is open. Outside it, the innermost thing that
+                        * can be aborted is a live query (UI.md section 4). */
+                       if( hasLiveQuery( m ) ) {
+                           return cancelLiveQuery( m );
+                       }
                        m.setMessage( "nothing to abort" );
                        return std::vector<CommandRequest>();
+                   } ) );
+
+    table.add( Command( "query.cancel", "Cancel query",
+                        "Stop waiting for the running query's solutions. The "
+                        "transcript detaches at once; whether the engine can "
+                        "actually stop the goal is shown in the status line." )
+                   .helpTopic( "transcript" )
+                   .onRun( []( Model& m ) { return cancelLiveQuery( m ); } ) );
+
+    table.add( Command( "query.more", "More solutions",
+                        "Ask the running query for its next batch of "
+                        "solutions. The transcript shows one batch at a time "
+                        "so a goal with thousands of answers cannot freeze "
+                        "it." )
+                   .helpTopic( "transcript" )
+                   .enabledWhen( []( const Model& m ) { return hasLiveQuery( m ); } )
+                   .onRun( []( Model& m ) {
+                       std::vector<CommandRequest> requests;
+                       CommandRequest request;
+                       request.kind = "demand";
+                       request.handle =
+                           (std::uint64_t) m.transcript()->transcript.liveQuery;
+                       requests.push_back( request );
+                       return requests;
                    } ) );
 
     table.add( Command( "app.quit", "Quit",

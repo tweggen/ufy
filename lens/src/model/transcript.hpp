@@ -91,6 +91,18 @@ struct TranscriptState {
     /** The query whose solutions are still arriving, or kNoQuery. */
     us::QueryId liveQuery = us::kNoQuery;
 
+    /**
+     * Queries the user cancelled whose terminal status has not arrived yet.
+     *
+     * The UI detaches at once (G2.6) -- it does not wait for the core to
+     * agree -- so between the keystroke and the core's `Aborted` there is a
+     * window in which a core that raced could still send rows. They are
+     * dropped: showing solutions under a query the user stopped would make
+     * the stop look like it had not worked. The status itself is still
+     * shown, because it is the core's own statement of what it did.
+     */
+    std::vector<us::QueryId> detached;
+
     /** Scroll offset from the bottom; 0 means pinned to the newest line. */
     int scrollBack = 0;
 

@@ -300,6 +300,7 @@ Keymap defaultKeymap()
         { "F10",    "menu.open" },
         { "M-x",    "command.palette" },
         { "C-g",    "app.abort" },
+        { "C-c",    "query.cancel" },
         { "C-x C-c","app.quit" },
     };
 
