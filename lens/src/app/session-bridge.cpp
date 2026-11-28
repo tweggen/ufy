@@ -144,6 +144,22 @@ void SessionBridge::issue( Model& model, const CommandRequest& request )
         return;
     }
 
+    if( request.kind == "redefine" ) {
+        /*
+         * G3.3: the Source panel's edited definition. Under the policy its
+         * selector chose -- ReplacePredicates by default, which is engine
+         * item E3. The origin is the transcript's: these clauses were typed
+         * by a person, whatever file the ones they replace came from.
+         */
+        us::Origin origin;
+        origin.kind = us::Origin::Kind::Transcript;
+        us::OverwritePolicy policy = us::OverwritePolicy::ReplacePredicates;
+        if( request.index == 0 ) { policy = us::OverwritePolicy::Append; }
+        if( request.index == 2 ) { policy = us::OverwritePolicy::Fail; }
+        m_session->define( request.text, origin, policy );
+        return;
+    }
+
     if( request.kind == "cancel" ) {
         m_session->cancel( (us::QueryId) request.handle );
         return;

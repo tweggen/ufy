@@ -719,29 +719,57 @@ void drawDefinition( CellGrid& grid, const Model& model, const Rect& inner,
     std::ostringstream head;
     head << d.key.name << "/" << d.key.arity << " \xc2\xb7 " << d.clauses
          << ( d.clauses == 1 ? " clause" : " clauses" );
+    if( d.redefinePending )  { head << " \xc2\xb7 redefining\xe2\x80\xa6"; }
+    else if( d.dirty )       { head << " \xc2\xb7 modified"; }
     grid.drawText( inner.x, inner.y, head.str(), inner.w, bold );
 
     /*
-     * Said, not hidden: without engine item E5 the core keeps no source
-     * text, so this is the clauses printed back -- and a rule that used
-     * `for`, `foreach` or `if` comes back calling the `__fe__N` predicate
-     * its loop was turned into, not showing the loop.
+     * The policy selector, on its own line so it can have its own focus
+     * (Up from the first line) and F1 on it can explain the policies.
+     * Reverse video while it has the keyboard, and the arrows say how to
+     * change it -- a selector that looked like a label would never be used.
      */
     if( inner.h > 1 ) {
-        grid.drawText( inner.x, inner.y + 1,
-                       "as the engine holds it, not as typed (E5)", inner.w, dim );
+        Attr selector = dim;
+        if( focused && d.selectorFocused ) {
+            selector = Attr();
+            selector.reverse = true;
+        }
+        const std::string text = std::string( "F3 redefines \xc2\xb7 policy: \xe2\x97\x82 " )
+                               + policyName( d.policy ) + " \xe2\x96\xb8";
+        grid.drawText( inner.x, inner.y + 1, text, inner.w, selector );
     }
 
     const int rows = sourceTextRows( inner.h );
     const int total = (int) d.lines.size();
     const int top = ensureVisible( d.cursor, total, rows, d.top );
+    const bool editing = focused && !d.selectorFocused;
     for( int row = 0; row < rows; ++row ) {
         const int index = top + row;
         if( index >= total ) { break; }
-        Attr attr;
-        if( focused && index == d.cursor ) { attr.reverse = true; }
-        grid.drawText( inner.x, inner.y + 2 + row, d.lines[ (std::size_t) index ],
-                       inner.w, attr );
+        const std::string& line = d.lines[ (std::size_t) index ];
+        const int y = inner.y + 2 + row;
+        if( !editing || index != d.cursor ) {
+            grid.drawText( inner.x, y, line, inner.w, Attr() );
+            continue;
+        }
+        /* The editing line: a block cursor at the column, as the prompt has. */
+        const std::size_t column = std::min( d.column, line.size() );
+        int at = grid.drawText( inner.x, y, line.substr( 0, column ), inner.w, Attr() );
+        Attr cursor;
+        cursor.reverse = true;
+        std::string under = " ";
+        std::size_t next = column;
+        if( column < line.size() ) {
+            next = column + 1;
+            while( next < line.size()
+                   && ( (unsigned char) line[next] & 0xC0 ) == 0x80 ) { ++next; }
+            under = line.substr( column, next - column );
+        }
+        at += grid.drawText( inner.x + at, y, under, inner.w - at, cursor );
+        if( next < line.size() ) {
+            grid.drawText( inner.x + at, y, line.substr( next ), inner.w - at, Attr() );
+        }
     }
 }
 

@@ -402,7 +402,7 @@ int main()
             "Down", "Up", "Enter", "Backspace", "Tab", "S-Tab",
             "F1", "F10", "M-x", "Esc", "C-x 2", "C-x 3", "C-x 0",
             "Left", "Right", "Home", "End", "M-f", "M-n", "M-h",
-            "PageUp", "PageDown", "F5", "C-c"
+            "PageUp", "PageDown", "F5", "C-c", "F3", "Delete"
         };
         const std::size_t keyCount = sizeof( keys ) / sizeof( keys[0] );
 

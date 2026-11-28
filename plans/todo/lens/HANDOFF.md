@@ -19,19 +19,19 @@ untouched.**
 
 *(Revised 2026-11-28.)* PR #1 (G0's engine items), PR #2 (the menu bar)
 and PR #3 (the rest of G2) are merged into `main`. G5 is PR #4
-(`lens-g5-inspect`); the read-only half of G3 is on `lens-g3-browser`,
-built on top of it.
+(`lens-g5-inspect`); G3's first five criteria and engine items E3 and E5
+are PR #5 (`lens-g3-browser`), built on top of it.
 
 ```bash
 # The engine
 cmake -S unify -B build/unify -DCMAKE_BUILD_TYPE=RelWithDebInfo
 cmake --build build/unify --parallel
-ctest --test-dir build/unify --output-on-failure        # 29/29
+ctest --test-dir build/unify --output-on-failure        # 31/31
 
 # lens, which builds the engine as a subproject
 cmake -S lens -B build/lens -DCMAKE_BUILD_TYPE=RelWithDebInfo
 cmake --build build/lens --parallel
-ctest --test-dir build/lens --output-on-failure         # 72/72 -- see below
+ctest --test-dir build/lens --output-on-failure         # 74/74 -- see below
 
 # and the thing itself
 ./build/lens/unify-lens
@@ -63,7 +63,7 @@ both files say why.
 | **G1 — Shell** | Closed 2026-09-07. Tiling, four stock layouts, 80×24 degradation, `--script`, the command table, generated help, the `F1` Help panel, the `M-x` palette. |
 | **G5 — Inspect** | Closed 2026-11-28. The Solutions table, with Down past the last row asking for the next batch (once, however long the key is held); the Inspector, the selected solution as a tree whose cut nodes are fetched with `inspect` and never by solving again; Diagnostics, whose Enter sends the Source panel to the reported line. lens now retains only the query it shows and releases the rest. |
 | **G2 — Transcript** | Closed 2026-11-27. Define, query, see the binding; diagnostics and program output in the transcript; one batch of 10,000 solutions at a time; `C-c` cancel that detaches and says the engine cannot stop; `F5` re-run of a past line; `$HOME/.unify_history` shared with `unify-run -i` both ways; `transcript.write-file` through a minibuffer prompt; `F1` on a builtin opening help extracted from SPEC.md and LANGUAGE.md at build time. |
-| **Engine items** | E1, E2, E4, E7, E10, E14, E16 done. |
+| **Engine items** | E1, E2, E3, E4, E5, E7, E10, E14, E16 done. |
 
 **Engine item E7 (structured solution values) landed 2026-09-08** in seven
 phases — see [E7-STRUCTURED-VALUES.md](E7-STRUCTURED-VALUES.md), which is
@@ -73,15 +73,15 @@ Bindings now cross the boundary as trees rather than as strings.
 
 ### What is next, in the order I would do it
 
-1. **The rest of G3.** Done: the Catalogue (G3.1), `source` into the
-   Source panel (G3.2), refresh on `WorldChanged` (G3.4) and the filter's
-   frame budget (G3.5). Open, in the order I would take them:
-   - **E3** (predicate-scoped retract), then **G3.3** (edit and `F3`
-     under `ReplacePredicates`) and H's policy selector.
-   - **G3.7**: measure first. No baseline exists for redefinition growth.
-   - **G3.8** (world undo), which needs G3.3.
+1. **The rest of G3.** Done: G3.1–G3.5 and H, on engine items E3 and E5.
+   Open, in the order I would take them:
+   - **G3.7**: measure first. No baseline exists for how redefinition
+     degrades the clause database; now that F3 exists, it is one key away.
+   - **G3.8** (world undo). `retirePredicate` and `retireAppendedSince`
+     are its raw material: undoing a replacement means retiring the new
+     clauses and re-appending the old text, which E5 now keeps.
    - **G3.6**, the editor, the largest single item in the plan
-     (UI.md §3.1).
+     (UI.md §3.1). The Source panel's line editor is where it starts.
 
 Everything else — G4, G6–G9, engine items E3, E5, E6, E9, E11, E12, E13,
 E15 — is untouched. **E9 (world reset) and E12 (staged parse and commit)
@@ -170,13 +170,13 @@ the last three was added *after* a bug got past the ones before it.
 | --- | --- |
 | `unify-golden-*` (23) | The engine's stdout, byte for byte. **Must stay byte-identical** through everything below. |
 | `unify-session-*` (3) | The boundary: compile isolation, header hygiene, and the contract suite over three subjects. |
-| `unify-engine-*` (3) | Engine items asserted *at* the engine, where they are implemented, so a regression names the engine rather than the adapter. |
+| `unify-engine-*` (5) | Engine items asserted *at* the engine, where they are implemented, so a regression names the engine rather than the adapter. |
 | `lens-layout`, `lens-modreg`, `lens-grid`, `lens-shell` (78 cases) | Model tests. Assert on the model, never on pixels. |
 | `lens-screen-*` (26) | Golden screens. Layout and degradation only — deliberately *not* the oracle for behaviour, so a cosmetic change does not re-record a dozen files. |
 | `lens-interaction` (10) | What happens *between* frames, including a seeded random walk. Written after a user reported that pressing Up after Down did nothing the first time — a bug no single-frame assertion can see. |
-| `lens-browser` (14) | Gate G3 on the model: the catalogue's grouping by provenance, its stubs and pages, `source` for exactly the selected key, refresh on `WorldChanged` with coalescing and no polling, and the filter's 50 ms frame budget over 5,000 keys (optimised builds only). |
+| `lens-browser` (19) | Gate G3 on the model: the catalogue's grouping by provenance, its stubs and pages, `source` for exactly the selected key, refresh on `WorldChanged` with coalescing and no polling, and the filter's 50 ms frame budget over 5,000 keys (optimised builds only). |
 | `lens-inspect` (17) | Gate G5 on the model: the Solutions table and its one demand, the Inspector's tree, cut marks and `inspect` grafting, Diagnostics to Source, and their help. Hand-built session events, because the interesting truncations are easiest to state as the tree they are. |
-| `lens-session` (13) | A Model and a SessionBridge over a **real** LocalSession, driven the way `--script` drives them and asserted on the model. For claims about the pair that no engine-free test can make: 10,000 solutions, cancel, that every builtin `describe()` reports has a help topic, an 11-deep term opened to the bottom through `inspect`, that the core holds at most one retained query, and that each definition refreshes the catalogue while walking it asks for nothing. |
+| `lens-session` (16) | A Model and a SessionBridge over a **real** LocalSession, driven the way `--script` drives them and asserted on the model. For claims about the pair that no engine-free test can make: 10,000 solutions, cancel, that every builtin `describe()` reports has a help topic, an 11-deep term opened to the bottom through `inspect`, that the core holds at most one retained query, that each definition refreshes the catalogue while walking it asks for nothing, and edit-and-F3 replacing a definition (or, broken, changing nothing). |
 | `lens-pty-interaction` (5) | The real binary on a real pseudo-terminal. The only thing that exercises `src/term/`. Written after two bugs lived there unseen. POSIX only. Two cases drive `unify-run -i` too, for the shared history file; they skip without readline. |
 | `lens-history`, `lens-transcript-write` | The shipped binary and a file on disk: a file is not on the screen, so it cannot be a golden screen. |
 | `lens-help-extract` (6 fixtures) | That the build-time help extractor still REFUSES a document it cannot read. The same discipline as `lens-spec-runner`. |

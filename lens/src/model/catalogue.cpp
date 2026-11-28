@@ -53,6 +53,16 @@ bool isOpen( const CatalogueState& catalogue, const std::string& group )
 } // namespace
 
 
+const char* policyName( int policy )
+{
+    switch( policy ) {
+    case kPolicyAppend: return "append";
+    case kPolicyFail:   return "fail";
+    default:            return "replace";
+    }
+}
+
+
 std::string catalogueGroupOf( const us::CatalogueEntry& entry )
 {
     switch( entry.origin.kind ) {

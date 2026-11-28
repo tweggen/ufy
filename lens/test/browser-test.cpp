@@ -174,6 +174,23 @@ void cursorTo( Model& model, const std::string& label )
     UT_CHECK_EQ( model.catalogue().selected, want );
 }
 
+/** Select `name/arity` and deliver its source, as a session would. */
+void showDefinition( Model& model, const char* name, std::uint32_t arity,
+                     const char* text )
+{
+    SourceDefinition& d = model.sourceDefinition();
+    d.pending = true;
+    d.pendingKey.name = name;
+    d.pendingKey.arity = arity;
+    d.pendingKey.module = 1;
+    us::SourceText source;
+    source.key = d.pendingKey;
+    source.text = text;
+    us::Event event;
+    event.body = source;
+    model.foldSession( event );
+}
+
 } // namespace
 
 int main()
@@ -463,7 +480,122 @@ int main()
                           << " ms" );
     } );
 
+    // -- G3.3: edit in place, F3 redefines ------------------------------------
+
+    registry.add( "G3.3 the definition is edited in place", []() {
+        Model model = makeModel();
+        showDefinition( model, "colour", 1, "colour( red );\ncolour( green );\n" );
+        focusPanel( model, PanelKind::Source );
+
+        /* End of the first line, then type, then a new line. */
+        typeKeys( model, "End" );
+        typeText( model, " // primary" );
+        typeKeys( model, "Down End Backspace" );
+        typeKeys( model, "Enter" );
+        typeText( model, "x" );
+
+        const SourceDefinition& d = model.sourceDefinition();
+        std::string shown;
+        for ( const std::string& line : d.lines ) { shown += "\n          | " + line; }
+        UT_CHECK_MSG( d.lines == ( std::vector<std::string>{
+                          "colour( red ); // primary", "colour( green )", "x" } ),
+                      "lines:" << shown );
+        UT_CHECK( d.dirty );
+
+        /* Backspace at the start of a line joins it to the one above. */
+        typeKeys( model, "Home Backspace" );
+        UT_CHECK( d.lines == ( std::vector<std::string>{
+                      "colour( red ); // primary", "colour( green )x" } ) );
+    } );
+
+    registry.add( "G3.3 F3 sends the edited text, replacing by default", []() {
+        Model model = makeModel();
+        showDefinition( model, "colour", 1, "colour( red );\ncolour( green );\n" );
+        focusPanel( model, PanelKind::Source );
+        typeKeys( model, "Down End" );
+        typeKeys( model, "Backspace Backspace Backspace Backspace Backspace Backspace "
+                         "Backspace Backspace Backspace Backspace Backspace Backspace "
+                         "Backspace Backspace Backspace Backspace Backspace" );
+        UT_CHECK( model.sourceDefinition().lines
+                  == ( std::vector<std::string>{ "colour( red );" } ) );
+
+        std::vector<CommandRequest> requests = typeKeys( model, "F3" );
+        UT_CHECK_EQ( requests.size(), std::size_t( 1 ) );
+        UT_CHECK_EQ( requests[0].kind, std::string( "redefine" ) );
+        UT_CHECK_EQ( requests[0].text, std::string( "colour( red );\n" ) );
+        UT_CHECK_EQ( requests[0].index, std::uint64_t( kPolicyReplace ) );
+        UT_CHECK( model.sourceDefinition().redefinePending );
+
+        /* The selector chooses another policy; F3 then uses it. */
+        typeKeys( model, "Up Up Left" );
+        UT_CHECK( model.sourceDefinition().selectorFocused );
+        UT_CHECK_EQ( model.sourceDefinition().policy, kPolicyAppend );
+        requests = typeKeys( model, "F3" );
+        UT_CHECK_EQ( requests.size(), std::size_t( 1 ) );
+        UT_CHECK_EQ( requests[0].index, std::uint64_t( kPolicyAppend ) );
+    } );
+
+    registry.add( "G3.3 the transcript says name/arity replaced (n clauses)", []() {
+        Model model = makeModel();
+        us::Defined defined;
+        us::PredicateKey key;
+        key.name = "route";
+        key.arity = 3;
+        defined.replaced.push_back( key );
+        defined.replacedClauses.push_back( 4 );
+        us::Event event;
+        event.body = defined;
+        model.foldSession( event );
+        const std::vector<TranscriptEntry>& entries = model.transcript()->transcript.entries;
+        UT_CHECK( !entries.empty() );
+        UT_CHECK_EQ( entries.back().text, std::string( "-- route/3 replaced (4 clauses)" ) );
+    } );
+
+    registry.add( "G3.3 a redefinition that does not parse keeps the edit", []() {
+        Model model = makeModel();
+        showDefinition( model, "colour", 1, "colour( red );\n" );
+        focusPanel( model, PanelKind::Source );
+        typeKeys( model, "End" );
+        typeText( model, "(" );
+        typeKeys( model, "F3" );
+
+        us::Defined defined;
+        defined.errorCount = 1;
+        us::Event event;
+        event.body = defined;
+        model.foldSession( event );
+
+        const SourceDefinition& d = model.sourceDefinition();
+        UT_CHECK( !d.redefinePending );
+        UT_CHECK_MSG( d.dirty, "a failed redefinition threw the edit away" );
+        UT_CHECK_MSG( model.message().find( "old definition stands" ) != std::string::npos,
+                      "message: " << model.message() );
+    } );
+
     // -- H --------------------------------------------------------------------
+
+    registry.add( "G3 H F1 on the policy selector explains the three policies", []() {
+        Model model = makeModel();
+        showDefinition( model, "colour", 1, "colour( red );\n" );
+        focusPanel( model, PanelKind::Source );
+        UT_CHECK_EQ( model.contextualTopicId(), std::string( "source" ) );
+        typeKeys( model, "Up" );
+        UT_CHECK( model.sourceDefinition().selectorFocused );
+        UT_CHECK_EQ( model.contextualTopicId(), std::string( "overwrite-policies" ) );
+
+        const HelpTopic* topic = model.helpBook()->topic( "overwrite-policies" );
+        UT_CHECK( topic != NULL );
+        std::string all;
+        for ( const std::string& line : topic->lines ) { all += line + "\n"; }
+        for ( const char* word : { "Append", "Replace", "Fail" } ) {
+            UT_CHECK_MSG( all.find( word ) != std::string::npos,
+                          "the policies page does not explain " << word );
+        }
+        typeKeys( model, "Down" );
+        UT_CHECK( !model.sourceDefinition().selectorFocused );
+    } );
+
+
 
     registry.add( "G3 H F1 in the catalogue and the source open their pages", []() {
         Model model = makeModel();

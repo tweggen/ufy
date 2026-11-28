@@ -126,11 +126,42 @@ struct SourceDefinition {
     bool             pending = false;
     us::PredicateKey pendingKey;
 
-    int cursor = 0;
+    int cursor = 0;          //!< the line being edited
+    std::size_t column = 0;  //!< in BYTES, as TranscriptState::cursor is
     int top = 0;
+
+    /** G3.3: the text differs from what the engine last sent. */
+    bool dirty = false;
+
+    /** F3 was pressed and the core has not answered the define yet. */
+    bool redefinePending = false;
+
+    /**
+     * Which OverwritePolicy F3 uses: kPolicyAppend, kPolicyReplace or
+     * kPolicyFail. Replace by default, because editing a definition and
+     * saving it means "this is the definition now" -- appending would leave
+     * the old clauses answering beside the new ones.
+     */
+    int policy = 1;
+
+    /**
+     * The policy selector has the keyboard rather than the text: Up from
+     * the first line reaches it, Down leaves it. Its own focus, so that F1
+     * on it can explain the policies (G3 H) rather than the editor.
+     */
+    bool selectorFocused = false;
 };
 
-/** Rows of a Source tile the definition's lines get: all but a header. */
+/** The policy indices F3 sends, in OverwritePolicy's order. */
+constexpr int kPolicyAppend = 0;
+constexpr int kPolicyReplace = 1;
+constexpr int kPolicyFail = 2;
+
+/** `append`, `replace`, `fail`: the selector's words for them. */
+const char* policyName( int policy );
+
+/** Rows of a Source tile the definition's lines get: a header and the
+ * policy selector take the first two. */
 inline int sourceTextRows( int innerHeight )
 {
     return innerHeight > 2 ? innerHeight - 2 : 0;
