@@ -51,6 +51,10 @@ struct CommandRequest {
     std::string text;   //!< goal or program text, where applicable
     std::uint64_t handle = 0;   //!< query id, where applicable
     std::string path;   //!< a file, for the requests the app performs itself
+
+    /** `inspect`: which solution of `handle`, and the node within it. */
+    std::uint64_t index = 0;
+    std::vector<std::uint32_t> valuePath;
 };
 
 /**

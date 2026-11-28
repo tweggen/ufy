@@ -13,8 +13,8 @@
 │                                  ││                                          │
 │                                  │└──────────────────────────────────────────┘
 └──────────────────────────────────┘┌ Inspector ───────────────────────────────┐
-┌ Queries ─────────────────────────┐│the selected binding                      │
-│queries in flight or retained     ││awaiting inspect (G5)                     │
+┌ Queries ─────────────────────────┐│nothing to inspect                        │
+│queries in flight or retained     ││solve a goal; its solutions open here     │
 │(none)                            ││                                          │
 │                                  ││                                          │
 │                                  ││                                          │

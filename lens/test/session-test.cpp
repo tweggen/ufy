@@ -23,6 +23,7 @@
 #include "../src/model/model.hpp"
 
 #include <chrono>
+#include <map>
 #include <sstream>
 #include <memory>
 #include <string>
@@ -75,6 +76,7 @@ public:
             event.key = key;
             m_issued = fold( m_model, event );
             for ( const CommandRequest& request : m_issued ) {
+                ++m_asked[ request.kind ];
                 m_bridge.issue( m_model, request );
                 /* Read back BEFORE the engine settles: a query that finishes
                  * clears liveQuery, and a test that wants to ask "how many
@@ -116,6 +118,28 @@ public:
         settle();
     }
 
+    /** How many requests of `kind` keys have asked for, in all. */
+    std::size_t asked( const std::string& kind ) const
+    {
+        const auto it = m_asked.find( kind );
+        return it == m_asked.end() ? 0 : it->second;
+    }
+
+    SessionBridge& bridge() { return m_bridge; }
+
+    /** Tab until a `kind` panel has focus. */
+    void focus( PanelKind kind )
+    {
+        for ( int i = 0; i < 24; ++i ) {
+            const Buffer* focused = m_model.focusedBuffer();
+            if ( focused && focused->kind == kind ) {
+                return;
+            }
+            press( "Tab" );
+        }
+        UT_FAIL( "could not focus the panel" );
+    }
+
     /** The query the most recent solve started. */
     us::QueryId lastQuery() const { return m_lastQuery; }
 
@@ -151,6 +175,7 @@ private:
     SessionBridge m_bridge;
     std::vector<CommandRequest> m_issued;
     us::QueryId m_lastQuery = us::kNoQuery;
+    std::map<std::string, std::size_t> m_asked;
 };
 
 /**
@@ -359,7 +384,89 @@ int main()
         }
     } );
 
-    return registry.run( "lens session: the transcript against a real engine (G2)" ) == 0
+    // -- G5: the results panels against the real engine ----------------------
+
+    registry.add( "G5.1 Down past the end of the table fetches one batch", []() {
+        /*
+         * End to end: the key reaches the engine and the batch comes back
+         * into the table. That holding Down asks only ONCE is a property of
+         * the gap between asking and being answered, and this rig settles
+         * the engine after every key that asked for anything -- so it
+         * cannot see that gap, and the model test (lens-inspect, "exactly
+         * one demand") is where it is pinned.
+         */
+        Rig rig( "full", 160, 50 );
+        defineTenThousand( rig );
+        rig.submit( kTenThousandGoal );
+        UT_CHECK_EQ( rig.model().results().solutions.size(), kInitialDemand );
+
+        rig.focus( PanelKind::Solutions );
+        rig.press( "End" );
+        rig.press( "Down Down Down Down Down" );
+        UT_CHECK_EQ( rig.asked( "demand" ), std::size_t( 1 ) );
+        UT_CHECK_EQ( rig.model().results().solutions.size(), 2 * kInitialDemand );
+        UT_CHECK( rig.model().results().more );
+    } );
+
+    registry.add( "G5.2 a term deeper than the budget is cut by the core and "
+                  "opened with inspect, not by solving again", []() {
+        Rig rig( "full", 160, 50 );
+        /* Eleven levels: three past the core's default maxDepth of 8. */
+        rig.submit( "deep( f( f( f( f( f( f( f( f( f( f( f( bottom ) ) ) ) ) ) ) ) ) ) ) );" );
+        rig.submit( "deep( $t )" );
+        UT_CHECK_EQ( rig.asked( "solve" ), std::size_t( 1 ) );
+        UT_CHECK_EQ( rig.model().results().solutions.size(), std::size_t( 1 ) );
+        UT_CHECK_MSG( rig.model().results().solutions[0].bindings[0].second.args.size() == 1,
+                      "the core did not send the term as a tree" );
+
+        /* Open every node, top to bottom, the way a user would. */
+        rig.focus( PanelKind::Inspector );
+        bool sawCut = false;
+        for ( int step = 0; step < 80; ++step ) {
+            const std::vector<InspectorRow> rows = rig.model().inspectorRows();
+            const int at = rig.model().inspector().cursor;
+            if ( at < 0 || at >= (int) rows.size() ) {
+                break;
+            }
+            const InspectorRow& row = rows[ (std::size_t) at ];
+            sawCut = sawCut || row.truncated;
+            if ( row.expandable && !row.open ) {
+                rig.press( "Right" );
+            } else if ( at + 1 < (int) rows.size() ) {
+                rig.press( "Down" );
+            } else {
+                break;
+            }
+        }
+
+        UT_CHECK_MSG( sawCut, "the core's budget never cut the term -- the case "
+                              "proves nothing" );
+        UT_CHECK_MSG( rig.asked( "inspect" ) >= 1, "nothing asked inspect" );
+        UT_CHECK_EQ( rig.asked( "solve" ), std::size_t( 1 ) );
+
+        bool bottom = false;
+        for ( const InspectorRow& row : rig.model().inspectorRows() ) {
+            UT_CHECK_MSG( !row.truncated, "a cut node is left: " << row.text );
+            bottom = bottom || row.text == "bottom";
+        }
+        UT_CHECK_MSG( bottom, "the innermost term never arrived" );
+    } );
+
+    registry.add( "G0.10 lens keeps exactly the query it shows retained", []() {
+        Rig rig;
+        rig.submit( "colour( red ); colour( green );" );
+        for ( int i = 0; i < 6; ++i ) {
+            rig.submit( "colour( $c )" );
+            UT_CHECK_MSG( rig.bridge().describeNow().retainedQueries <= 1,
+                          "after query " << ( i + 1 ) << " the core holds "
+                              << rig.bridge().describeNow().retainedQueries
+                              << " retained queries" );
+        }
+        UT_CHECK_EQ( rig.bridge().describeNow().retainedQueries, std::uint64_t( 1 ) );
+    } );
+
+    return registry.run( "lens session: the transcript and results against a "
+                         "real engine (G2, G5)" ) == 0
                ? 0
                : 1;
 }

@@ -14,10 +14,11 @@ caveat, because it still governs the parts nobody has reached yet.
 
 ## 0. Where this actually stands
 
-**Gates G0, G1 and G2 are CLOSED. G3–G9 are untouched.**
+**Gates G0, G1, G2 and G5 are CLOSED. G3, G4 and G6–G9 are untouched.**
 
-*(Revised 2026-11-27.)* `lens-g0-engine-items` was merged into `main` as
-PR #1. The menu bar and G2's remaining criteria are on `lens-menu-bar`.
+*(Revised 2026-11-28.)* PR #1 (G0's engine items), PR #2 (the menu bar)
+and PR #3 (the rest of G2) are merged into `main`. G5 is on
+`lens-g5-inspect`.
 
 ```bash
 # The engine
@@ -28,7 +29,7 @@ ctest --test-dir build/unify --output-on-failure        # 29/29
 # lens, which builds the engine as a subproject
 cmake -S lens -B build/lens -DCMAKE_BUILD_TYPE=RelWithDebInfo
 cmake --build build/lens --parallel
-ctest --test-dir build/lens --output-on-failure         # 69/69 -- see below
+ctest --test-dir build/lens --output-on-failure         # 71/71 -- see below
 
 # and the thing itself
 ./build/lens/unify-lens
@@ -58,6 +59,7 @@ both files say why.
 | --- | --- |
 | **G0 — Boundary** | Closed 2026-09-06. `vault-unify-session.hpp`, `LocalSession`, `FakeSession`, the contract suite: **57 passed, 0 failed, 3 skipped** over three subjects. The three skips are transport-shaped and an in-process session can never satisfy them. |
 | **G1 — Shell** | Closed 2026-09-07. Tiling, four stock layouts, 80×24 degradation, `--script`, the command table, generated help, the `F1` Help panel, the `M-x` palette. |
+| **G5 — Inspect** | Closed 2026-11-28. The Solutions table, with Down past the last row asking for the next batch (once, however long the key is held); the Inspector, the selected solution as a tree whose cut nodes are fetched with `inspect` and never by solving again; Diagnostics, whose Enter sends the Source panel to the reported line. lens now retains only the query it shows and releases the rest. |
 | **G2 — Transcript** | Closed 2026-11-27. Define, query, see the binding; diagnostics and program output in the transcript; one batch of 10,000 solutions at a time; `C-c` cancel that detaches and says the engine cannot stop; `F5` re-run of a past line; `$HOME/.unify_history` shared with `unify-run -i` both ways; `transcript.write-file` through a minibuffer prompt; `F1` on a builtin opening help extracted from SPEC.md and LANGUAGE.md at build time. |
 | **Engine items** | E1, E2, E4, E7, E10, E14, E16 done. |
 
@@ -69,11 +71,9 @@ Bindings now cross the boundary as trees rather than as strings.
 
 ### What is next, in the order I would do it
 
-1. **G5 — Inspect.** It was blocked on having term trees to expand and E7
-   delivered them, so it just got much cheaper. G5.4's floor is already
-   raised.
-2. **G3 — Browser**, which needs E3/E5 and is where the catalogue work
-   (E2, done) finally shows on screen.
+1. **G3 — Browser**, which needs E3/E5 and is where the catalogue work
+   (E2, done) finally shows on screen. It also turns the Source panel from
+   "the line a diagnostic reported" (G5.3) into the whole definition.
 
 Everything else — G4, G6–G9, engine items E3, E5, E6, E9, E11, E12, E13,
 E15 — is untouched. **E9 (world reset) and E12 (staged parse and commit)
@@ -82,6 +82,21 @@ are larger than they look**: `RuntimeContext` binds one `Engine` and
 `load` needs a real shutdown path before either can start.
 
 ### Loose ends, none of them blocking
+
+- **E15 is listed as not started, but its effect is already in place.**
+  `LocalSession` reports `retention: true`, keeps every solution's value
+  (E7's clones outlive the job), and `inspect` works against it — which is
+  what G5.2 runs on. `unify/ROADMAP.md` and SESSION-API.md still describe
+  E15 as the item that makes this possible. Someone should decide whether
+  E15 is done, or whether it names something more (bounded retention,
+  say) and rewrite it to say what.
+- **The Source panel shows one line.** G5.3 sends it to a diagnostic's
+  file, line and column, and all a `Diagnostic` carries is that one line;
+  the panel says so. Whole definitions are G3's `source` request.
+- **Only lens's own model test can see the one-demand guard.** The
+  `lens-session` rig settles the engine after every key, so a demand is
+  always answered before the next key arrives. The real-engine case pins
+  the path end to end instead, and says why in a comment.
 
 - **A goal that does not parse is reported against the engine's wrapper**,
   `<session>:1:1: parse error` over `query {`, not against what the user
@@ -149,9 +164,10 @@ the last three was added *after* a bug got past the ones before it.
 | `unify-session-*` (3) | The boundary: compile isolation, header hygiene, and the contract suite over three subjects. |
 | `unify-engine-*` (3) | Engine items asserted *at* the engine, where they are implemented, so a regression names the engine rather than the adapter. |
 | `lens-layout`, `lens-modreg`, `lens-grid`, `lens-shell` (78 cases) | Model tests. Assert on the model, never on pixels. |
-| `lens-screen-*` (23) | Golden screens. Layout and degradation only — deliberately *not* the oracle for behaviour, so a cosmetic change does not re-record a dozen files. |
-| `lens-interaction` (8) | What happens *between* frames, including a seeded random walk. Written after a user reported that pressing Up after Down did nothing the first time — a bug no single-frame assertion can see. |
-| `lens-session` (8) | A Model and a SessionBridge over a **real** LocalSession, driven the way `--script` drives them and asserted on the model. For claims about the pair that no engine-free test can make: 10,000 solutions, cancel, that every builtin `describe()` reports has a help topic. |
+| `lens-screen-*` (26) | Golden screens. Layout and degradation only — deliberately *not* the oracle for behaviour, so a cosmetic change does not re-record a dozen files. |
+| `lens-interaction` (10) | What happens *between* frames, including a seeded random walk. Written after a user reported that pressing Up after Down did nothing the first time — a bug no single-frame assertion can see. |
+| `lens-inspect` (17) | Gate G5 on the model: the Solutions table and its one demand, the Inspector's tree, cut marks and `inspect` grafting, Diagnostics to Source, and their help. Hand-built session events, because the interesting truncations are easiest to state as the tree they are. |
+| `lens-session` (11) | A Model and a SessionBridge over a **real** LocalSession, driven the way `--script` drives them and asserted on the model. For claims about the pair that no engine-free test can make: 10,000 solutions, cancel, that every builtin `describe()` reports has a help topic, an 11-deep term opened to the bottom through `inspect`, and that the core holds at most one retained query. |
 | `lens-pty-interaction` (5) | The real binary on a real pseudo-terminal. The only thing that exercises `src/term/`. Written after two bugs lived there unseen. POSIX only. Two cases drive `unify-run -i` too, for the shared history file; they skip without readline. |
 | `lens-history`, `lens-transcript-write` | The shipped binary and a file on disk: a file is not on the screen, so it cannot be a golden screen. |
 | `lens-help-extract` (6 fixtures) | That the build-time help extractor still REFUSES a document it cannot read. The same discipline as `lens-spec-runner`. |

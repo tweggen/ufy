@@ -30,6 +30,7 @@
 #include "cell-grid.hpp"
 #include "scroll.hpp"
 #include "help-content.hpp"
+#include "results.hpp"
 #include "transcript.hpp"
 
 #include <functional>
@@ -51,7 +52,11 @@ enum class PanelKind {
     Placeholder,   //!< a named box, until the real panel arrives
     Help,
     Palette,
-    Transcript
+    Transcript,
+    Solutions,     //!< G5.1
+    Inspector,     //!< G5.2
+    Diagnostics,   //!< G5.3
+    Source         //!< G5.3's target; the editor itself is G3
 };
 
 /** The Help panel's own state (UI.md section 5.3). */
@@ -348,6 +353,48 @@ public:
      */
     void foldSession( const us::Event& event );
 
+    /**
+     * The Solutions and Inspector panels now show `query` -- called by
+     * whoever issued the solve, once the core has named the query.
+     *
+     * @return the query they were showing before, if it was a different
+     *     one: lens retains exactly the query it is showing (so the
+     *     Inspector can expand it, G5.2) and owes the core a `release` for
+     *     the one it stops showing. Returned rather than issued because the
+     *     model issues nothing; without it every query run would leak its
+     *     solutions in the core for the life of the session (G0.10).
+     */
+    us::QueryId beginQuery( us::QueryId query );
+
+    const ResultsState&     results() const     { return m_results; }
+    const InspectorState&   inspector() const   { return m_inspector; }
+    const DiagnosticsState& diagnostics() const { return m_diagnostics; }
+    const SourceLocation&   sourceLocation() const { return m_source; }
+
+    /* Mutable, as menuBar() is: the panels' folds live outside the class. */
+    ResultsState&     results()        { return m_results; }
+    InspectorState&   inspector()      { return m_inspector; }
+    DiagnosticsState& diagnostics()    { return m_diagnostics; }
+    SourceLocation&   sourceLocation() { return m_source; }
+
+    /**
+     * Start the Inspector afresh if the selected solution changed.
+     *
+     * Its open nodes are paths into ONE solution, and the same path in the
+     * next solution names a different node -- so carrying them over would
+     * open things nobody opened.
+     */
+    void syncInspector();
+
+    /** The Inspector's rows for the selected solution; empty if none. */
+    std::vector<InspectorRow> inspectorRows() const;
+
+    /**
+     * Focus the tile showing a `kind` panel, opening one if none is on
+     * screen -- beside the largest tile, the way help opens.
+     */
+    void showPanel( PanelKind kind );
+
     /** What the status line should say about the session right now. */
     std::string sessionStatus() const;
 
@@ -386,6 +433,9 @@ public:
 private:
     friend std::vector<CommandRequest> fold( Model&, const Event& );
     friend std::vector<CommandRequest> acceptPrompt( Model& );
+
+    /** The results half of foldSession(): tables, trees, diagnostics. */
+    void foldResults( const us::Event& event );
 
     /**
      * The body of fold().
@@ -430,6 +480,11 @@ private:
     BufferId m_transcriptBuffer = kNoBuffer;
 
     MenuBarState m_menu;
+
+    ResultsState     m_results;
+    InspectorState   m_inspector;
+    DiagnosticsState m_diagnostics;
+    SourceLocation   m_source;
 
     us::Capabilities m_caps;
 };

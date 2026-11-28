@@ -135,6 +135,56 @@ void checkScrollInvariants( const Driver& driver, const char* what )
     }
 }
 
+/** Give the results panels something to scroll: a query with `n` rows. */
+void populateResults( Driver& driver, std::uint64_t n )
+{
+    Model& model = driver.model();
+    model.beginQuery( 41 );
+    for ( std::uint64_t i = 0; i < n; ++i ) {
+        us::Value wide;
+        wide.kind = us::Value::Kind::Array;
+        for ( int k = 0; k < 30; ++k ) {
+            us::Value element;
+            element.kind = us::Value::Kind::Int;
+            element.i = (std::int64_t)( i * 100 + (std::uint64_t) k );
+            wide.args.push_back( element );
+        }
+        us::Solution solution;
+        solution.index = i;
+        solution.bindings.push_back( std::make_pair( std::string( "$row" ), wide ) );
+        us::Event event;
+        event.header.query = 41;
+        event.body = solution;
+        model.foldSession( event );
+    }
+    us::QueryStatus status;
+    status.state = us::QueryStatus::State::Running;
+    status.produced = n;
+    us::Event done;
+    done.header.query = 41;
+    done.body = status;
+    model.foldSession( done );
+
+    for ( std::uint64_t i = 0; i < n; ++i ) {
+        us::Diagnostic diagnostic;
+        diagnostic.file = "<session>";
+        diagnostic.line = (std::uint32_t)( i + 1 );
+        diagnostic.column = 1;
+        diagnostic.message = "parse error";
+        us::Event event;
+        event.body = diagnostic;
+        model.foldSession( event );
+    }
+}
+
+void focusTitled( Driver& driver, const std::string& title )
+{
+    for ( int i = 0; i < 24 && driver.last().focusedPanel != title; ++i ) {
+        pressOrFail( driver, "Tab" );
+    }
+    UT_CHECK_EQ( driver.last().focusedPanel, title );
+}
+
 } // namespace
 
 int main()
@@ -272,6 +322,42 @@ int main()
                       "at the prompt the transcript has no line cursor" );
     } );
 
+    registry.add( "the G5 list panels obey the scrolling invariants", []() {
+        /*
+         * Solutions, the Inspector and Diagnostics are three more lists, and
+         * they get the same invariants rather than a copy of them -- which
+         * is the point of having written them once. 80x24, so each is a few
+         * rows tall and every key near an edge scrolls.
+         */
+        struct Case { const char* layout; const char* panel; const char* open; };
+        const Case cases[] = {
+            { "run",    "Solutions",   "" },
+            { "debug",  "Inspector",   "Right" },
+            { "browse", "Diagnostics", "" },
+        };
+        for ( const Case& c : cases ) {
+            Driver driver( c.layout, 80, 24 );
+            populateResults( driver, 60 );
+            focusTitled( driver, c.panel );
+            if ( *c.open ) {
+                pressOrFail( driver, c.open );
+            }
+            const std::string what = std::string( c.panel );
+            for ( const char* key : { "Down", "Up", "PageDown", "PageUp" } ) {
+                for ( int i = 0; i < 70; ++i ) {
+                    pressOrFail( driver, key );
+                    UT_CHECK_MSG( driver.last().scrollValid,
+                                  what << " is not reporting a viewport" );
+                    checkScrollInvariants( driver, ( what + " " + key ).c_str() );
+                }
+            }
+            pressOrFail( driver, "End" );
+            checkScrollInvariants( driver, ( what + " End" ).c_str() );
+            pressOrFail( driver, "Home" );
+            checkScrollInvariants( driver, ( what + " Home" ).c_str() );
+        }
+    } );
+
     registry.add( "a seeded random walk never breaks an invariant", []() {
         /*
          * The layout suite's property test found a real bug no hand-written
@@ -292,9 +378,12 @@ int main()
 
         for ( unsigned seed = 1; seed <= 30; ++seed ) {
             std::mt19937 rng( seed );
-            Driver driver( ( seed % 2 ) ? "browse" : "run",
+            const char* layouts[] = { "browse", "run", "full", "debug" };
+            Driver driver( layouts[ seed % 4 ],
                            ( seed % 3 ) ? 120 : 80,
                            ( seed % 3 ) ? 40 : 24 );
+            /* Something in every results panel, so its keys have work. */
+            populateResults( driver, 25 );
 
             for ( int step = 0; step < 60; ++step ) {
                 const std::size_t which = rng() % keyCount;

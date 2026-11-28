@@ -1,7 +1,7 @@
  File  Edit  World  Query  Image  Debug  Window  Help
 ┌ Transcript ────────────────────────────────────┐┌ Solutions ─────────────────┐
-│?- greet( $who ) { print( "hello" ); print( $who││bindings, one row per soluti│
-│-- defined greet/1                              ││awaiting solve (G5)         │
+│?- greet( $who ) { print( "hello" ); print( $who││#  (no variables)           │
+│-- defined greet/1                              ││1  yes                      │
 │?- greet( world )                               ││                            │
 │print: hello                                    ││                            │
 │print: world                                    ││                            │
@@ -13,7 +13,7 @@
 │                                                ││                            │
 │                                                ││                            │
 │                                                ││                            │
-│?-                                              ││                            │
+│?-                                              ││-- 1 solution               │
 └────────────────────────────────────────────────┘└────────────────────────────┘
 ┌ Catalogue ───────────────────────────────────────────────────────────────────┐
 │module -> (name, arity)                                                       │

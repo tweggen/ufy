@@ -4,18 +4,19 @@ Companion to [`../lens-text-mode-environment.md`](../lens-text-mode-environment.
 Plan requirement (e): development is test-driven, and progress is measured
 by gates whose criteria are executable.
 
-> ## Where the gates stand — 2026-09-10
+> ## Where the gates stand — 2026-11-28
 >
 > | Gate | | |
 > | --- | --- | --- |
 > | **G0** Boundary | **CLOSED** 2026-09-06 | contract suite 57 passed / 0 failed / 3 skipped, over three subjects |
 > | **G1** Shell | **CLOSED** 2026-09-07 | tiling, four layouts, degradation, `--script`, commands, help, palette |
-> | **G2** Transcript | **PARTIAL** | G2.1, G2.2, G2.3, G2.7 done; G2.4, G2.5, G2.6, G2.8, G2.9 and H open |
-> | **G3–G9** | not started | G5 (Inspect) is now much cheaper — it was blocked on term trees and engine item E7 delivered them |
+> | **G2** Transcript | **CLOSED** 2026-11-27 | batches, cancel, `F5` re-run, shared history, write-file, extracted help |
+> | **G5** Inspect | **CLOSED** 2026-11-28 | Solutions table and demand, Inspector tree and `inspect`, Diagnostics to Source |
+> | **G3, G4, G6–G9** | not started | G3 (Browser) is next; it needs engine items E3 and E5 |
 >
 > Engine items **E1, E2, E4, E7, E10, E14, E16** are done; **E3, E5, E6,
 > E9, E11, E12, E13, E15** are not. `ctest` is 29/29 on `build/unify` and
-> 63/63 on `build/lens`; CI additionally builds and tests on Windows/MSVC.
+> 71/71 on `build/lens`; CI additionally builds and tests on Windows/MSVC.
 > [HANDOFF.md](HANDOFF.md) §0 is the fuller picture and the place to start.
 
 > **Progress note (2026-09-06, implementation machine). G0 IS CLOSED.**
@@ -297,13 +298,46 @@ Three harnesses, all in the repo's established golden style
 
 ## G5 — Inspect
 
+> **Closed 2026-11-28.** G5.1, G5.2, G5.3 and H, each with a note below. All
+> are asserted on the model in a new suite, `lens-inspect`, with hand-built
+> session events. G5.1 and G5.2 are asserted again in `lens-session`
+> against the real engine, and G5.2's golden screen (`inspect-tree`) is
+> recorded from it. Every criterion was proven able to fail by breaking
+> the code it names. The mutations, one per guard, are listed against each
+> criterion.
+>
+> Three things outside the panels that doing it turned up:
+>
+> - **lens was leaking every query it ran.** The bridge has always solved
+>   with `retain = true` and never released anything, so the core held
+>   every query's solutions for the life of the session. That is exactly
+>   the debt G0.10 says retention creates. lens now retains exactly the
+>   query the Solutions and Inspector panels show, and releases the one
+>   they stop showing (`Model::beginQuery` returns it,
+>   `SessionBridge::issue` pays it). `lens-session` asserts the core's
+>   `retainedQueries` never exceeds 1 over six queries, and that test fails
+>   when the release is removed.
+> - **`Expanded` did not name its query.** `EventHeader::query` is
+>   documented as "set on every query-attributable event". Neither
+>   `LocalSession` nor `FakeSession` set it on an expansion, so a front end
+>   could not tell which tree an answer belonged to. The contract suite
+>   now asserts it for all three subjects (it failed for all three first),
+>   and both sessions set it. No engine golden moved: the event never
+>   reaches stdout.
+> - **The Source panel is honest about being half there.** G5.3 asks for
+>   "Enter moves the source panel to the reported file/line/column", and
+>   it does. What it can show there is what a `Diagnostic` carries: the
+>   location, the message, the one offending line and a caret. Showing
+>   the whole definition needs G3's `source` request, and the panel says
+>   so on its last line.
+
 | # | Criterion |
 | --- | --- |
-| G5.1 | Solutions table renders bindings; scrolling past the last row issues exactly one `demand` (not one per keystroke). |
-| G5.2 | Inspector expands a selected binding as a term tree; a `truncated` node is marked and expanded via `inspect(q, index, path, budget)` — **not** by re-running the query, which is nondeterministic and may have side effects. Requires the query to be retained (G0.10). |
-| G5.3 | Diagnostics panel navigates: Enter moves the source panel to the reported file/line/column. |
+| G5.1 **[done]** | Solutions table renders bindings; scrolling past the last row issues exactly one `demand` (not one per keystroke). *(2026-11-28: one row per solution, one column per variable, and a footer that tells "20 so far" from "20 solutions". `ResultsState::demandPending` holds the one outstanding demand. Five Downs past the end ask once, and the next batch's arrival re-arms it. `query.more` goes through the same `demandMore()`, so the two cannot both ask. Proven by removing the guard, which fails both model cases. The real-engine case cannot see the guard: its rig settles the engine after every key, so a demand is always answered before the next key. It pins the end-to-end path instead, and fails when the bridge drops the demand.)* |
+| G5.2 **[done]** | Inspector expands a selected binding as a term tree; a `truncated` node is marked and expanded via `inspect(q, index, path, budget)` — **not** by re-running the query, which is nondeterministic and may have side effects. Requires the query to be retained (G0.10). *(2026-11-28: a row's path is the `inspect` path itself — binding index first, then indices into the value — so nothing translates between the two. A cut node keeps the transcript's U+2026 mark, and a compound cut to no arguments is still expandable, because `g( … )` is not the atom `g`. Opening it asks `inspect` once and shows "(fetching…)"; the answer is grafted only where a pending request matches its query and path, and the table sees the graft too, because there is one copy of the values. Against the real engine an 11-deep term is cut at the core's depth of 8 and opened to the bottom with one `solve` in all. Proven by six mutations: cut compounds not expandable, inspect asked twice, inspect turned into solve, a graft without a matching request, no re-rooting on a new selection, and results folded only when a transcript exists. That last one is the trap waiting in the existing `foldSession`, which returned early when the layout had no transcript, and the `debug` layout has an Inspector and no Transcript.)* |
+| G5.3 **[done]** | Diagnostics panel navigates: Enter moves the source panel to the reported file/line/column. *(2026-11-28: every `Diagnostic` is listed with the transcript's own headline. Enter sets the Source panel's location and focuses it, opening a Source tile beside the largest one when the layout has none, as the `run` layout does not. See the note above for what the Source panel can and cannot show yet.)* |
 | G5.4 | ~~**Floor, stated explicitly:** with the engine's current `map<string,string>` solutions, the inspector renders `Str` leaves and the test asserts *that*.~~ **Floor raised 2026-09-08 — engine item E7 landed.** Bindings arrive as trees (`Cons`, `Array`, `Map`, `Int`, `Atom`, `Var`), `Capabilities::structuredSolutions` is `true`, and the contract suite's truncation case runs against the real engine instead of skipping. The prediction held exactly: **no session API change was required** — only the adapter and the inspector's richness moved, which is what the boundary was drawn for. Two obligations the floor did not mention, both now met: an unbound variable arrives as a `Var` under the caller's own name (SESSION-API §3), asserted unconditionally for every subject; and a value the budget cut is marked, since a compound rendered without its arguments is a *different* term shown as a whole one. See [E7-STRUCTURED-VALUES.md](E7-STRUCTURED-VALUES.md). |
-| **H** | `F1` in the inspector explains the term kinds and the truncation marker. |
+| **H** **[done]** | `F1` in the inspector explains the term kinds and the truncation marker. *(2026-11-28: topics `inspector` (every kind, the U+2026 mark, and why a cut node is fetched rather than re-solved), `solutions`, `diagnostics` and `source`. F1 opens each from its own panel. The test checks the inspector page names all seven kinds and shows the mark itself, and fails when F1 falls back to the panels page.)* |
 
 ## G6 — Debug
 

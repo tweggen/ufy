@@ -92,6 +92,10 @@ void Driver::record( const std::string& key )
         case PanelKind::Help:        step.focusedPanel = "Help"; break;
         case PanelKind::Palette:     step.focusedPanel = "Palette"; break;
         case PanelKind::Transcript:  step.focusedPanel = "Transcript"; break;
+        case PanelKind::Solutions:
+        case PanelKind::Inspector:
+        case PanelKind::Diagnostics:
+        case PanelKind::Source:
         case PanelKind::Placeholder: step.focusedPanel = focused->title; break;
         }
     }

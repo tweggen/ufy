@@ -25,8 +25,8 @@
 │                           ││                                                                                         │
 └───────────────────────────┘└─────────────────────────────────────────────────────────────────────────────────────────┘
 ┌ Transcript ────────────────────────────────────────────────────┐┌ Solutions ─────────────────┐┌ Inspector ───────────┐
-│                                                                ││bindings, one row per soluti││the selected binding  │
-│                                                                ││awaiting solve (G5)         ││awaiting inspect (G5) │
+│                                                                ││no query yet                ││nothing to inspect    │
+│                                                                ││solve a goal in the Transcri││solve a goal; its solu│
 │                                                                ││                            ││                      │
 │                                                                ││                            ││                      │
 │                                                                ││                            ││                      │

@@ -1,0 +1,15 @@
+# G5.2: against a real engine -- a compound binding, opened in the Inspector.
+# M-x view.inspector rather than a count of Tabs, so the script says what it
+# means and does not depend on the order of the tiles.
+type route( hall, step( kitchen, step( cellar, [ 1, 2, 3 ] ) ) );
+Enter
+type route( $from, $path )
+Enter
+M-x
+type view.inspector
+Enter
+Down
+Right
+Down
+Down
+Right
