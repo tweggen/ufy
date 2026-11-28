@@ -1,7 +1,7 @@
  File  Edit  World  Query  Image  Debug  Window  Help
 ┌ Catalogue ─────────┐┌ Help ──────────────────────────────────────────────────┐
-│module -> (name, ari││unify-lens -- a place to keep a Unify world open and    │
-│awaiting listing (G3││work inside it.                                         │
+│no listing yet      ││unify-lens -- a place to keep a Unify world open and    │
+│the catalogue fills ││work inside it.                                         │
 │                    ││                                                        │
 │                    ││THE KEYS THAT MATTER                                    │
 │                    ││                                                        │
@@ -21,4 +21,4 @@
 │?-                                                                            │
 └──────────────────────────────────────────────────────────────────────────────┘
  gen 0 · 0 clauses · idle · no session · browse
-F1 Help  F5 Run line  F10 Menu
+F1 Help  F3 Redefine  F5 Run line  F10 Menu

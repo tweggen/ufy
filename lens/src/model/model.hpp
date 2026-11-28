@@ -29,6 +29,7 @@
 #include "../modreg/keymap.hpp"
 #include "cell-grid.hpp"
 #include "scroll.hpp"
+#include "catalogue.hpp"
 #include "help-content.hpp"
 #include "results.hpp"
 #include "transcript.hpp"
@@ -56,7 +57,8 @@ enum class PanelKind {
     Solutions,     //!< G5.1
     Inspector,     //!< G5.2
     Diagnostics,   //!< G5.3
-    Source         //!< G5.3's target; the editor itself is G3
+    Source,        //!< G5.3's target, and G3.2's definition view
+    Catalogue      //!< G3.1
 };
 
 /** The Help panel's own state (UI.md section 5.3). */
@@ -371,6 +373,34 @@ public:
     const DiagnosticsState& diagnostics() const { return m_diagnostics; }
     const SourceLocation&   sourceLocation() const { return m_source; }
 
+    const CatalogueState&   catalogue() const        { return m_catalogue; }
+    CatalogueState&         catalogue()              { return m_catalogue; }
+    const SourceDefinition& sourceDefinition() const { return m_definition; }
+    SourceDefinition&       sourceDefinition()       { return m_definition; }
+    std::vector<CatalogueRow> catalogueRows() const
+    {
+        return lens::catalogueRows( m_catalogue );
+    }
+
+    /** Which of the two things the Source panel can show it last was sent. */
+    enum class SourceShows { Nothing, Location, Definition };
+    SourceShows sourceShows() const { return m_sourceShows; }
+    void setSourceShows( SourceShows shows ) { m_sourceShows = shows; }
+
+    /**
+     * Requests the model decided on while folding SESSION events, taken
+     * once by whoever issues requests.
+     *
+     * fold() returns its requests; foldSession() cannot, because its
+     * callers drain an event queue and have nowhere to put an answer. A
+     * WorldChanged has to be able to ask for a listing (G3.4) -- that is
+     * the whole of "no panel polling" -- so the asks wait here.
+     */
+    std::vector<CommandRequest> takeRequests();
+
+    /** Ask for a fresh listing, unless one is already on its way. */
+    void refreshCatalogue();
+
     /* Mutable, as menuBar() is: the panels' folds live outside the class. */
     ResultsState&     results()        { return m_results; }
     InspectorState&   inspector()      { return m_inspector; }
@@ -402,7 +432,7 @@ public:
      * What `describe()` reported, so the UI can tell the truth about what
      * the core cannot do. Set once by the composition root.
      */
-    void setCapabilities( const us::Capabilities& caps ) { m_caps = caps; }
+    void setCapabilities( const us::Capabilities& caps );
     const us::Capabilities& capabilities() const { return m_caps; }
 
     CommandTable&       commands()       { return m_commands; }
@@ -480,6 +510,11 @@ private:
     BufferId m_transcriptBuffer = kNoBuffer;
 
     MenuBarState m_menu;
+
+    CatalogueState   m_catalogue;
+    SourceDefinition m_definition;
+    SourceShows      m_sourceShows = SourceShows::Nothing;
+    std::vector<CommandRequest> m_outbox;
 
     ResultsState     m_results;
     InspectorState   m_inspector;

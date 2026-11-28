@@ -165,6 +165,34 @@ void populateResults( Driver& driver, std::uint64_t n )
     done.body = status;
     model.foldSession( done );
 
+    /* A catalogue too, and a long definition in Source. */
+    us::Listing listing;
+    for ( std::uint64_t i = 0; i < n; ++i ) {
+        us::CatalogueEntry entry;
+        std::ostringstream name;
+        name << "p" << i;
+        entry.key.name = name.str();
+        entry.key.arity = 1;
+        entry.key.module = 1;
+        entry.origin.kind = ( i % 5 == 0 ) ? us::Origin::Kind::Builtin
+                                           : us::Origin::Kind::Transcript;
+        entry.clauseCount = 1;
+        listing.entries.push_back( entry );
+    }
+    us::Event listed;
+    listed.body = listing;
+    model.foldSession( listed );
+
+    SourceDefinition& definition = model.sourceDefinition();
+    definition.set = true;
+    definition.key.name = "p1";
+    definition.key.arity = 1;
+    definition.lines.clear();
+    for ( std::uint64_t i = 0; i < n; ++i ) {
+        definition.lines.push_back( "p1( x ) { line; }" );
+    }
+    model.setSourceShows( Model::SourceShows::Definition );
+
     for ( std::uint64_t i = 0; i < n; ++i ) {
         us::Diagnostic diagnostic;
         diagnostic.file = "<session>";
@@ -322,7 +350,7 @@ int main()
                       "at the prompt the transcript has no line cursor" );
     } );
 
-    registry.add( "the G5 list panels obey the scrolling invariants", []() {
+    registry.add( "the list panels (G3, G5) obey the scrolling invariants", []() {
         /*
          * Solutions, the Inspector and Diagnostics are three more lists, and
          * they get the same invariants rather than a copy of them -- which
@@ -334,6 +362,8 @@ int main()
             { "run",    "Solutions",   "" },
             { "debug",  "Inspector",   "Right" },
             { "browse", "Diagnostics", "" },
+            { "browse", "Catalogue",   "" },
+            { "browse", "Source",      "" },
         };
         for ( const Case& c : cases ) {
             Driver driver( c.layout, 80, 24 );
@@ -372,7 +402,7 @@ int main()
             "Down", "Up", "Enter", "Backspace", "Tab", "S-Tab",
             "F1", "F10", "M-x", "Esc", "C-x 2", "C-x 3", "C-x 0",
             "Left", "Right", "Home", "End", "M-f", "M-n", "M-h",
-            "PageUp", "PageDown", "F5", "C-c"
+            "PageUp", "PageDown", "F5", "C-c", "F3", "Delete"
         };
         const std::size_t keyCount = sizeof( keys ) / sizeof( keys[0] );
 

@@ -1,7 +1,7 @@
  File  Edit  World  Query  Image  Debug  Window  Help
 ┌─────────────────┐──────────────┐┌ Source ────────────────────────────────────────────────────────────────────────────┐
-│ Commands…   M-x │rity)         ││the selected definition                                                             │
-│ Abort       C-g │G3)           ││awaiting source (G3)                                                                │
+│ Commands…   M-x │              ││the selected definition                                                             │
+│ Abort       C-g │s when lens ha││awaiting source (G3)                                                                │
 │ Quit    C-x C-c │              ││                                                                                    │
 └─────────────────┘              ││                                                                                    │
 │                                ││                                                                                    │

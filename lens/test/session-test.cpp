@@ -50,6 +50,7 @@ public:
             UT_FAIL( "cannot start the engine: " << error );
         }
         m_model.setCapabilities( m_bridge.capabilities() );
+        settle();
 
         Buffer* transcript = m_model.transcript();
         if ( !transcript ) {
@@ -103,11 +104,23 @@ public:
         press( "Enter" );
     }
 
+    /** As main.cpp's script loop: until no event asks for anything more. */
     void settle()
     {
-        m_bridge.settle();
-        for ( const us::Event& event : m_bridge.drain() ) {
-            m_model.foldSession( event );
+        for ( int round = 0; round < 64; ++round ) {
+            m_bridge.settle();
+            const std::vector<us::Event> events = m_bridge.drain();
+            for ( const us::Event& event : events ) {
+                m_model.foldSession( event );
+            }
+            const std::vector<CommandRequest> asked = m_model.takeRequests();
+            if ( asked.empty() && events.empty() ) {
+                break;
+            }
+            for ( const CommandRequest& request : asked ) {
+                ++m_asked[ request.kind ];
+                m_bridge.issue( m_model, request );
+            }
         }
     }
 
@@ -193,6 +206,32 @@ const char* const kTenThousandGoal = "n( $a, $b, $c, $d )";
 
 /** The batch the bridge asks for -- SessionBridge::issue, "a screenful". */
 const std::size_t kInitialDemand = 20;
+
+/** Put the catalogue cursor on `label` and press Enter. */
+void openDefinition( Rig& rig, const std::string& label )
+{
+    rig.focus( PanelKind::Catalogue );
+    const std::vector<CatalogueRow> rows = rig.model().catalogueRows();
+    int at = -1;
+    for ( std::size_t i = 0; i < rows.size(); ++i ) {
+        if ( rows[i].label == label ) { at = (int) i; }
+    }
+    UT_CHECK_MSG( at >= 0, "no catalogue row " << label );
+    while ( rig.model().catalogue().selected < at ) { rig.press( "Down" ); }
+    while ( rig.model().catalogue().selected > at ) { rig.press( "Up" ); }
+    rig.press( "Enter" );
+    UT_CHECK_MSG( rig.model().sourceDefinition().set, "the source never arrived" );
+}
+
+/** Live clauses of name/arity, over every module, as the catalogue has it. */
+std::uint32_t clausesNamed( Rig& rig, const std::string& name, std::uint32_t arity )
+{
+    std::uint32_t n = 0;
+    for ( const us::CatalogueEntry& e : rig.model().catalogue().entries ) {
+        if ( e.key.name == name && e.key.arity == arity ) { n += e.clauseCount; }
+    }
+    return n;
+}
 
 } // namespace
 
@@ -465,8 +504,159 @@ int main()
         UT_CHECK_EQ( rig.bridge().describeNow().retainedQueries, std::uint64_t( 1 ) );
     } );
 
+    // -- G3: the browser against the real engine ------------------------------
+
+    registry.add( "G3.4 each definition refreshes the catalogue; idle keys ask "
+                  "nothing", []() {
+        Rig rig( "browse", 120, 40 );
+        UT_CHECK_MSG( rig.model().catalogue().loaded,
+                      "the first listing never arrived" );
+        const std::size_t before = rig.asked( "listing" );
+
+        rig.submit( "colour( red );" );
+        rig.submit( "colour( green );" );
+        rig.submit( "warm( $c ) { colour( $c ); $c = red; }" );
+        const std::size_t afterDefines = rig.asked( "listing" );
+        UT_CHECK_MSG( afterDefines - before >= 1 && afterDefines - before <= 3,
+                      "three definitions asked for " << ( afterDefines - before )
+                          << " listings" );
+
+        bool colour = false;
+        for ( const us::CatalogueEntry& e : rig.model().catalogue().entries ) {
+            if ( e.key.name == "colour" && e.key.arity == 1 ) {
+                colour = true;
+                UT_CHECK_EQ( e.clauseCount, std::uint32_t( 2 ) );
+            }
+        }
+        UT_CHECK_MSG( colour, "colour/1 is not in the catalogue" );
+
+        /* Walking the catalogue is not a reason to ask the engine anything. */
+        rig.focus( PanelKind::Catalogue );
+        for ( int i = 0; i < 20; ++i ) {
+            rig.press( "Down" );
+            rig.press( "Up" );
+        }
+        UT_CHECK_EQ( rig.asked( "listing" ), afterDefines );
+    } );
+
+    registry.add( "G3.2 Enter on a predicate shows the engine's own source", []() {
+        Rig rig( "browse", 120, 40 );
+        rig.submit( "colour( red );" );
+        rig.submit( "colour( green );" );
+        rig.focus( PanelKind::Catalogue );
+
+        const std::vector<CatalogueRow> rows = rig.model().catalogueRows();
+        int at = -1;
+        for ( std::size_t i = 0; i < rows.size(); ++i ) {
+            if ( rows[i].label == "colour/1" ) { at = (int) i; }
+        }
+        UT_CHECK( at >= 0 );
+        while ( rig.model().catalogue().selected < at ) { rig.press( "Down" ); }
+        rig.press( "Enter" );
+
+        UT_CHECK_EQ( rig.asked( "source" ), std::size_t( 1 ) );
+        const SourceDefinition& d = rig.model().sourceDefinition();
+        UT_CHECK_MSG( d.set, "the source never arrived" );
+        UT_CHECK_EQ( d.lines.size(), std::size_t( 2 ) );
+        UT_CHECK_MSG( !d.lines.empty() && d.lines[0].find( "red" ) != std::string::npos,
+                      "first line: " << ( d.lines.empty() ? "" : d.lines[0] ) );
+        UT_CHECK_EQ( d.clauses, std::uint32_t( 2 ) );
+    } );
+
+    registry.add( "G3.3 edit a definition and F3: replaced, and nothing else "
+                  "touched", []() {
+        Rig rig( "browse", 120, 40 );
+        rig.submit( "colour( red );" );
+        rig.submit( "colour( green );" );
+        rig.submit( "warm( $c ) { colour( $c ); $c = red; }" );
+        openDefinition( rig, "colour/1" );
+
+        /*
+         * Named, not temporaries in the comparison: GCC 15 at -O2 reports
+         * a bogus -Wfree-nonheap-object for a braced vector<string>
+         * temporary destroyed inside this lambda.
+         */
+        const std::vector<std::string> asTyped = { "colour( red );",
+                                                   "colour( green );" };
+        const std::vector<std::string> edited = { "colour( red );" };
+
+        const SourceDefinition& d = rig.model().sourceDefinition();
+        UT_CHECK_MSG( d.lines == asTyped,
+                      "the source is not the text as typed (E5)" );
+
+        /* Delete the second clause: end of it, sixteen characters, join. */
+        rig.focus( PanelKind::Source );
+        rig.press( "Down End" );
+        for ( int i = 0; i < 17; ++i ) { rig.press( "Backspace" ); }
+        UT_CHECK( d.lines == edited );
+        rig.press( "F3" );
+
+        UT_CHECK_EQ( clausesNamed( rig, "colour", 1 ), std::uint32_t( 1 ) );
+        UT_CHECK_EQ( clausesNamed( rig, "warm", 1 ), std::uint32_t( 1 ) );
+        UT_CHECK( !d.dirty );
+
+        bool reported = false;
+        for ( const TranscriptEntry& e : rig.transcript().entries ) {
+            reported = reported || e.text == "-- colour/1 replaced (1 clause)";
+        }
+        UT_CHECK_MSG( reported, "the transcript did not report the replacement"
+                                    << rig.dump() );
+
+        /* And the engine answers accordingly. */
+        rig.focus( PanelKind::Transcript );
+        rig.submit( "colour( $x )" );
+        UT_CHECK_EQ( rig.count( TranscriptEntry::Kind::Solution, rig.lastQuery() ),
+                     std::size_t( 1 ) );
+        rig.submit( "warm( $c )" );
+        UT_CHECK_EQ( rig.count( TranscriptEntry::Kind::Solution, rig.lastQuery() ),
+                     std::size_t( 1 ) );
+    } );
+
+    registry.add( "G3.3 an edit that does not parse leaves the old definition", []() {
+        Rig rig( "browse", 120, 40 );
+        rig.submit( "colour( red );" );
+        rig.submit( "colour( green );" );
+        openDefinition( rig, "colour/1" );
+        rig.focus( PanelKind::Source );
+        rig.press( "End" );
+        rig.press( "(" );
+        rig.press( "F3" );
+
+        UT_CHECK_EQ( clausesNamed( rig, "colour", 1 ), std::uint32_t( 2 ) );
+        UT_CHECK( rig.model().sourceDefinition().dirty );
+
+        UT_CHECK_MSG( rig.model().message().find( "old definition stands" )
+                          != std::string::npos,
+                      "message: " << rig.model().message() );
+
+        /*
+         * Asked of the ENGINE, not only of lens's catalogue: the parser
+         * appended `colour( red );` before it reached the error, and a
+         * catalogue that never refreshed would still say 2 whatever the
+         * engine now holds.
+         */
+        rig.focus( PanelKind::Transcript );
+        rig.submit( "colour( $x )" );
+        UT_CHECK_EQ( rig.count( TranscriptEntry::Kind::Solution, rig.lastQuery() ),
+                     std::size_t( 2 ) );
+    } );
+
+    registry.add( "G3.4 a define that fails halfway still refreshes the catalogue",
+                  []() {
+        /*
+         * The parser appends as it parses: `colour( red );` is in the world
+         * before the parser reaches the broken second clause. The core used
+         * to announce a change only for a clean define, which left the
+         * catalogue saying colour/1 did not exist while the engine answered
+         * for it.
+         */
+        Rig rig( "browse", 120, 40 );
+        rig.submit( "colour( red ); colour( ;" );
+        UT_CHECK_EQ( clausesNamed( rig, "colour", 1 ), std::uint32_t( 1 ) );
+    } );
+
     return registry.run( "lens session: the transcript and results against a "
-                         "real engine (G2, G5)" ) == 0
+                         "real engine (G2, G3, G5)" ) == 0
                ? 0
                : 1;
 }

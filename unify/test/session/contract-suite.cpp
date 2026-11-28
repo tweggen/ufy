@@ -8,6 +8,8 @@
 
 #include "contract-suite.hpp"
 
+#include <cctype>
+
 #include "vault-unify-session-value.hpp"
 
 #include <chrono>
@@ -371,6 +373,118 @@ void registerContractSuite( Registry& registry,
             UT_CHECK_MSG( rec.count<us::WorldChanged>() >= 1,
                           "a define that changed the world must say so once, "
                           "so views invalidate on one signal" );
+        } );
+
+    registry.add(
+        name( "E3 ReplacePredicates drops the old clauses and says so" ),
+        [ factory ]() {
+            SessionDriver d = factory();
+            Recorder rec;
+            d.session->subscribe( rec, 0 );
+
+            us::Origin origin;
+            origin.kind = us::Origin::Kind::Transcript;
+            d.session->define( d.goodDefineText, origin, us::OverwritePolicy::Append );
+            d.session->define( d.goodDefineText, origin, us::OverwritePolicy::Append );
+            d.settle();
+            rec.clear();
+
+            d.session->define( d.goodDefineText, origin,
+                               us::OverwritePolicy::ReplacePredicates );
+            d.settle();
+            rec.checkInvariants();
+
+            UT_CHECK_MSG( rec.count<us::Failed>() == 0,
+                          "ReplacePredicates was refused" );
+            const std::vector<us::Defined> defined = rec.all<us::Defined>();
+            UT_CHECK_EQ( defined.size(), std::size_t( 1 ) );
+            if ( !defined.empty() ) {
+                UT_CHECK_MSG( defined[ 0 ].replaced.size() == 1
+                                  && defined[ 0 ].replaced[ 0 ] == d.goodDefineKey,
+                              "the Defined does not name what it replaced" );
+                UT_CHECK_MSG( defined[ 0 ].replacedClauses
+                                  == std::vector<std::uint32_t>{ 1 },
+                              "the Defined does not say how many clauses remain" );
+                UT_CHECK_MSG( defined[ 0 ].added.empty(),
+                              "a replaced predicate was also reported added" );
+            }
+            UT_CHECK_MSG( rec.count<us::WorldChanged>() >= 1,
+                          "a replacement changed the world without saying so" );
+
+            rec.clear();
+            us::ListingFilter filter;
+            d.session->listing( filter );
+            d.settle();
+            bool found = false;
+            for ( const us::Listing& l : rec.all<us::Listing>() ) {
+                for ( const us::CatalogueEntry& e : l.entries ) {
+                    if ( e.key == d.goodDefineKey ) {
+                        found = true;
+                        UT_CHECK_EQ( e.clauseCount, std::uint32_t( 1 ) );
+                    }
+                }
+            }
+            UT_CHECK_MSG( found, "the replaced predicate is not listed" );
+        } );
+
+    registry.add(
+        name( "E5 source returns the definition as it was typed" ),
+        [ factory ]() {
+            SessionDriver d = factory();
+            Recorder rec;
+            d.session->subscribe( rec, 0 );
+            us::Origin origin;
+            origin.kind = us::Origin::Kind::Transcript;
+            d.session->define( d.goodDefineText, origin, us::OverwritePolicy::Append );
+            d.settle();
+            rec.clear();
+
+            d.session->source( d.goodDefineKey );
+            d.settle();
+            const std::vector<us::SourceText> texts = rec.all<us::SourceText>();
+            UT_CHECK_EQ( texts.size(), std::size_t( 1 ) );
+            const auto trim = []( std::string t ) {
+                while ( !t.empty() && std::isspace( (unsigned char) t.back() ) ) {
+                    t.pop_back();
+                }
+                return t;
+            };
+            if ( !texts.empty() ) {
+                UT_CHECK_EQ( trim( texts[ 0 ].text ), trim( d.goodDefineText ) );
+            }
+        } );
+
+    registry.add(
+        name( "E3 undefine removes a predicate's clauses" ),
+        [ factory ]() {
+            SessionDriver d = factory();
+            Recorder rec;
+            d.session->subscribe( rec, 0 );
+
+            us::Origin origin;
+            origin.kind = us::Origin::Kind::Transcript;
+            d.session->define( d.goodDefineText, origin, us::OverwritePolicy::Append );
+            d.settle();
+            rec.clear();
+
+            d.session->undefine( d.goodDefineKey, d.goodDefineKey.module );
+            d.settle();
+            rec.checkInvariants();
+            UT_CHECK_MSG( rec.count<us::Failed>() == 0, "undefine was refused" );
+            const std::vector<us::Defined> defined = rec.all<us::Defined>();
+            UT_CHECK_EQ( defined.size(), std::size_t( 1 ) );
+            UT_CHECK_MSG( !defined.empty() && defined[ 0 ].removed.size() == 1,
+                          "the Defined does not name what was removed" );
+
+            rec.clear();
+            d.session->listing( us::ListingFilter() );
+            d.settle();
+            for ( const us::Listing& l : rec.all<us::Listing>() ) {
+                for ( const us::CatalogueEntry& e : l.entries ) {
+                    UT_CHECK_MSG( !( e.key == d.goodDefineKey ) || e.clauseCount == 0,
+                                  "an undefined predicate still has clauses" );
+                }
+            }
         } );
 
     registry.add(

@@ -228,6 +228,15 @@ struct ClauseOrigin {
     /// definition rather than re-deriving its extent.
     uint64_t    endLine;
 
+    /// Engine item E5: the text this clause was parsed from, exactly as
+    /// written -- leading comments kept, surrounding blank space trimmed.
+    /// Empty for BUILTIN, ASSERTED and SYNTHESIZED clauses, which have no
+    /// text of their own (a `foreach` rule keeps the loop; the clauses the
+    /// loop became claim nothing). Kept per clause rather than per module
+    /// so one predicate's definition can be shown -- and edited, and parsed
+    /// again -- without the rest of the file it came from.
+    std::string sourceText;
+
     /// True for clauses the user did not write and would not expect to see
     /// listed: builtins and desugaring artefacts. The one place this
     /// judgement is made, so it cannot drift between the REPL, the
@@ -2329,6 +2338,41 @@ public:
      * which already holds the lock to call Clause::retire().
      */
     void catalogueRetire( const Clause* pClause );
+
+    /**
+     * Engine item E3 -- predicate-scoped retract.
+     *
+     * Tombstone every live clause of `name`/`nArity` in the root state whose
+     * store index is below `beforeIndex`, and return how many. Builtin
+     * clauses are never retired: a user cannot redefine `print` out of
+     * existence by editing a predicate that happens to share its name.
+     *
+     * `beforeIndex` is what makes ReplacePredicates expressible on an engine
+     * whose parser appends as it parses (E12 is the staged alternative):
+     * remember clauseStoreSize(), parse the new text -- which appends the
+     * new clauses at or after that index -- then retire what came before.
+     *
+     * Built on the same Clause::retire() tombstone runtime `retract` uses,
+     * so a query already walking the predicate keeps the logical update
+     * view it started with. ALL the clauses go at ONE generation, so a
+     * query starting at any moment sees the whole old definition or none of
+     * it; retiring nothing bumps nothing. Takes clauseDbMutex() itself, and
+     * keeps the catalogue in step inside the same critical section.
+     */
+    size_t retirePredicate( const std::string& strName, int nArity,
+                            size_t beforeIndex );
+
+    /**
+     * Tombstone every live, non-builtin clause at or after `fromIndex` --
+     * the clauses a define appended -- at one generation, and return how
+     * many. How ReplacePredicates takes back a replacement that did not
+     * parse; same locking and logical-update-view guarantees as
+     * retirePredicate().
+     */
+    size_t retireAppendedSince( size_t fromIndex );
+
+    /** How many clauses the root state's store holds, retired included. */
+    size_t clauseStoreSize();
 
     /**
      * Snapshot the catalogue -- engine items E2 and E14.

@@ -119,6 +119,47 @@ void SessionBridge::issue( Model& model, const CommandRequest& request )
         return;
     }
 
+    if( request.kind == "listing" ) {
+        /*
+         * Everything, builtins and synthesized clauses included: the
+         * catalogue shows those as counted stubs (G3.1), and a stub cannot
+         * count what was never listed. Paged at the core's size; the model
+         * asks for the next page when `more` says there is one.
+         */
+        us::ListingFilter filter;
+        filter.includeBuiltins = true;
+        filter.includeSynthesized = true;
+        filter.limit = m_caps.defaultListingPageSize;
+        filter.offset = (std::uint32_t) request.index;
+        m_session->listing( filter );
+        return;
+    }
+
+    if( request.kind == "source" ) {
+        us::PredicateKey key;
+        key.name = request.text;
+        key.arity = (std::uint32_t) request.index;
+        key.module = (us::ModuleId) request.handle;
+        m_session->source( key );
+        return;
+    }
+
+    if( request.kind == "redefine" ) {
+        /*
+         * G3.3: the Source panel's edited definition. Under the policy its
+         * selector chose -- ReplacePredicates by default, which is engine
+         * item E3. The origin is the transcript's: these clauses were typed
+         * by a person, whatever file the ones they replace came from.
+         */
+        us::Origin origin;
+        origin.kind = us::Origin::Kind::Transcript;
+        us::OverwritePolicy policy = us::OverwritePolicy::ReplacePredicates;
+        if( request.index == 0 ) { policy = us::OverwritePolicy::Append; }
+        if( request.index == 2 ) { policy = us::OverwritePolicy::Fail; }
+        m_session->define( request.text, origin, policy );
+        return;
+    }
+
     if( request.kind == "cancel" ) {
         m_session->cancel( (us::QueryId) request.handle );
         return;

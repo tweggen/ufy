@@ -48,6 +48,72 @@
 #include <boost/spirit/include/support_line_pos_iterator.hpp>
 
 
+namespace {
+
+/** Engine item E5: a clause's text without the blank space around it. */
+std::string trimmedSourceText( const std::string& strText )
+{
+    const std::string::size_type first = strText.find_first_not_of( " \t\r\n" );
+    if( first == std::string::npos ) {
+        return std::string();
+    }
+    const std::string::size_type last = strText.find_last_not_of( " \t\r\n" );
+    return strText.substr( first, last - first + 1 );
+}
+
+/**
+ * Engine item E5: where a clause's own text ends inside the span one
+ * phrase_parse call consumed.
+ *
+ * That span is the skipper's pre-skip, the clause, and the skipper's
+ * POST-skip -- and the post-skip is where a comment introducing the NEXT
+ * clause lives. So the span is cut after the clause's last character of
+ * code (or after a `//` comment on that same line, which is the clause's
+ * own), and the rest is handed on. Mirrors ufy_skipper (vault-unify-
+ * parser.hpp): whitespace, block comments and line comments; string and
+ * character literals are stepped over whole so a `//` inside quotes is not
+ * taken for a comment.
+ */
+std::string::size_type clauseTextEnd( const std::string& strSpan )
+{
+    std::string::size_type codeEnd = 0;
+    std::string::size_type i = 0;
+    const std::string::size_type n = strSpan.size();
+    while( i < n ) {
+        const char c = strSpan[i];
+        if( c == '"' || c == '\'' ) {
+            std::string::size_type j = i + 1;
+            while( j < n && strSpan[j] != c ) {
+                if( strSpan[j] == '\\' ) { ++j; }
+                ++j;
+            }
+            i = ( j < n ) ? j + 1 : n;
+            codeEnd = i;
+        } else if( c == '/' && i + 1 < n && strSpan[i + 1] == '/' ) {
+            while( i < n && strSpan[i] != '\n' ) { ++i; }
+        } else if( c == '/' && i + 1 < n && strSpan[i + 1] == '*' ) {
+            const std::string::size_type close = strSpan.find( "*/", i + 2 );
+            i = ( close == std::string::npos ) ? n : close + 2;
+        } else if( c == ' ' || c == '\t' || c == '\r' || c == '\n' ) {
+            ++i;
+        } else {
+            ++i;
+            codeEnd = i;
+        }
+    }
+
+    /* A line comment after the clause, on its own line, is the clause's. */
+    std::string::size_type k = codeEnd;
+    while( k < n && ( strSpan[k] == ' ' || strSpan[k] == '\t' ) ) { ++k; }
+    if( k + 1 < n && strSpan[k] == '/' && strSpan[k + 1] == '/' ) {
+        while( k < n && strSpan[k] != '\n' ) { ++k; }
+        return k;
+    }
+    return codeEnd;
+}
+
+} // namespace
+
 namespace vault {
 namespace unify {
 
@@ -191,11 +257,24 @@ int RuntimeContext::parseExecuteSegment(
     int lastStartLine = 1;
     int errorCount = 0;
 
+    // Engine item E5: what the previous event's post-skip consumed that
+    // belongs in front of the next clause -- see clauseTextEnd().
+    std::string strLeadingText;
+
     while( itPosLine != itPosLineEnd ) {
         ParseIterator  itPosLineOld = itPosLine;
         bool r = boost::spirit::qi::phrase_parse( itPosLine, itPosLineEnd,
             parserEvent, ufySkipper, inputEvent );
         bool advanced = ( itPosLine != itPosLineOld );
+
+        // Engine item E5: this event's own text, and what follows it.
+        std::string strEventText;
+        if( r && advanced ) {
+            const std::string strSpan( itPosLineOld.base(), itPosLine.base() );
+            const std::string::size_type cut = clauseTextEnd( strSpan );
+            strEventText = strLeadingText + strSpan.substr( 0, cut );
+            strLeadingText = strSpan.substr( cut );
+        }
         if( r && advanced ) {
             // What did we parse? Import is checked first: a successfully
             // matched import event leaves inputEvent.query/inputEvent.clause
@@ -233,6 +312,12 @@ int RuntimeContext::parseExecuteSegment(
                     origin.uriFile = pFileDebugInfo->getFileUri();
                 }
                 origin.line = (uint64_t) lastStartLine;
+                // Engine item E5: one phrase_parse call parses exactly one
+                // event, so [itPosLineOld, itPosLine) is this clause's own
+                // text -- whatever the skipper consumed in front of it
+                // included, which is how a comment above a clause stays
+                // with it. Blank space at either end is not the user's.
+                origin.sourceText = trimmedSourceText( strEventText );
                 m_esRoot->appendClause( m_spWorld, pClause, origin );
                 VAULT_UNIFY_DI( ALWAYS, "line %d: Added clause '%s'.\n", 
                     lastStartLine,

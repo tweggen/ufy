@@ -707,10 +707,158 @@ void drawDiagnostics( CellGrid& grid, const Model& model, const Rect& inner,
  * `source` request, and the panel says so on its last line rather than
  * letting one line pass for the file.
  */
-void drawSource( CellGrid& grid, const Model& model, const Rect& inner )
+void drawDefinition( CellGrid& grid, const Model& model, const Rect& inner,
+                     bool focused )
 {
+    const SourceDefinition& d = model.sourceDefinition();
+    Attr bold;
+    bold.bold = true;
+    Attr dim;
+    dim.colour = Colour::Dim;
+
+    std::ostringstream head;
+    head << d.key.name << "/" << d.key.arity << " \xc2\xb7 " << d.clauses
+         << ( d.clauses == 1 ? " clause" : " clauses" );
+    if( d.redefinePending )  { head << " \xc2\xb7 redefining\xe2\x80\xa6"; }
+    else if( d.dirty )       { head << " \xc2\xb7 modified"; }
+    grid.drawText( inner.x, inner.y, head.str(), inner.w, bold );
+
+    /*
+     * The policy selector, on its own line so it can have its own focus
+     * (Up from the first line) and F1 on it can explain the policies.
+     * Reverse video while it has the keyboard, and the arrows say how to
+     * change it -- a selector that looked like a label would never be used.
+     */
+    if( inner.h > 1 ) {
+        Attr selector = dim;
+        if( focused && d.selectorFocused ) {
+            selector = Attr();
+            selector.reverse = true;
+        }
+        const std::string text = std::string( "F3 redefines \xc2\xb7 policy: \xe2\x97\x82 " )
+                               + policyName( d.policy ) + " \xe2\x96\xb8";
+        grid.drawText( inner.x, inner.y + 1, text, inner.w, selector );
+    }
+
+    const int rows = sourceTextRows( inner.h );
+    const int total = (int) d.lines.size();
+    const int top = ensureVisible( d.cursor, total, rows, d.top );
+    const bool editing = focused && !d.selectorFocused;
+    for( int row = 0; row < rows; ++row ) {
+        const int index = top + row;
+        if( index >= total ) { break; }
+        const std::string& line = d.lines[ (std::size_t) index ];
+        const int y = inner.y + 2 + row;
+        if( !editing || index != d.cursor ) {
+            grid.drawText( inner.x, y, line, inner.w, Attr() );
+            continue;
+        }
+        /* The editing line: a block cursor at the column, as the prompt has. */
+        const std::size_t column = std::min( d.column, line.size() );
+        int at = grid.drawText( inner.x, y, line.substr( 0, column ), inner.w, Attr() );
+        Attr cursor;
+        cursor.reverse = true;
+        std::string under = " ";
+        std::size_t next = column;
+        if( column < line.size() ) {
+            next = column + 1;
+            while( next < line.size()
+                   && ( (unsigned char) line[next] & 0xC0 ) == 0x80 ) { ++next; }
+            under = line.substr( column, next - column );
+        }
+        at += grid.drawText( inner.x + at, y, under, inner.w - at, cursor );
+        if( next < line.size() ) {
+            grid.drawText( inner.x + at, y, line.substr( next ), inner.w - at, Attr() );
+        }
+    }
+}
+
+
+/** G3.1: the catalogue, grouped by provenance, or filtered flat. */
+void drawCatalogue( CellGrid& grid, const Model& model, const Rect& inner,
+                    bool focused )
+{
+    const CatalogueState& c = model.catalogue();
+    if( !c.loaded ) {
+        drawEmpty( grid, inner, "no listing yet",
+                   c.listingPending ? "asking the engine\xe2\x80\xa6"
+                                    : "the catalogue fills when lens has an engine" );
+        return;
+    }
+
+    int y = inner.y;
+    if( !c.filter.empty() ) {
+        Attr filterAttr;
+        filterAttr.bold = true;
+        grid.drawText( inner.x, y, "filter: " + c.filter, inner.w, filterAttr );
+        ++y;
+    }
+
+    const std::vector<CatalogueRow> rows = model.catalogueRows();
+    const int listRows = catalogueListRows( inner.h, c );
+    if( rows.empty() ) {
+        Attr dim;
+        dim.colour = Colour::Dim;
+        grid.drawText( inner.x, y, c.filter.empty() ? "(empty world)" : "(no match)",
+                       inner.w, dim );
+        return;
+    }
+
+    const int total = (int) rows.size();
+    const int top = ensureVisible( c.selected, total, listRows, c.top );
+    for( int row = 0; row < listRows; ++row ) {
+        const int index = top + row;
+        if( index >= total ) { break; }
+        const CatalogueRow& r = rows[ (std::size_t) index ];
+
+        Attr attr;
+        std::string text;
+        std::string count;
+        if( r.kind == CatalogueRow::Kind::Group ) {
+            attr.bold = true;
+            text = ( r.open ? "\xe2\x96\xbe " : "\xe2\x96\xb8 " ) + r.label;
+            if( !r.open ) {
+                std::ostringstream os;
+                os << " (" << r.count << ")";
+                text += os.str();
+            }
+        } else {
+            text = ( c.filter.empty() ? "    " : "" ) + r.label;
+            std::ostringstream os;
+            os << r.count;
+            count = os.str();
+            if( !c.filter.empty() ) {
+                text += "  (" + r.group + ")";
+            }
+        }
+        if( index == c.selected ) {
+            attr.reverse = focused;
+            attr.bold = attr.bold || !focused;
+        }
+        if( attr.reverse ) {
+            grid.fill( inner.x, y + row, inner.w, 1, U' ', attr );
+        }
+        grid.drawText( inner.x, y + row, text, inner.w, attr );
+        if( !count.empty() ) {
+            const int cw = displayWidth( count );
+            if( cw + 1 < inner.w ) {
+                grid.drawText( inner.x + inner.w - cw, y + row, count, cw, attr );
+            }
+        }
+    }
+}
+
+
+void drawSource( CellGrid& grid, const Model& model, const Rect& inner,
+                 bool focused )
+{
+    if( model.sourceShows() == Model::SourceShows::Definition
+        && model.sourceDefinition().set ) {
+        drawDefinition( grid, model, inner, focused );
+        return;
+    }
     const SourceLocation& at = model.sourceLocation();
-    if( !at.set ) {
+    if( !at.set || model.sourceShows() != Model::SourceShows::Location ) {
         drawEmpty( grid, inner, "the selected definition",
                    "awaiting source (G3)" );
         return;
@@ -828,7 +976,10 @@ void drawTile( CellGrid& grid, const Model& model, const Placement& placement,
         drawDiagnostics( grid, model, inner, focused );
         return;
     case PanelKind::Source:
-        drawSource( grid, model, inner );
+        drawSource( grid, model, inner, focused );
+        return;
+    case PanelKind::Catalogue:
+        drawCatalogue( grid, model, inner, focused );
         return;
     case PanelKind::Placeholder:
         break;

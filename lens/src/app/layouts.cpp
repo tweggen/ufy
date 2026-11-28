@@ -50,6 +50,9 @@ BufferId seed( Model& model, const PanelSeed& panel )
     if( title == "Source" ) {
         return model.addBuffer( panel.title, {}, PanelKind::Source );
     }
+    if( title == "Catalogue" ) {
+        return model.addBuffer( panel.title, {}, PanelKind::Catalogue );
+    }
 
     std::vector<std::string> lines;
     lines.push_back( panel.line1 );
