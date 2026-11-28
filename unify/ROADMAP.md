@@ -493,6 +493,12 @@ not be filed under Phase 4 tooling.
       calls out as larger than they look; `RuntimeContext` binds one Engine
       and World for life and `~RuntimeContext` deliberately leaks the
       Engine, so `load` needs a real shutdown path first.
+      *(2026-11-28, found by lens G3.7's bench: a query run and released
+      through `LocalSession` leaves about 0.3–0.5 KB resident that is never
+      given back, with no definition changed. Not the session's query map
+      -- erasing released entries was tried and changed nothing -- so it is
+      engine-side. `unify-growth-bench` prints the figure; it is a leak in a
+      long session today, independently of `load`.)*
 
 ---
 

@@ -12,7 +12,7 @@ by gates whose criteria are executable.
 > | **G1** Shell | **CLOSED** 2026-09-07 | tiling, four layouts, degradation, `--script`, commands, help, palette |
 > | **G2** Transcript | **CLOSED** 2026-11-27 | batches, cancel, `F5` re-run, shared history, write-file, extracted help |
 > | **G5** Inspect | **CLOSED** 2026-11-28 | Solutions table and demand, Inspector tree and `inspect`, Diagnostics to Source |
-> | **G3** Browser | **PARTIAL** | G3.1–G3.5 and H done; G3.6 (the editor), G3.7 (growth) and G3.8 (world undo) open |
+> | **G3** Browser | **PARTIAL** | G3.1–G3.5 and H done; G3.6 (the editor) and G3.8 (world undo) open; G3.7 (growth) bounds agreed, gate deferred to the engine's next shape |
 > | **G4, G6–G9** | not started | |
 >
 > Engine items **E1, E2, E3, E4, E5, E7, E10, E14, E16** are done; **E6,
@@ -275,8 +275,42 @@ Three harnesses, all in the repo's established golden style
 > editor. Both items are recorded in `unify/ROADMAP.md`.
 >
 > Open: G3.6 (the editor proper — the Source panel is a line editor for
-> now, with no undo); G3.7, which needs a measurement before anyone agrees
-> a bound; and G3.8 (world undo).
+> now, with no undo) and G3.8 (world undo). G3.7: see the note below.
+>
+> **2026-11-28 — G3.7: bounds agreed, gate deferred.** The maintainer
+> chose B1–B3 (in the table) and, in the same breath, chose not to make
+> the current engine meet them: a redesign of the execution engine may pay
+> off better once the wanted feature set is visible, and narrow bounds
+> tuned to today's engine would steer that redesign before it is designed.
+> So the bounds are written as behaviour seen through `Session` — nothing
+> in them names the clause store, tombstones or an index — and the
+> measuring program speaks only `Session` too (one engine call aside, to
+> silence the debug trace), so it measures a redesigned core unchanged.
+> What they would force today, for whoever picks this up: B1 a real
+> `(name, arity)` lookup index (ROADMAP Phase 3, M4); B2 that lookup skip
+> retired clauses cheaply; B3 that retired clauses be reclaimed once no
+> running query and no undo entry can reach them, which ties G3.7 to G3.8:
+> G3.8 must settle the undo depth (100 is provisional, and is the figure
+> B3 uses).
+>
+> The current engine, measured by the bench on this machine (best of
+> seven rounds of 100 queries, the machine loaded): after 1,000 edits B1
+> 2.2–2.6×, B2 2.0–2.9×; after 10,000, B1 40–60×, B2 30–37×, resident
+> memory 72 MB against a 9–11 MB limit — about 6.5 KB per redefinition of
+> a 10-clause predicate. All three fail, as expected. **Proved able to
+> pass:** with the redefinition removed and everything else equal, all
+> three pass at every checkpoint and `--enforce` exits 0; restored, it
+> exits 1. At 1,000 edits B2 sits near its bound and flickers between
+> runs on a loaded machine; at 10,000 no run is close, which is why the
+> criterion names both.
+>
+> **Found on the way, not G3.7:** running and releasing a query leaves
+> about 0.3–0.5 KB resident that is never given back, with no
+> redefinition at all. It is not `LocalSession`'s query map (erasing
+> released entries was tried and changed nothing), so it is in the
+> engine. The bench measures it in a control phase, prints it, and takes
+> it out of B3 rather than charging it to the edits. Recorded against
+> engine item E9 in `unify/ROADMAP.md`.
 >
 > One mechanism came with it that later panels will reuse. A session
 > event can now ask for something: `Model::takeRequests()` holds what
@@ -291,7 +325,7 @@ Three harnesses, all in the repo's established golden style
 | G3.4 **[done]** | `WorldChanged` refreshes the catalogue with no panel polling (asserted by request-count on the session). *(2026-11-28: one listing per `WorldChanged`. Changes that arrive while a listing is in flight coalesce into exactly one more. A hundred keystrokes with no change ask for none, in the model test and against the real engine. The first listing is asked for when a session's capabilities arrive, so a model with no engine asks nothing.)* |
 | G3.5 **[done]** | Filter-as-you-type over a catalogue of 5,000 keys stays within the frame budget. *(2026-11-28: the budget is 50 ms, the interactive loop's poll interval, measured as the WORST keystroke of fold plus a full render. The first implementation took 51 ms and failed: it re-sorted every key on each of the several calls a keystroke makes. Sorting once per listing brought it to 20 ms. Asserted only in optimised builds; an unoptimised or sanitizer build skips the timing check and says so, since it would measure the build. A filter searches the stubs too, because it is how you find a builtin.)* |
 | G3.6 | **Editor.** A property test applying 10,000 random edit operations (insert, delete, kill, yank, undo, redo) never corrupts the buffer and always round-trips to the same text under full undo. A width corpus of CJK and combining-mark clause heads renders with correct column alignment. Completion offers catalogue predicates, builtins and in-scope variables. |
-| G3.7 | **Growth under redefinition.** Redefining one predicate 1,000 times leaves query latency and resident memory within a stated bound. Clauses are tombstoned, never removed (`vault-unify.hpp`: "A clause cannot be removed from an execution state"), and lookup is a linear scan until ROADMAP Phase 3's indexing lands — so interactive redefinition monotonically degrades the database. This gate is what forces E2's catalogue index to be a real `(name, arity)` index and not a view, and it is the test that says when Phase 3 became mandatory rather than optional. *(Baseline measured 2026-11-28, bound NOT yet agreed. One 10-clause predicate redefined under `ReplacePredicates` (E3), queried 20 times at each checkpoint, -O2, this machine. After 0, 100, 500 and 1,000 redefinitions: the store holds 24 / 1,024 / 5,024 / 10,024 clauses; `p( $x )` takes 0.038 / 0.040 / 0.080 / 0.204 ms; an unrelated `other( $y )` takes 0.039 / 0.040 / 0.100 / 0.189 ms; resident memory is 5.2 / 5.9 / 8.4 / 11.5 MB. So latency grows linearly with tombstones for EVERY predicate, since lookup scans the whole store, and each retired clause costs about 630 bytes, its kept source text (E5) included. A thousand edits is a fivefold slowdown at 0.2 ms; the same rate gives about 20 ms after a hundred thousand. Choosing the bound is the decision this criterion was written to force, and it is the maintainer's to take.)* |
+| G3.7 | **Growth under redefinition.** Redefining one predicate under `ReplacePredicates` 1,000 and 10,000 times keeps, against the same world before the first edit: **(B1)** a query on an *unrelated* predicate within 1.5× its starting time; **(B2)** a query on the *redefined* predicate within 2× its starting time; **(B3)** resident memory within the starting figure plus what an undo history of 100 redefinitions may hold (1 KB a clause) plus 1 MB of slack — memory follows the undo depth, not the number of edits. Measured through `Session` only, by `unify-growth-bench` (`unify/test/session/growth-bench.cpp`), so the bounds describe behaviour, not mechanism, and hold for whatever core sits behind the boundary. *(Bounds agreed 2026-11-28; gate **deferred**, see the note below. The bench reports and does not fail the build; `--enforce` makes it fail, for the day the gate is meant to pass.)* |
 | G3.8 | **World undo.** `Ctrl-z` after a `ReplacePredicates` redefinition restores the previous clauses in their original trial order; an entry spanning a query side effect is marked non-undoable rather than silently half-applied. |
 | **H** **[done]** | Help topics for the browser and for the three overwrite policies exist and are reachable by `F1` from the source panel with the policy selector focused. *(2026-11-28: topics `catalogue`, `source` and `overwrite-policies`. The selector is a line of its own under the Source panel's header, reached with Up from the first line. Left and Right change the policy, and F1 there opens the policies page; F1 in the text opens `source`. Fail is explained as refused until engine item E12, which is what the core does.)* |
 
