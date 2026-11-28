@@ -1,7 +1,7 @@
  File  Edit  World  Query  Image  Debug  Window  Help
 ┌ Catalogue ───────┐┌ Source ──────────────────────────────────────────────────┐
-│module -> (name, a││the selected definition                                   │
-│awaiting listing (││awaiting source (G3)                                      │
+│no listing yet    ││the selected definition                                   │
+│the catalogue fill││awaiting source (G3)                                      │
 │                  ││                                                          │
 │                  ││                                                          │
 │                  ││                                                          │

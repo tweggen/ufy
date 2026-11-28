@@ -171,6 +171,7 @@ std::string Model::contextualTopicId() const
     case PanelKind::Inspector:   return "inspector";
     case PanelKind::Diagnostics: return "diagnostics";
     case PanelKind::Source:      return "source";
+    case PanelKind::Catalogue:   return "catalogue";
     case PanelKind::Placeholder:
         break;
     }
@@ -434,6 +435,46 @@ void Model::foldSession( const us::Event& event )
 }
 
 
+void Model::setCapabilities( const us::Capabilities& caps )
+{
+    m_caps = caps;
+
+    /*
+     * A session has started: the catalogue's first listing. Asked here
+     * because this is the one moment every front end passes through once a
+     * core exists -- and only then, so a model with no engine behind it
+     * asks a bridge with no session for nothing.
+     */
+    if( !caps.coreName.empty() ) {
+        refreshCatalogue();
+    }
+}
+
+
+std::vector<CommandRequest> Model::takeRequests()
+{
+    std::vector<CommandRequest> out;
+    out.swap( m_outbox );
+    return out;
+}
+
+
+void Model::refreshCatalogue()
+{
+    if( m_catalogue.listingPending ) {
+        m_catalogue.dirty = true;
+        return;
+    }
+    m_catalogue.listingPending = true;
+    m_catalogue.incoming.clear();
+
+    CommandRequest request;
+    request.kind = "listing";
+    request.index = 0;   /* the offset of the first page */
+    m_outbox.push_back( request );
+}
+
+
 us::QueryId Model::beginQuery( us::QueryId query )
 {
     const us::QueryId previous = m_results.query;
@@ -483,6 +524,77 @@ void Model::foldResults( const us::Event& event )
     if( const us::Diagnostic* diagnostic =
             std::get_if<us::Diagnostic>( &event.body ) ) {
         m_diagnostics.items.push_back( *diagnostic );
+        return;
+    }
+
+    if( std::get_if<us::WorldChanged>( &event.body ) ) {
+        /* G3.4: the one signal the catalogue refreshes on. Nothing polls. */
+        refreshCatalogue();
+        return;
+    }
+
+    if( const us::Listing* listing = std::get_if<us::Listing>( &event.body ) ) {
+        CatalogueState& c = m_catalogue;
+        c.incoming.insert( c.incoming.end(), listing->entries.begin(),
+                           listing->entries.end() );
+        if( listing->more ) {
+            /*
+             * Paged: a core may answer in pages of its own size, and
+             * `more` is the only thing that says so. Shown only once
+             * complete, so the panel never shows half a world as if it were
+             * the whole of it.
+             */
+            c.listingPending = true;
+            CommandRequest request;
+            request.kind = "listing";
+            request.index = (std::uint64_t) c.incoming.size();
+            m_outbox.push_back( request );
+            return;
+        }
+        c.entries.swap( c.incoming );
+        c.incoming.clear();
+        indexCatalogue( c );
+        c.loaded = true;
+        c.listingPending = false;
+        const int rows = (int) lens::catalogueRows( c ).size();
+        if( c.selected >= rows ) { c.selected = rows > 0 ? rows - 1 : 0; }
+        if( c.dirty ) {
+            c.dirty = false;
+            refreshCatalogue();
+        }
+        return;
+    }
+
+    if( const us::SourceText* text = std::get_if<us::SourceText>( &event.body ) ) {
+        SourceDefinition& d = m_definition;
+        if( !d.pending || text->key != d.pendingKey ) {
+            /* An answer to a question no longer being asked. */
+            return;
+        }
+        d.pending = false;
+        d.set = true;
+        d.key = text->key;
+        d.origin = text->origin;
+        d.lines.clear();
+        std::string line;
+        for( std::size_t i = 0; i < text->text.size(); ++i ) {
+            if( text->text[i] == '\n' ) {
+                d.lines.push_back( line );
+                line.clear();
+            } else {
+                line += text->text[i];
+            }
+        }
+        if( !line.empty() ) { d.lines.push_back( line ); }
+        d.clauses = 0;
+        for( std::size_t i = 0; i < m_catalogue.entries.size(); ++i ) {
+            if( m_catalogue.entries[i].key == d.key ) {
+                d.clauses = m_catalogue.entries[i].clauseCount;
+            }
+        }
+        d.cursor = 0;
+        d.top = 0;
+        m_sourceShows = SourceShows::Definition;
         return;
     }
 
@@ -574,6 +686,7 @@ void Model::showPanel( PanelKind kind )
         case PanelKind::Inspector:   title = "Inspector"; break;
         case PanelKind::Diagnostics: title = "Diagnostics"; break;
         case PanelKind::Source:      title = "Source"; break;
+        case PanelKind::Catalogue:   title = "Catalogue"; break;
         default: break;
         }
         id = addBuffer( title, {}, kind );
@@ -733,7 +846,26 @@ ScrollView Model::observeFocusedScroll( bool& out_valid ) const
         view.totalLines = (int) m_diagnostics.items.size();
         out_valid = true;
         return view;
+    case PanelKind::Catalogue: {
+        const int total = (int) catalogueRows().size();
+        if( total == 0 ) { break; }
+        view.cursorLine = m_catalogue.selected;
+        view.topLine = m_catalogue.top;
+        view.viewportRows = catalogueListRows( inner.h, m_catalogue );
+        view.totalLines = total;
+        out_valid = view.viewportRows > 0;
+        return view;
+    }
     case PanelKind::Source:
+        if( m_sourceShows != SourceShows::Definition || m_definition.lines.empty() ) {
+            break;
+        }
+        view.cursorLine = m_definition.cursor;
+        view.topLine = m_definition.top;
+        view.viewportRows = sourceTextRows( inner.h );
+        view.totalLines = (int) m_definition.lines.size();
+        out_valid = view.viewportRows > 0;
+        return view;
     case PanelKind::Placeholder:
         break;
     }
@@ -1313,7 +1445,20 @@ void followCursor( Model& model, Buffer& buffer )
         d.top = ensureVisible( d.selected, (int) d.items.size(), inner.h, d.top );
         return;
     }
-    case PanelKind::Source:
+    case PanelKind::Catalogue: {
+        CatalogueState& c = model.catalogue();
+        const int total = (int) model.catalogueRows().size();
+        if( c.selected >= total ) { c.selected = total > 0 ? total - 1 : 0; }
+        c.top = ensureVisible( c.selected, total, catalogueListRows( inner.h, c ),
+                               c.top );
+        return;
+    }
+    case PanelKind::Source: {
+        SourceDefinition& d = model.sourceDefinition();
+        d.top = ensureVisible( d.cursor, (int) d.lines.size(),
+                               sourceTextRows( inner.h ), d.top );
+        return;
+    }
     case PanelKind::Placeholder:
         return;
     }
@@ -1875,7 +2020,144 @@ std::vector<CommandRequest> foldDiagnostics( Model& model, const Key& key )
         at.column = item.column;
         at.text = item.sourceLine;
         at.message = diagnosticHeadline( item );
+        model.setSourceShows( Model::SourceShows::Location );
         model.showPanel( PanelKind::Source );
+    }
+    return std::vector<CommandRequest>();
+}
+
+/** Focus whichever tile shows `buffer`, if one does. */
+void focusBuffer( Model& model, BufferId buffer )
+{
+    const std::vector<TileId> tiles = model.layout().tiles();
+    for( std::size_t i = 0; i < tiles.size(); ++i ) {
+        if( model.layout().bufferOf( tiles[i] ) == buffer ) {
+            model.layout().focus( tiles[i] );
+            return;
+        }
+    }
+}
+
+bool panelOnScreen( const Model& model, PanelKind kind )
+{
+    const std::vector<TileId> tiles = model.layout().tiles();
+    for( std::size_t i = 0; i < tiles.size(); ++i ) {
+        const Buffer* shown = model.buffer( model.layout().bufferOf( tiles[i] ) );
+        if( shown && shown->kind == kind ) {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::vector<CommandRequest> foldCatalogue( Model& model, const Key& key )
+{
+    std::vector<CommandRequest> requests;
+    CatalogueState& c = model.catalogue();
+    const std::vector<CatalogueRow> rows = model.catalogueRows();
+    const int total = (int) rows.size();
+    const Rect inner = model.innerRectOf( model.layout().focused() );
+
+    /* Filter-as-you-type (G3.5): printable keys are the filter. */
+    if( key.code == Key::Code::Char && !key.ctrl && !key.alt && key.ch >= 0x20 ) {
+        c.filter += encodeUtf8( key.ch );
+        c.selected = 0;
+        c.top = 0;
+        return requests;
+    }
+    if( key.code == Key::Code::Backspace ) {
+        while( !c.filter.empty() ) {
+            const unsigned char last = (unsigned char) c.filter.back();
+            c.filter.pop_back();
+            if( ( last & 0xC0 ) != 0x80 ) { break; }   /* a whole codepoint */
+        }
+        c.selected = 0;
+        c.top = 0;
+        return requests;
+    }
+    if( key.code == Key::Code::Escape ) {
+        if( !c.filter.empty() ) {
+            c.filter.clear();
+            c.selected = 0;
+            c.top = 0;
+        }
+        return requests;
+    }
+
+    const int next = moveListCursor( key, c.selected, total,
+                                     catalogueListRows( inner.h, c ) );
+    if( next >= 0 ) {
+        c.selected = next;
+        return requests;
+    }
+    if( total == 0 || c.selected < 0 || c.selected >= total ) {
+        return requests;
+    }
+    const CatalogueRow& row = rows[ (std::size_t) c.selected ];
+
+    if( row.kind == CatalogueRow::Kind::Group ) {
+        const bool toggle = key.code == Key::Code::Enter
+                         || ( key.code == Key::Code::Right && !row.open )
+                         || ( key.code == Key::Code::Left && row.open );
+        if( toggle ) {
+            if( c.toggled.count( row.group ) ) { c.toggled.erase( row.group ); }
+            else                               { c.toggled.insert( row.group ); }
+        }
+        return requests;
+    }
+
+    if( key.code == Key::Code::Left && c.filter.empty() ) {
+        for( int i = c.selected - 1; i >= 0; --i ) {
+            if( rows[ (std::size_t) i ].kind == CatalogueRow::Kind::Group ) {
+                c.selected = i;
+                break;
+            }
+        }
+        return requests;
+    }
+
+    if( key.code != Key::Code::Enter || row.entry < 0 ) {
+        return requests;
+    }
+
+    /*
+     * G3.2: selecting a key loads its source, through `source`. The
+     * catalogue keeps the keyboard -- the system-browser stance, where you
+     * walk the list and the definition follows -- and a Source tile is
+     * opened beside it when the layout has none, so the answer has
+     * somewhere to be seen.
+     */
+    const us::CatalogueEntry& e = c.entries[ (std::size_t) row.entry ];
+    SourceDefinition& d = model.sourceDefinition();
+    d.pending = true;
+    d.pendingKey = e.key;
+
+    CommandRequest request;
+    request.kind = "source";
+    request.text = e.key.name;
+    request.index = e.key.arity;
+    request.handle = (std::uint64_t) e.key.module;
+    requests.push_back( request );
+
+    if( !panelOnScreen( model, PanelKind::Source ) ) {
+        const BufferId catalogue = model.layout().bufferOf( model.layout().focused() );
+        model.showPanel( PanelKind::Source );
+        focusBuffer( model, catalogue );
+    }
+    return requests;
+}
+
+std::vector<CommandRequest> foldSource( Model& model, const Key& key )
+{
+    if( model.sourceShows() != Model::SourceShows::Definition ) {
+        return std::vector<CommandRequest>();
+    }
+    SourceDefinition& d = model.sourceDefinition();
+    const Rect inner = model.innerRectOf( model.layout().focused() );
+    const int next = moveListCursor( key, d.cursor, (int) d.lines.size(),
+                                     sourceTextRows( inner.h ) );
+    if( next >= 0 ) {
+        d.cursor = next;
     }
     return std::vector<CommandRequest>();
 }
@@ -2041,6 +2323,12 @@ std::vector<CommandRequest> Model::foldInner( Model& model,
     }
     if( focused && focused->kind == PanelKind::Diagnostics ) {
         return foldDiagnostics( model, event.key );
+    }
+    if( focused && focused->kind == PanelKind::Catalogue ) {
+        return foldCatalogue( model, event.key );
+    }
+    if( focused && focused->kind == PanelKind::Source ) {
+        return foldSource( model, event.key );
     }
 
     /*
@@ -2376,6 +2664,17 @@ void registerShellCommands( Model& model )
                    .helpTopic( "inspector" )
                    .onRun( []( Model& m ) {
                        m.showPanel( PanelKind::Inspector );
+                       return std::vector<CommandRequest>();
+                   } ) );
+
+    table.add( Command( "view.catalogue", "Catalogue",
+                        "Show the Catalogue: every predicate in the world, "
+                        "grouped by where it came from. Type to filter; "
+                        "Enter shows the definition in Source." )
+                   .category( "Window" )
+                   .helpTopic( "catalogue" )
+                   .onRun( []( Model& m ) {
+                       m.showPanel( PanelKind::Catalogue );
                        return std::vector<CommandRequest>();
                    } ) );
 

@@ -1,7 +1,7 @@
  File  Edit  World  Query  Image  Debug  Window  Help
 ┌ Catalogue ─────────┐┌ Help ──────────────────────────────────────────────────┐
-│module -> (name, ari││unify-lens -- a place to keep a Unify world open and    │
-│awaiting listing (G3││work inside it.                                         │
+│no listing yet      ││unify-lens -- a place to keep a Unify world open and    │
+│the catalogue fills ││work inside it.                                         │
 │                    ││                                                        │
 │                    ││THE KEYS THAT MATTER                                    │
 │                    ││                                                        │

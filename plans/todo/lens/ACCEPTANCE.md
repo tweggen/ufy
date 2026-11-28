@@ -12,11 +12,12 @@ by gates whose criteria are executable.
 > | **G1** Shell | **CLOSED** 2026-09-07 | tiling, four layouts, degradation, `--script`, commands, help, palette |
 > | **G2** Transcript | **CLOSED** 2026-11-27 | batches, cancel, `F5` re-run, shared history, write-file, extracted help |
 > | **G5** Inspect | **CLOSED** 2026-11-28 | Solutions table and demand, Inspector tree and `inspect`, Diagnostics to Source |
-> | **G3, G4, G6–G9** | not started | G3 (Browser) is next; it needs engine items E3 and E5 |
+> | **G3** Browser | **PARTIAL** | G3.1, G3.2, G3.4, G3.5 done (the read-only browser); G3.3, G3.6–G3.8 and H open |
+> | **G4, G6–G9** | not started | |
 >
 > Engine items **E1, E2, E4, E7, E10, E14, E16** are done; **E3, E5, E6,
 > E9, E11, E12, E13, E15** are not. `ctest` is 29/29 on `build/unify` and
-> 71/71 on `build/lens`; CI additionally builds and tests on Windows/MSVC.
+> 72/72 on `build/lens`; CI additionally builds and tests on Windows/MSVC.
 > [HANDOFF.md](HANDOFF.md) §0 is the fuller picture and the place to start.
 
 > **Progress note (2026-09-06, implementation machine). G0 IS CLOSED.**
@@ -260,13 +261,29 @@ Three harnesses, all in the repo's established golden style
 
 *Smalltalk's system browser, on a clause database.*
 
+> **Progress note (2026-11-28).** G3.1, G3.2, G3.4 and G3.5 are done: the
+> read-only browser. They are asserted on the model in a new suite,
+> `lens-browser`, and G3.2 and G3.4 are asserted again against the real
+> engine in `lens-session`. Every guard was proven by breaking it.
+>
+> Open: G3.3 and G3.8, which need engine item E3 (predicate-scoped
+> retract; `LocalSession` answers `ReplacePredicates` with `Failed` until
+> then); G3.6, the editor; G3.7, which needs a measurement before anyone
+> agrees a bound; and H's policy-selector half, which needs G3.3's
+> selector to exist.
+>
+> One mechanism came with it that later panels will reuse. A session
+> event can now ask for something: `Model::takeRequests()` holds what
+> `foldSession` decided, and every loop that folds events issues it. That
+> is how a `WorldChanged` asks for a listing without anything polling.
+
 | # | Criterion |
 | --- | --- |
-| G3.1 | Catalogue shows module → `(name, arity)` → count, with builtins and synthesized clauses as collapsed, counted stubs, driven by provenance (E1) — never by name prefix. |
-| G3.2 | Selecting a key loads its source into the source panel via `source`. |
+| G3.1 **[done]** | Catalogue shows module → `(name, arity)` → count, with builtins and synthesized clauses as collapsed, counted stubs, driven by provenance (E1) — never by name prefix. *(2026-11-28: groups are `<transcript>`, one per module file, `asserted`, `synthesized` and `builtins`, read off each entry's `Origin`. A user predicate called `__cache` is listed under `<transcript>`, and the test fails when the group is decided by a `__` prefix instead. The two stubs start closed and open to show what they counted. A paged listing is shown only once its last page arrives, so the panel never presents half a world as the whole.)* |
+| G3.2 **[done]** | Selecting a key loads its source into the source panel via `source`. *(2026-11-28: Enter on a predicate asks `source` for exactly that key and keeps the keyboard in the catalogue. That is the system-browser stance: you walk the list and the definition follows. A Source tile opens beside the catalogue when the layout has none. An answer for a key no longer selected is dropped. What arrives is the engine's clauses printed back, not the text as typed: that is engine item E5, and the panel says so on its second line.)* |
 | G3.3 | Editing and `F3` redefines it under `ReplacePredicates`: the catalogue count updates, the old clauses are gone, other predicates are untouched, and the transcript reports `name/arity replaced (n clauses)`. |
-| G3.4 | `WorldChanged` refreshes the catalogue with no panel polling (asserted by request-count on the session). |
-| G3.5 | Filter-as-you-type over a catalogue of 5,000 keys stays within the frame budget. |
+| G3.4 **[done]** | `WorldChanged` refreshes the catalogue with no panel polling (asserted by request-count on the session). *(2026-11-28: one listing per `WorldChanged`. Changes that arrive while a listing is in flight coalesce into exactly one more. A hundred keystrokes with no change ask for none, in the model test and against the real engine. The first listing is asked for when a session's capabilities arrive, so a model with no engine asks nothing.)* |
+| G3.5 **[done]** | Filter-as-you-type over a catalogue of 5,000 keys stays within the frame budget. *(2026-11-28: the budget is 50 ms, the interactive loop's poll interval, measured as the WORST keystroke of fold plus a full render. The first implementation took 51 ms and failed: it re-sorted every key on each of the several calls a keystroke makes. Sorting once per listing brought it to 20 ms. Asserted only in optimised builds; an unoptimised or sanitizer build skips the timing check and says so, since it would measure the build. A filter searches the stubs too, because it is how you find a builtin.)* |
 | G3.6 | **Editor.** A property test applying 10,000 random edit operations (insert, delete, kill, yank, undo, redo) never corrupts the buffer and always round-trips to the same text under full undo. A width corpus of CJK and combining-mark clause heads renders with correct column alignment. Completion offers catalogue predicates, builtins and in-scope variables. |
 | G3.7 | **Growth under redefinition.** Redefining one predicate 1,000 times leaves query latency and resident memory within a stated bound. Clauses are tombstoned, never removed (`vault-unify.hpp`: "A clause cannot be removed from an execution state"), and lookup is a linear scan until ROADMAP Phase 3's indexing lands — so interactive redefinition monotonically degrades the database. This gate is what forces E2's catalogue index to be a real `(name, arity)` index and not a view, and it is the test that says when Phase 3 became mandatory rather than optional. |
 | G3.8 | **World undo.** `Ctrl-z` after a `ReplacePredicates` redefinition restores the previous clauses in their original trial order; an entry spanning a query side effect is marked non-undoable rather than silently half-applied. |

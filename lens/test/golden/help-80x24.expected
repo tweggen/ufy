@@ -1,13 +1,13 @@
  File  Edit  World  Query  Image  Debug  Window  Help
 ┌ Catalogue ─────────┐┌ Source ────────────────────────────────────────────────┐
-│module -> (name, ari││the selected definition                                 │
-│awaiting listing (G3││awaiting source (G3)                                    │
+│no listing yet      ││the selected definition                                 │
+│the catalogue fills ││awaiting source (G3)                                    │
 │                    ││                                                        │
 │                    │└────────────────────────────────────────────────────────┘
 │                    │┌ Help ──────────────────────────────────────────────────┐
-│                    ││Each tile shows a panel. None of them is privileged in  │
-│                    ││the code --                                             │
-│                    ││the shell knows about tiles, not about what more ▾ Down │
+│                    ││Every predicate in the world, grouped by where it came  │
+│                    ││from, with                                              │
+│                    ││how many clauses each has. It refreshes by  more ▾ Down │
 │                    │└────────────────────────────────────────────────────────┘
 │                    │┌ Diagnostics ───────────────────────────────────────────┐
 │                    ││(none)                                                  │

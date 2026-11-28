@@ -1,15 +1,15 @@
  File  Edit  World  Query  Image  Debug  Window  Help
 ┌ Catalogue ───────┐┌ Catalogue ───────┐┌ Diagnostics ─────────────────────────┐
-│module -> (name, a││module -> (name, a││(none)                                │
-│awaiting listing (││awaiting listing (││                                      │
+│no listing yet    ││no listing yet    ││(none)                                │
+│the catalogue fill││the catalogue fill││                                      │
 │                  ││                  ││                                      │
 │                  ││                  ││                                      │
 │                  ││                  ││                                      │
 │                  ││                  ││                                      │
 │                  │└──────────────────┘│                                      │
 │                  │┌ Catalogue ───────┐│                                      │
-│                  ││module -> (name, a││                                      │
-│                  ││awaiting listing (││                                      │
+│                  ││no listing yet    ││                                      │
+│                  ││the catalogue fill││                                      │
 │                  ││                  ││                                      │
 │                  ││                  ││                                      │
 │                  ││                  ││                                      │

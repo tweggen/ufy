@@ -14,11 +14,13 @@ caveat, because it still governs the parts nobody has reached yet.
 
 ## 0. Where this actually stands
 
-**Gates G0, G1, G2 and G5 are CLOSED. G3, G4 and G6–G9 are untouched.**
+**Gates G0, G1, G2 and G5 are CLOSED. G3 is half done; G4 and G6–G9 are
+untouched.**
 
 *(Revised 2026-11-28.)* PR #1 (G0's engine items), PR #2 (the menu bar)
-and PR #3 (the rest of G2) are merged into `main`. G5 is on
-`lens-g5-inspect`.
+and PR #3 (the rest of G2) are merged into `main`. G5 is PR #4
+(`lens-g5-inspect`); the read-only half of G3 is on `lens-g3-browser`,
+built on top of it.
 
 ```bash
 # The engine
@@ -29,7 +31,7 @@ ctest --test-dir build/unify --output-on-failure        # 29/29
 # lens, which builds the engine as a subproject
 cmake -S lens -B build/lens -DCMAKE_BUILD_TYPE=RelWithDebInfo
 cmake --build build/lens --parallel
-ctest --test-dir build/lens --output-on-failure         # 71/71 -- see below
+ctest --test-dir build/lens --output-on-failure         # 72/72 -- see below
 
 # and the thing itself
 ./build/lens/unify-lens
@@ -71,9 +73,15 @@ Bindings now cross the boundary as trees rather than as strings.
 
 ### What is next, in the order I would do it
 
-1. **G3 — Browser**, which needs E3/E5 and is where the catalogue work
-   (E2, done) finally shows on screen. It also turns the Source panel from
-   "the line a diagnostic reported" (G5.3) into the whole definition.
+1. **The rest of G3.** Done: the Catalogue (G3.1), `source` into the
+   Source panel (G3.2), refresh on `WorldChanged` (G3.4) and the filter's
+   frame budget (G3.5). Open, in the order I would take them:
+   - **E3** (predicate-scoped retract), then **G3.3** (edit and `F3`
+     under `ReplacePredicates`) and H's policy selector.
+   - **G3.7**: measure first. No baseline exists for redefinition growth.
+   - **G3.8** (world undo), which needs G3.3.
+   - **G3.6**, the editor, the largest single item in the plan
+     (UI.md §3.1).
 
 Everything else — G4, G6–G9, engine items E3, E5, E6, E9, E11, E12, E13,
 E15 — is untouched. **E9 (world reset) and E12 (staged parse and commit)
@@ -166,8 +174,9 @@ the last three was added *after* a bug got past the ones before it.
 | `lens-layout`, `lens-modreg`, `lens-grid`, `lens-shell` (78 cases) | Model tests. Assert on the model, never on pixels. |
 | `lens-screen-*` (26) | Golden screens. Layout and degradation only — deliberately *not* the oracle for behaviour, so a cosmetic change does not re-record a dozen files. |
 | `lens-interaction` (10) | What happens *between* frames, including a seeded random walk. Written after a user reported that pressing Up after Down did nothing the first time — a bug no single-frame assertion can see. |
+| `lens-browser` (14) | Gate G3 on the model: the catalogue's grouping by provenance, its stubs and pages, `source` for exactly the selected key, refresh on `WorldChanged` with coalescing and no polling, and the filter's 50 ms frame budget over 5,000 keys (optimised builds only). |
 | `lens-inspect` (17) | Gate G5 on the model: the Solutions table and its one demand, the Inspector's tree, cut marks and `inspect` grafting, Diagnostics to Source, and their help. Hand-built session events, because the interesting truncations are easiest to state as the tree they are. |
-| `lens-session` (11) | A Model and a SessionBridge over a **real** LocalSession, driven the way `--script` drives them and asserted on the model. For claims about the pair that no engine-free test can make: 10,000 solutions, cancel, that every builtin `describe()` reports has a help topic, an 11-deep term opened to the bottom through `inspect`, and that the core holds at most one retained query. |
+| `lens-session` (13) | A Model and a SessionBridge over a **real** LocalSession, driven the way `--script` drives them and asserted on the model. For claims about the pair that no engine-free test can make: 10,000 solutions, cancel, that every builtin `describe()` reports has a help topic, an 11-deep term opened to the bottom through `inspect`, that the core holds at most one retained query, and that each definition refreshes the catalogue while walking it asks for nothing. |
 | `lens-pty-interaction` (5) | The real binary on a real pseudo-terminal. The only thing that exercises `src/term/`. Written after two bugs lived there unseen. POSIX only. Two cases drive `unify-run -i` too, for the shared history file; they skip without readline. |
 | `lens-history`, `lens-transcript-write` | The shipped binary and a file on disk: a file is not on the screen, so it cannot be a golden screen. |
 | `lens-help-extract` (6 fixtures) | That the build-time help extractor still REFUSES a document it cannot read. The same discipline as `lens-spec-runner`. |

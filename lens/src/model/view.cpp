@@ -707,10 +707,130 @@ void drawDiagnostics( CellGrid& grid, const Model& model, const Rect& inner,
  * `source` request, and the panel says so on its last line rather than
  * letting one line pass for the file.
  */
-void drawSource( CellGrid& grid, const Model& model, const Rect& inner )
+void drawDefinition( CellGrid& grid, const Model& model, const Rect& inner,
+                     bool focused )
 {
+    const SourceDefinition& d = model.sourceDefinition();
+    Attr bold;
+    bold.bold = true;
+    Attr dim;
+    dim.colour = Colour::Dim;
+
+    std::ostringstream head;
+    head << d.key.name << "/" << d.key.arity << " \xc2\xb7 " << d.clauses
+         << ( d.clauses == 1 ? " clause" : " clauses" );
+    grid.drawText( inner.x, inner.y, head.str(), inner.w, bold );
+
+    /*
+     * Said, not hidden: without engine item E5 the core keeps no source
+     * text, so this is the clauses printed back -- and a rule that used
+     * `for`, `foreach` or `if` comes back calling the `__fe__N` predicate
+     * its loop was turned into, not showing the loop.
+     */
+    if( inner.h > 1 ) {
+        grid.drawText( inner.x, inner.y + 1,
+                       "as the engine holds it, not as typed (E5)", inner.w, dim );
+    }
+
+    const int rows = sourceTextRows( inner.h );
+    const int total = (int) d.lines.size();
+    const int top = ensureVisible( d.cursor, total, rows, d.top );
+    for( int row = 0; row < rows; ++row ) {
+        const int index = top + row;
+        if( index >= total ) { break; }
+        Attr attr;
+        if( focused && index == d.cursor ) { attr.reverse = true; }
+        grid.drawText( inner.x, inner.y + 2 + row, d.lines[ (std::size_t) index ],
+                       inner.w, attr );
+    }
+}
+
+
+/** G3.1: the catalogue, grouped by provenance, or filtered flat. */
+void drawCatalogue( CellGrid& grid, const Model& model, const Rect& inner,
+                    bool focused )
+{
+    const CatalogueState& c = model.catalogue();
+    if( !c.loaded ) {
+        drawEmpty( grid, inner, "no listing yet",
+                   c.listingPending ? "asking the engine\xe2\x80\xa6"
+                                    : "the catalogue fills when lens has an engine" );
+        return;
+    }
+
+    int y = inner.y;
+    if( !c.filter.empty() ) {
+        Attr filterAttr;
+        filterAttr.bold = true;
+        grid.drawText( inner.x, y, "filter: " + c.filter, inner.w, filterAttr );
+        ++y;
+    }
+
+    const std::vector<CatalogueRow> rows = model.catalogueRows();
+    const int listRows = catalogueListRows( inner.h, c );
+    if( rows.empty() ) {
+        Attr dim;
+        dim.colour = Colour::Dim;
+        grid.drawText( inner.x, y, c.filter.empty() ? "(empty world)" : "(no match)",
+                       inner.w, dim );
+        return;
+    }
+
+    const int total = (int) rows.size();
+    const int top = ensureVisible( c.selected, total, listRows, c.top );
+    for( int row = 0; row < listRows; ++row ) {
+        const int index = top + row;
+        if( index >= total ) { break; }
+        const CatalogueRow& r = rows[ (std::size_t) index ];
+
+        Attr attr;
+        std::string text;
+        std::string count;
+        if( r.kind == CatalogueRow::Kind::Group ) {
+            attr.bold = true;
+            text = ( r.open ? "\xe2\x96\xbe " : "\xe2\x96\xb8 " ) + r.label;
+            if( !r.open ) {
+                std::ostringstream os;
+                os << " (" << r.count << ")";
+                text += os.str();
+            }
+        } else {
+            text = ( c.filter.empty() ? "    " : "" ) + r.label;
+            std::ostringstream os;
+            os << r.count;
+            count = os.str();
+            if( !c.filter.empty() ) {
+                text += "  (" + r.group + ")";
+            }
+        }
+        if( index == c.selected ) {
+            attr.reverse = focused;
+            attr.bold = attr.bold || !focused;
+        }
+        if( attr.reverse ) {
+            grid.fill( inner.x, y + row, inner.w, 1, U' ', attr );
+        }
+        grid.drawText( inner.x, y + row, text, inner.w, attr );
+        if( !count.empty() ) {
+            const int cw = displayWidth( count );
+            if( cw + 1 < inner.w ) {
+                grid.drawText( inner.x + inner.w - cw, y + row, count, cw, attr );
+            }
+        }
+    }
+}
+
+
+void drawSource( CellGrid& grid, const Model& model, const Rect& inner,
+                 bool focused )
+{
+    if( model.sourceShows() == Model::SourceShows::Definition
+        && model.sourceDefinition().set ) {
+        drawDefinition( grid, model, inner, focused );
+        return;
+    }
     const SourceLocation& at = model.sourceLocation();
-    if( !at.set ) {
+    if( !at.set || model.sourceShows() != Model::SourceShows::Location ) {
         drawEmpty( grid, inner, "the selected definition",
                    "awaiting source (G3)" );
         return;
@@ -828,7 +948,10 @@ void drawTile( CellGrid& grid, const Model& model, const Placement& placement,
         drawDiagnostics( grid, model, inner, focused );
         return;
     case PanelKind::Source:
-        drawSource( grid, model, inner );
+        drawSource( grid, model, inner, focused );
+        return;
+    case PanelKind::Catalogue:
+        drawCatalogue( grid, model, inner, focused );
         return;
     case PanelKind::Placeholder:
         break;

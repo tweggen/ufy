@@ -119,6 +119,31 @@ void SessionBridge::issue( Model& model, const CommandRequest& request )
         return;
     }
 
+    if( request.kind == "listing" ) {
+        /*
+         * Everything, builtins and synthesized clauses included: the
+         * catalogue shows those as counted stubs (G3.1), and a stub cannot
+         * count what was never listed. Paged at the core's size; the model
+         * asks for the next page when `more` says there is one.
+         */
+        us::ListingFilter filter;
+        filter.includeBuiltins = true;
+        filter.includeSynthesized = true;
+        filter.limit = m_caps.defaultListingPageSize;
+        filter.offset = (std::uint32_t) request.index;
+        m_session->listing( filter );
+        return;
+    }
+
+    if( request.kind == "source" ) {
+        us::PredicateKey key;
+        key.name = request.text;
+        key.arity = (std::uint32_t) request.index;
+        key.module = (us::ModuleId) request.handle;
+        m_session->source( key );
+        return;
+    }
+
     if( request.kind == "cancel" ) {
         m_session->cancel( (us::QueryId) request.handle );
         return;

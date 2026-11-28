@@ -16,9 +16,9 @@
 │?-                                              ││-- 2 solutions              │
 └────────────────────────────────────────────────┘└────────────────────────────┘
 ┌ Catalogue ───────────────────────────────────────────────────────────────────┐
-│module -> (name, arity)                                                       │
-│awaiting listing (G3)                                                         │
-│                                                                              │
+│▾ <transcript>                                                                │
+│    colour/1                                                                 2│
+│▸ builtins (13)                                                               │
 └──────────────────────────────────────────────────────────────────────────────┘
  gen 0 · idle · buffered · cancel detaches only · local
 F1 Help  F5 Run line  F10 Menu

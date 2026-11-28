@@ -1,16 +1,16 @@
  File  Edit  World  Query  Image  Debug  Window  Help
 ┌ Catalogue ─────────┐┌ Source ─────────┌────────────────────────────┐─────────┐
-│module -> (name, ari││the selected defi│ Split above/below    C-x 2 │         │
-│awaiting listing (G3││awaiting source (│ Split side by side   C-x 3 │         │
+│no listing yet      ││the selected defi│ Split above/below    C-x 2 │         │
+│the catalogue fills ││awaiting source (│ Split side by side   C-x 3 │         │
 │                    ││                 │ Close tile           C-x 0 │         │
 │                    ││                 │ Maximise tile        C-x 1 │         │
 │                    ││                 │ Next tile              Tab │         │
 │                    ││                 │ Previous tile        S-Tab │         │
 │                    ││                 │ Solutions                  │         │
 │                    ││                 │ Inspector                  │         │
-│                    │└─────────────────│ Diagnostics                │─────────┘
-│                    │┌ Diagnostics ────└────────────────────────────┘─────────┐
-│                    ││(none)                                                  │
+│                    │└─────────────────│ Catalogue                  │─────────┘
+│                    │┌ Diagnostics ────│ Diagnostics                │─────────┐
+│                    ││(none)           └────────────────────────────┘         │
 │                    ││                                                        │
 │                    ││                                                        │
 └────────────────────┘└────────────────────────────────────────────────────────┘

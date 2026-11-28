@@ -1,22 +1,22 @@
  File  Edit  World  Query  Image  Debug  Window  Help
 ┌ Catalogue ─────────────────────┐┌ Source ────────────────────────────────────────────────────────────────────────────┐
-│module -> (name, arity)         ││the selected definition                                                             │
-│awaiting listing (G3)           ││awaiting source (G3)                                                                │
+│no listing yet                  ││the selected definition                                                             │
+│the catalogue fills when lens ha││awaiting source (G3)                                                                │
 │                                ││                                                                                    │
 │                                ││                                                                                    │
 │                                ││                                                                                    │
 │                                │└────────────────────────────────────────────────────────────────────────────────────┘
 │                                │┌ Help ──────────────────────────────────────────────────────────────────────────────┐
-│                                ││Each tile shows a panel. None of them is privileged in the code --                  │
-│                                ││the shell knows about tiles, not about what is in them.                             │
+│                                ││Every predicate in the world, grouped by where it came from, with                   │
+│                                ││how many clauses each has. It refreshes by itself whenever the                      │
+│                                ││world changes; nothing has to be reloaded.                                          │
 │                                ││                                                                                    │
-│                                ││  Transcript    the REPL: goals, results, program output                            │
-│                                ││  Catalogue     module -> (name, arity) -> clause count                             │
-│                                ││  Source        the selected definition                                             │
-│                                ││  Diagnostics   parse and runtime errors, navigable to source                       │
-│                                ││  Solutions     the current query's bindings, one row per solution                  │
-│                                ││  Inspector     one binding as an expandable term tree                              │
-│                                ││  Trace         goal stack, breakpoints, step controls                  more ▾ Down │
+│                                ││  Up / Down     move            PageUp/PageDown, Home/End                           │
+│                                ││  Enter         on a predicate: show its definition in Source                       │
+│                                ││                on a group: open or close it                                        │
+│                                ││  Right / Left  open / close a group; Left on a predicate goes to                   │
+│                                ││                its group                                                           │
+│                                ││  type          filter by name -- anywhere in the name, any case        more ▾ Down │
 │                                │└────────────────────────────────────────────────────────────────────────────────────┘
 │                                │┌ Diagnostics ───────────────────────────────────────────────────────────────────────┐
 │                                ││(none)                                                                              │

@@ -50,6 +50,7 @@ public:
             UT_FAIL( "cannot start the engine: " << error );
         }
         m_model.setCapabilities( m_bridge.capabilities() );
+        settle();
 
         Buffer* transcript = m_model.transcript();
         if ( !transcript ) {
@@ -103,11 +104,23 @@ public:
         press( "Enter" );
     }
 
+    /** As main.cpp's script loop: until no event asks for anything more. */
     void settle()
     {
-        m_bridge.settle();
-        for ( const us::Event& event : m_bridge.drain() ) {
-            m_model.foldSession( event );
+        for ( int round = 0; round < 64; ++round ) {
+            m_bridge.settle();
+            const std::vector<us::Event> events = m_bridge.drain();
+            for ( const us::Event& event : events ) {
+                m_model.foldSession( event );
+            }
+            const std::vector<CommandRequest> asked = m_model.takeRequests();
+            if ( asked.empty() && events.empty() ) {
+                break;
+            }
+            for ( const CommandRequest& request : asked ) {
+                ++m_asked[ request.kind ];
+                m_bridge.issue( m_model, request );
+            }
         }
     }
 
@@ -463,6 +476,65 @@ int main()
                               << " retained queries" );
         }
         UT_CHECK_EQ( rig.bridge().describeNow().retainedQueries, std::uint64_t( 1 ) );
+    } );
+
+    // -- G3: the browser against the real engine ------------------------------
+
+    registry.add( "G3.4 each definition refreshes the catalogue; idle keys ask "
+                  "nothing", []() {
+        Rig rig( "browse", 120, 40 );
+        UT_CHECK_MSG( rig.model().catalogue().loaded,
+                      "the first listing never arrived" );
+        const std::size_t before = rig.asked( "listing" );
+
+        rig.submit( "colour( red );" );
+        rig.submit( "colour( green );" );
+        rig.submit( "warm( $c ) { colour( $c ); $c = red; }" );
+        const std::size_t afterDefines = rig.asked( "listing" );
+        UT_CHECK_MSG( afterDefines - before >= 1 && afterDefines - before <= 3,
+                      "three definitions asked for " << ( afterDefines - before )
+                          << " listings" );
+
+        bool colour = false;
+        for ( const us::CatalogueEntry& e : rig.model().catalogue().entries ) {
+            if ( e.key.name == "colour" && e.key.arity == 1 ) {
+                colour = true;
+                UT_CHECK_EQ( e.clauseCount, std::uint32_t( 2 ) );
+            }
+        }
+        UT_CHECK_MSG( colour, "colour/1 is not in the catalogue" );
+
+        /* Walking the catalogue is not a reason to ask the engine anything. */
+        rig.focus( PanelKind::Catalogue );
+        for ( int i = 0; i < 20; ++i ) {
+            rig.press( "Down" );
+            rig.press( "Up" );
+        }
+        UT_CHECK_EQ( rig.asked( "listing" ), afterDefines );
+    } );
+
+    registry.add( "G3.2 Enter on a predicate shows the engine's own source", []() {
+        Rig rig( "browse", 120, 40 );
+        rig.submit( "colour( red );" );
+        rig.submit( "colour( green );" );
+        rig.focus( PanelKind::Catalogue );
+
+        const std::vector<CatalogueRow> rows = rig.model().catalogueRows();
+        int at = -1;
+        for ( std::size_t i = 0; i < rows.size(); ++i ) {
+            if ( rows[i].label == "colour/1" ) { at = (int) i; }
+        }
+        UT_CHECK( at >= 0 );
+        while ( rig.model().catalogue().selected < at ) { rig.press( "Down" ); }
+        rig.press( "Enter" );
+
+        UT_CHECK_EQ( rig.asked( "source" ), std::size_t( 1 ) );
+        const SourceDefinition& d = rig.model().sourceDefinition();
+        UT_CHECK_MSG( d.set, "the source never arrived" );
+        UT_CHECK_EQ( d.lines.size(), std::size_t( 2 ) );
+        UT_CHECK_MSG( !d.lines.empty() && d.lines[0].find( "red" ) != std::string::npos,
+                      "first line: " << ( d.lines.empty() ? "" : d.lines[0] ) );
+        UT_CHECK_EQ( d.clauses, std::uint32_t( 2 ) );
     } );
 
     return registry.run( "lens session: the transcript and results against a "

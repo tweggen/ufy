@@ -1,8 +1,8 @@
  File  Edit  World  Query  Image  Debug  Window  Help
 ┌ Catalogue ────────────────┐┌ Source ─────────────────────────────────────────────────────────────────────────────────┐
-│module -> (name, arity)    ││the selected definition                                                                  │
-│awaiting listing (G3)      ││awaiting source (G3)                                                                     │
-│                           ││                                                                                         │
+│▾ <transcript>             ││the selected definition                                                                  │
+│    route/2               1││awaiting source (G3)                                                                     │
+│▸ builtins (13)            ││                                                                                         │
 │                           ││                                                                                         │
 │                           ││                                                                                         │
 │                           ││                                                                                         │
