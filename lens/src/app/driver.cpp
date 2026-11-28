@@ -96,6 +96,7 @@ void Driver::record( const std::string& key )
         case PanelKind::Inspector:
         case PanelKind::Diagnostics:
         case PanelKind::Source:
+        case PanelKind::Catalogue:
         case PanelKind::Placeholder: step.focusedPanel = focused->title; break;
         }
     }

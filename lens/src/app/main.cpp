@@ -479,12 +479,28 @@ int runScript( const Options& options )
         if( !options.session ) {
             return;
         }
-        bridge.settle();
-        const std::vector<us::Event> events = bridge.drain();
-        for( std::size_t i = 0; i < events.size(); ++i ) {
-            model.foldSession( events[i] );
+        /*
+         * Until nothing more is asked: an event can ask for something
+         * (a WorldChanged asks for a listing, a paged listing for its next
+         * page), and the screen is only a function of the script once the
+         * answers to THOSE have landed too.
+         */
+        for( int round = 0; round < 64; ++round ) {
+            bridge.settle();
+            const std::vector<us::Event> events = bridge.drain();
+            for( std::size_t i = 0; i < events.size(); ++i ) {
+                model.foldSession( events[i] );
+            }
+            const std::vector<CommandRequest> asked = model.takeRequests();
+            if( asked.empty() && events.empty() ) {
+                break;
+            }
+            for( std::size_t i = 0; i < asked.size(); ++i ) {
+                bridge.issue( model, asked[i] );
+            }
         }
     };
+    settle();   /* the first listing setCapabilities() asked for */
 
     /* The layout name was validated in main() before anything was built. */
     std::vector<ScriptStep> script;
@@ -632,6 +648,11 @@ int runInteractive( const Options& options )
         const std::vector<us::Event> events = bridge.drain();
         for( std::size_t i = 0; i < events.size(); ++i ) {
             model.foldSession( events[i] );
+        }
+        /* What those events asked for -- see Model::takeRequests(). */
+        const std::vector<CommandRequest> asked = model.takeRequests();
+        for( std::size_t i = 0; i < asked.size(); ++i ) {
+            bridge.issue( model, asked[i] );
         }
 
         terminal->draw( view( model ) );

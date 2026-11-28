@@ -16,9 +16,9 @@
 │?-                                              ││                            │
 └────────────────────────────────────────────────┘└────────────────────────────┘
 ┌ Catalogue ───────────────────────────────────────────────────────────────────┐
-│module -> (name, arity)                                                       │
-│awaiting listing (G3)                                                         │
+│▸ builtins (13)                                                               │
+│                                                                              │
 │                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
  gen 0 · idle · buffered · cancel detaches only · local
-F1 Help  F5 Run line  F10 Menu
+F1 Help  F3 Redefine  F5 Run line  F10 Menu

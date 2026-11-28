@@ -1,7 +1,7 @@
  File  Edit  World  Query  Image  Debug  Window  Help
 ┌ Catalogue ─────────────────────┐┌ Source ────────────────────────────────────────────────────────────────────────────┐
-│module -> (name, arity)         ││the selected definition                                                             │
-│awaiting listing (G3)           ││awaiting source (G3)                                                                │
+│no listing yet                  ││the selected definition                                                             │
+│the catalogue fills when lens ha││awaiting source (G3)                                                                │
 │                                ││                                                                                    │
 │                                ││                                                                                    │
 │                                ││                                                                                    │
@@ -37,4 +37,4 @@
 │?-                                                                                                                    │
 └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
  gen 0 · 0 clauses · idle · no session · browse
-F1 Help  F5 Run line  F10 Menu
+F1 Help  F3 Redefine  F5 Run line  F10 Menu

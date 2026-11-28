@@ -15,6 +15,7 @@
 #include "vault-unify-term-value.hpp"
 
 #include <algorithm>
+#include <set>
 
 namespace vault {
 namespace unify {
@@ -705,17 +706,33 @@ RequestId LocalSession::define( std::string text, Origin origin,
 void LocalSession::doDefine( RequestId req, std::string text, Origin origin,
                              OverwritePolicy policy )
 {
-    if( OverwritePolicy::ReplacePredicates == policy
-        || OverwritePolicy::Fail == policy ) {
-        // Engine item E3 (predicate-scoped retract) is not done, so
-        // "replace" cannot be honoured. Refusing is the only honest answer:
-        // silently appending would give the user two definitions where they
-        // asked for one, which is worse than an error.
+    if( OverwritePolicy::Fail == policy ) {
+        // "Refuse if anything the text defines exists" has to know what the
+        // text defines BEFORE any of it is committed, and this engine's
+        // parser appends as it parses. That is engine item E12 (staged
+        // parse and commit). Refusing is the only honest answer meanwhile.
         emit( Failed{ req,
-            "overwrite policy needs engine item E3 (predicate-scoped retract)",
+            "the Fail overwrite policy needs engine item E12 (staged parse)",
             false } );
         return;
     }
+
+    /*
+     * Engine item E3. ReplacePredicates on an engine that appends as it
+     * parses: remember where the store ends, parse (the new clauses land at
+     * or after that index), then retire the EARLIER clauses of every
+     * predicate the new text defined. A text that fails to parse has its
+     * own clauses taken back instead, so the world is left as it was
+     * rather than holding half a new definition beside the whole old one.
+     *
+     * Not atomic against a query that STARTS between the append and the
+     * retirement, which can see both definitions for that moment. A query
+     * already running keeps the view it started with (both steps are
+     * generation-stamped tombstones). Closing the window entirely is E12.
+     */
+    const bool replacing = OverwritePolicy::ReplacePredicates == policy;
+    const size_t boundary = m_rt.getWorld()->clauseStoreSize();
+    const uint64_t generationBefore = m_rt.getWorld()->currentGeneration();
 
     std::vector<vault::unify::CatalogueEntry> before;
     m_rt.getWorld()->copyCatalogue( before );
@@ -752,6 +769,36 @@ void LocalSession::doDefine( RequestId req, std::string text, Origin origin,
         m_currentRequest = kNoRequest;
     }
 
+    std::set<std::pair<std::string, int> > replacedKeys;
+    if( replacing ) {
+        vault::unify::World* pWorld = m_rt.getWorld().get();
+        if( 0 != errorCount ) {
+            pWorld->retireAppendedSince( boundary );
+        } else {
+            std::set<std::pair<std::string, int> > definedKeys;
+            vault::unify::ExecutionState* pRoot = pWorld->getRootState();
+            const size_t end = pWorld->clauseStoreSize();
+            for( size_t i = boundary; i < end; ++i ) {
+                const vault::unify::Clause* pClause = pRoot->m_clauseStore.at( i );
+                if( !pClause || !pClause->leftHandTerm() ) { continue; }
+                const vault::unify::ClauseOrigin::Kind k = pClause->getOrigin().kind;
+                if( k == vault::unify::ClauseOrigin::BUILTIN
+                    || k == vault::unify::ClauseOrigin::SYNTHESIZED ) {
+                    continue;
+                }
+                definedKeys.insert( std::make_pair(
+                    pClause->leftHandTerm()->getName().value(),
+                    pClause->leftHandTerm()->getArity() ) );
+            }
+            for( std::set<std::pair<std::string, int> >::const_iterator it
+                     = definedKeys.begin(); it != definedKeys.end(); ++it ) {
+                if( pWorld->retirePredicate( it->first, it->second, boundary ) > 0 ) {
+                    replacedKeys.insert( *it );
+                }
+            }
+        }
+    }
+
     std::vector<vault::unify::CatalogueEntry> after;
     m_rt.getWorld()->copyCatalogue( after );
 
@@ -775,6 +822,16 @@ void LocalSession::doDefine( RequestId req, std::string text, Origin origin,
         }
         std::map<vault::unify::PredicateKey, std::uint32_t>::const_iterator
             itBefore = countBefore.find( after[i].key );
+        if( replacedKeys.count( std::make_pair( after[i].key.name,
+                                                after[i].key.arity ) ) ) {
+            /* Only the entry holding the NEW clauses is the replacement;
+             * an old module's emptied entry is what was replaced. */
+            if( after[i].clauseCount > 0 ) {
+                defined.replaced.push_back( toPredicateKey( after[i].key ) );
+                defined.replacedClauses.push_back( after[i].clauseCount );
+            }
+            continue;
+        }
         if( itBefore == countBefore.end()
             || itBefore->second != after[i].clauseCount ) {
             /*
@@ -792,7 +849,14 @@ void LocalSession::doDefine( RequestId req, std::string text, Origin origin,
 
     emit( defined );
 
-    if( 0 == errorCount ) {
+    /*
+     * Whenever the database moved -- not only when the text was clean. The
+     * parser appends as it parses, so a text with an error after some good
+     * clauses has changed the world (Append keeps them), and a replacement
+     * taken back has bumped its generation. A front end told nothing would
+     * show a catalogue that no longer matches the engine.
+     */
+    if( m_rt.getWorld()->currentGeneration() != generationBefore ) {
         WorldChanged changed;
         changed.generation = m_rt.getWorld()->currentGeneration();
         changed.predicateCount = (std::uint32_t) after.size();
@@ -817,10 +881,38 @@ RequestId LocalSession::undefine( PredicateKey key, ModuleId scope )
 }
 
 
-void LocalSession::doUndefine( RequestId req, PredicateKey, ModuleId )
+void LocalSession::doUndefine( RequestId req, PredicateKey key, ModuleId scope )
 {
-    emit( Failed{ req,
-        "undefine needs engine item E3 (predicate-scoped retract)", false } );
+    /*
+     * Engine item E3. Every clause of the key goes, whichever module it was
+     * defined in: the engine resolves a goal by name and arity, not by
+     * module, so leaving another module's clauses behind would leave the
+     * predicate answering exactly as before -- an undefine that did
+     * nothing.
+     */
+    vault::unify::World* pWorld = m_rt.getWorld().get();
+    const size_t retired = pWorld->retirePredicate(
+        key.name, (int) key.arity, pWorld->clauseStoreSize() );
+
+    Defined defined;
+    defined.req = req;
+    defined.module = scope;
+    if( retired > 0 ) {
+        defined.removed.push_back( key );
+    }
+    emit( defined );
+
+    if( retired > 0 ) {
+        std::vector<vault::unify::CatalogueEntry> after;
+        pWorld->copyCatalogue( after );
+        WorldChanged changed;
+        changed.generation = pWorld->currentGeneration();
+        changed.predicateCount = (std::uint32_t) after.size();
+        for( size_t i = 0; i < after.size(); ++i ) {
+            changed.clauseCount += after[i].clauseCount;
+        }
+        emit( changed );
+    }
 }
 
 
@@ -907,15 +999,17 @@ void LocalSession::doSource( RequestId req, PredicateKey key )
     }
 
     /*
-     * Engine item E5 (module source retention) is not done, so there is no
-     * stored source text and this reconstructs a listing from the clauses
-     * instead -- Clause::toString(), one per line, in definition order.
+     * Engine item E5: each parsed clause keeps the text it was parsed from
+     * (ClauseOrigin::sourceText), so this is the definition as the user
+     * wrote it -- comments, layout and `foreach` loops included -- and it
+     * parses back, which is what lets a browser edit and redefine it.
      *
-     * That is not the same thing, and the difference is visible: `for`,
-     * `foreach` and `if` desugar at PARSE time, so a rule that used one
-     * comes back referring to a `__fe__N` predicate rather than showing the
-     * loop the user wrote. Until E5 lands, a source panel built on this
-     * shows the database's view of a definition, not the program's.
+     * Only LIVE clauses: a retired one is not part of the definition any
+     * more. Desugared clauses are skipped, because the rule that used the
+     * loop already shows it. A clause with no text of its own (one a
+     * running program asserted) falls back to Clause::toString(), the
+     * engine's debug form -- the only rendering there is for it until
+     * engine item E6 prints facts canonically.
      */
     std::string strText;
     vault::unify::ExecutionState* pRoot = m_rt.getWorld()->getRootState();
@@ -927,7 +1021,10 @@ void LocalSession::doSource( RequestId req, PredicateKey key )
         if( (std::uint32_t) pClause->leftHandTerm()->getArity() != key.arity ) {
             continue;
         }
-        strText += pClause->toString();
+        const vault::unify::ClauseOrigin& origin = pClause->getOrigin();
+        if( origin.kind == vault::unify::ClauseOrigin::SYNTHESIZED ) { continue; }
+        strText += origin.sourceText.empty() ? pClause->toString()
+                                             : origin.sourceText;
         strText += "\n";
     }
 

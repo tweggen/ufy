@@ -6,6 +6,7 @@
  * Implementation of unification engine.
  */
 
+#include <algorithm>
 #include <string>
  
 #include <boost/shared_ptr.hpp>
@@ -389,6 +390,77 @@ void World::catalogueRetire( const Clause* pClause )
     // by every goal -- and a browser that made such a predicate vanish
     // would hide exactly the state a user is most likely to be debugging.
     // retiredCount is what says what happened.
+}
+
+
+size_t World::retirePredicate( const std::string& strName, int nArity,
+                               size_t beforeIndex )
+{
+    Guard g( clauseDbMutex() );
+
+    ExecutionState* pRoot = getRootState();
+    const size_t nEnd = std::min( beforeIndex, pRoot->m_clauseStore.size() );
+
+    /* First find them, so a retirement of nothing bumps no generation. */
+    std::vector<Clause*> lsVictims;
+    for( size_t i = 0; i < nEnd; ++i ) {
+        Clause* pClause = pRoot->m_clauseStore.at( i );
+        if( !pClause || pClause->isRetired() ) {
+            continue;
+        }
+        if( pClause->getOrigin().kind == ClauseOrigin::BUILTIN ) {
+            continue;
+        }
+        const ConsTerm* pHead = pClause->leftHandTerm();
+        if( !pHead || pHead->getArity() != nArity
+            || pHead->getName().value() != strName ) {
+            continue;
+        }
+        lsVictims.push_back( pClause );
+    }
+    if( lsVictims.empty() ) {
+        return 0;
+    }
+
+    const uint64_t gen = bumpGeneration();
+    for( size_t i = 0; i < lsVictims.size(); ++i ) {
+        lsVictims[i]->retire( gen );
+        catalogueRetire( lsVictims[i] );
+    }
+    return lsVictims.size();
+}
+
+
+size_t World::retireAppendedSince( size_t fromIndex )
+{
+    Guard g( clauseDbMutex() );
+
+    ExecutionState* pRoot = getRootState();
+    std::vector<Clause*> lsVictims;
+    for( size_t i = fromIndex; i < pRoot->m_clauseStore.size(); ++i ) {
+        Clause* pClause = pRoot->m_clauseStore.at( i );
+        if( !pClause || pClause->isRetired()
+            || pClause->getOrigin().kind == ClauseOrigin::BUILTIN ) {
+            continue;
+        }
+        lsVictims.push_back( pClause );
+    }
+    if( lsVictims.empty() ) {
+        return 0;
+    }
+    const uint64_t gen = bumpGeneration();
+    for( size_t i = 0; i < lsVictims.size(); ++i ) {
+        lsVictims[i]->retire( gen );
+        catalogueRetire( lsVictims[i] );
+    }
+    return lsVictims.size();
+}
+
+
+size_t World::clauseStoreSize()
+{
+    Guard g( clauseDbMutex() );
+    return getRootState()->m_clauseStore.size();
 }
 
 
