@@ -33,6 +33,24 @@ BufferId seed( Model& model, const PanelSeed& panel )
         return model.addBuffer( panel.title, {}, PanelKind::Transcript );
     }
 
+    /*
+     * The G5 panels are real too, and draw their own empty states -- each
+     * saying what fills it -- so they get no seed lines either.
+     */
+    const std::string title( panel.title );
+    if( title == "Solutions" ) {
+        return model.addBuffer( panel.title, {}, PanelKind::Solutions );
+    }
+    if( title == "Inspector" ) {
+        return model.addBuffer( panel.title, {}, PanelKind::Inspector );
+    }
+    if( title == "Diagnostics" ) {
+        return model.addBuffer( panel.title, {}, PanelKind::Diagnostics );
+    }
+    if( title == "Source" ) {
+        return model.addBuffer( panel.title, {}, PanelKind::Source );
+    }
+
     std::vector<std::string> lines;
     lines.push_back( panel.line1 );
     if( panel.line2 && *panel.line2 ) {

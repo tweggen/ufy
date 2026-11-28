@@ -220,6 +220,24 @@ History lives in `$HOME/.unify_history`, the same file in the same format as
 program. Under `--script` no history file is read or written unless
 `--history` names one.
 
+### Solutions, the Inspector and Diagnostics
+
+The query you ran last is also shown as a **table**, one row per solution,
+in the Solutions tile. `Down` on the last row asks for the next batch, once
+however long you hold it; the bottom line says whether more are coming.
+`Enter` opens the selected solution in the **Inspector**, as a tree:
+`Right` opens a node, `Left` closes it, and a node marked `…` was cut short
+by the engine and is fetched when you open it, never by running the goal
+again.
+
+**Diagnostics** lists every error the engine has reported; `Enter` sends the
+**Source** tile to the file, line and column. For now Source shows that one
+line and a caret, which is all an error report carries; whole definitions
+come with the browser (G3).
+
+`M-x view.solutions`, `view.inspector` and `view.diagnostics` bring any of
+them on screen in a layout that lacks it.
+
 ### `--script`
 
 Not only a test hook. It makes any lens bug reproducible by a file, which
@@ -302,7 +320,8 @@ whole grid per step when you need the film rather than the summary.
 | `lens-grid` | The character grid: UTF-8, display width, clipping, boxes. |
 | `lens-shell` | `fold`, the Help panel and the `M-x` palette: contextual help, no dead links, palette modality and filtering. |
 | `lens-interaction` | What happens *between* frames: that a keystroke visibly does something, that scrolling is minimal, that a modal panel gives focus back — plus a seeded random walk asserting those invariants after every key. See the file's comment for why the other two categories cannot see these bugs. |
-| `lens-session` | The transcript against a **real engine**, asserted on the model: a 10,000-solution goal delivers one batch and leaves the keyboard serviced, `cancel` detaches and reaches `Aborted`, and every builtin the engine reports has a help topic. |
+| `lens-inspect` | Gate G5 on the model, from hand-built session events: the Solutions table and its single outstanding `demand`, the Inspector's tree and cut marks, `inspect` asked once and grafted only where asked, Diagnostics to Source, and their help pages. |
+| `lens-session` | The transcript and the results panels against a **real engine**, asserted on the model: a 10,000-solution goal delivers one batch and leaves the keyboard serviced, `cancel` detaches and reaches `Aborted`, every builtin the engine reports has a help topic, an 11-deep term is opened to the bottom through `inspect`, and the engine never holds more than one retained query. |
 | `lens-pty-interaction` | The real `unify-lens` binary on a real pseudo-terminal: that a keystroke produces a frame *without* a second keystroke, and that `C-x C-c` leaves cleanly. The only test that exercises `src/term/`; POSIX only, skipped where no pty can be opened. Also drives `unify-run -i` there, to check the two front ends share one history file both ways — those cases skip, saying why, when `unify-run` was built without readline. |
 | `lens-history` | That the shipped binary reads and writes a history file, and that `--script` leaves `$HOME` alone. |
 | `lens-transcript-write` | `M-x transcript.write-file` end to end, with a real engine, into a path with a space in it. |
@@ -351,7 +370,7 @@ than by convention.
 
 ## Status
 
-*Last updated 2026-11-27.*
+*Last updated 2026-11-28.*
 
 Gate **G0** (the session boundary) is closed; see
 [`../plans/todo/lens/ACCEPTANCE.md`](../plans/todo/lens/ACCEPTANCE.md), and
@@ -374,15 +393,19 @@ because engine item E7 landed. A value the engine had to cut to fit the
 budget says so, and a truncated compound is rendered as `point( … )` rather
 than as the different term `point`.
 
-Gates **G3–G9** have not started. G5 (Inspect) is the cheapest of them now:
-it was waiting on exactly the term trees E7 delivered.
+Gate **G5** (Inspect) is closed: the Solutions table and its demand, the
+Inspector's term tree with cut nodes fetched through `inspect`, and
+Diagnostics navigating the Source tile. lens now retains only the query it
+is showing, and releases each one it stops showing.
+
+Gates **G3, G4 and G6–G9** have not started.
 
 On a fresh start lens opens the **first-steps** help page in the main working
 area — the keys that matter, and a worked example to type. `C-x 0` dismisses
 it and hands the tile back to whatever it was showing; `--no-welcome` starts
 without it.
 
-**Most panels do not exist yet.** What the other tiles show is placeholder
+**Some panels do not exist yet.** What those tiles show is placeholder
 text naming what each will show and which gate brings it. That is
 deliberate: the shell is gated before the panels so that no panel has to
 invent a window manager, and so help exists before there is anything to

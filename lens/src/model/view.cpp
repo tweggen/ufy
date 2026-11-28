@@ -9,6 +9,7 @@
 #include "../modreg/help.hpp"
 #include "text-wrap.hpp"
 
+#include <algorithm>
 #include <sstream>
 
 namespace lens {
@@ -486,6 +487,279 @@ void drawTranscript( CellGrid& grid, const Buffer& buffer, const Rect& inner,
 }
 
 
+/** Two lines saying what an empty panel is for and how to fill it. */
+void drawEmpty( CellGrid& grid, const Rect& inner, const char* what,
+                const char* how )
+{
+    Attr dim;
+    dim.colour = Colour::Dim;
+    grid.drawText( inner.x, inner.y, what, inner.w, Attr() );
+    if( inner.h > 1 ) {
+        grid.drawText( inner.x, inner.y + 1, how, inner.w, dim );
+    }
+}
+
+
+/** The widest a Solutions column grows before its values are clipped. */
+constexpr int kMaxColumnWidth = 32;
+
+/**
+ * G5.1: the current query's bindings, one row per solution.
+ *
+ * A header of variable names, the rows, and a footer that says whether more
+ * are coming and how to get them. Without the footer the last row of a
+ * batch looks exactly like the last row of the answer.
+ */
+void drawSolutions( CellGrid& grid, const Model& model, const Rect& inner,
+                    bool focused )
+{
+    const ResultsState& r = model.results();
+    if( r.query == us::kNoQuery ) {
+        drawEmpty( grid, inner, "no query yet",
+                   "solve a goal in the Transcript" );
+        return;
+    }
+
+    const int total = (int) r.solutions.size();
+    const int listRows = solutionsListRows( inner.h );
+
+    /* Column widths: the index, then each variable, from what is held. */
+    std::ostringstream lastIndex;
+    lastIndex << std::max( 1, total );
+    const int indexWidth = std::max( 1, displayWidth( lastIndex.str() ) );
+
+    std::vector<int> widths;
+    for( std::size_t c = 0; c < r.columns.size(); ++c ) {
+        int w = displayWidth( r.columns[c] );
+        for( std::size_t i = 0; i < r.solutions.size(); ++i ) {
+            const us::Solution& sol = r.solutions[i];
+            for( std::size_t b = 0; b < sol.bindings.size(); ++b ) {
+                if( sol.bindings[b].first == r.columns[c] ) {
+                    w = std::max( w, displayWidth( renderValue( sol.bindings[b].second ) ) );
+                }
+            }
+        }
+        widths.push_back( std::min( w, kMaxColumnWidth ) );
+    }
+
+    Attr header;
+    header.bold = true;
+    header.underline = true;
+    int x = inner.x + indexWidth + 2;
+    grid.drawText( inner.x, inner.y, "#", indexWidth, header );
+    for( std::size_t c = 0; c < r.columns.size(); ++c ) {
+        const int room = inner.x + inner.w - x;
+        if( room <= 0 ) { break; }
+        grid.drawText( x, inner.y, r.columns[c], std::min( room, widths[c] ), header );
+        x += widths[c] + 2;
+    }
+    if( r.columns.empty() && total > 0 ) {
+        grid.drawText( inner.x + indexWidth + 2, inner.y,
+                       "(no variables)", inner.w - indexWidth - 2, header );
+    }
+
+    const int top = ensureVisible( r.selected, total, listRows, r.top );
+    for( int row = 0; row < listRows; ++row ) {
+        const int index = top + row;
+        if( index >= total ) { break; }
+        const us::Solution& sol = r.solutions[ (std::size_t) index ];
+        const int y = inner.y + 1 + row;
+
+        Attr attr;
+        if( index == r.selected ) {
+            attr.reverse = focused;
+            attr.bold = !focused;
+        }
+        if( attr.reverse ) {
+            grid.fill( inner.x, y, inner.w, 1, U' ', attr );
+        }
+
+        std::ostringstream number;
+        number << ( index + 1 );
+        const std::string n = number.str();
+        grid.drawText( inner.x + indexWidth - displayWidth( n ), y, n,
+                       displayWidth( n ), attr );
+
+        int cx = inner.x + indexWidth + 2;
+        if( r.columns.empty() ) {
+            grid.drawText( cx, y, "yes", inner.x + inner.w - cx, attr );
+            continue;
+        }
+        for( std::size_t c = 0; c < r.columns.size(); ++c ) {
+            const int room = inner.x + inner.w - cx;
+            if( room <= 0 ) { break; }
+            std::string cell;
+            for( std::size_t b = 0; b < sol.bindings.size(); ++b ) {
+                if( sol.bindings[b].first == r.columns[c] ) {
+                    cell = renderValue( sol.bindings[b].second );
+                }
+            }
+            /* The last column may use the rest of the row. */
+            const int width = ( c + 1 == r.columns.size() )
+                                  ? room : std::min( room, widths[c] );
+            grid.drawText( cx, y, cell, width, attr );
+            cx += widths[c] + 2;
+        }
+    }
+
+    std::ostringstream foot;
+    if( r.detached ) {
+        foot << "-- " << total << " shown \xc2\xb7 detached";
+    } else if( r.finished ) {
+        if( total == 0 )      { foot << "-- no solutions"; }
+        else if( total == 1 ) { foot << "-- 1 solution"; }
+        else                  { foot << "-- " << total << " solutions"; }
+    } else if( r.demandPending ) {
+        foot << "-- " << total << " so far \xc2\xb7 asking for more\xe2\x80\xa6";
+    } else if( r.more ) {
+        foot << "-- " << total << " so far \xc2\xb7 Down past the end for more";
+    } else {
+        foot << "-- " << total << " so far";
+    }
+    if( inner.h >= 2 ) {
+        Attr dim;
+        dim.colour = Colour::Dim;
+        grid.drawText( inner.x, inner.y + inner.h - 1, foot.str(), inner.w, dim );
+    }
+}
+
+
+/**
+ * G5.2: the selected solution as a tree.
+ *
+ * `\xe2\x96\xb8` closed, `\xe2\x96\xbe` open, nothing for a leaf. A node the budget cut
+ * keeps the transcript's U+2026 mark in its text and says it is being
+ * fetched while an `inspect` is in flight.
+ */
+void drawInspector( CellGrid& grid, const Model& model, const Rect& inner,
+                    bool focused )
+{
+    const ResultsState& r = model.results();
+    if( r.selected < 0 || r.selected >= (int) r.solutions.size() ) {
+        drawEmpty( grid, inner, "nothing to inspect",
+                   "solve a goal; its solutions open here" );
+        return;
+    }
+    const std::vector<InspectorRow> rows = model.inspectorRows();
+    if( rows.empty() ) {
+        drawEmpty( grid, inner, "yes",
+                   "the goal holds, and binds no variables" );
+        return;
+    }
+
+    const InspectorState& in = model.inspector();
+    const int total = (int) rows.size();
+    const int top = ensureVisible( in.cursor, total, inner.h, in.top );
+    for( int row = 0; row < inner.h; ++row ) {
+        const int index = top + row;
+        if( index >= total ) { break; }
+        const InspectorRow& line = rows[ (std::size_t) index ];
+
+        std::string text( (std::size_t) line.depth * 2, ' ' );
+        text += line.expandable ? ( line.open ? "\xe2\x96\xbe " : "\xe2\x96\xb8 " ) : "  ";
+        text += line.text;
+        if( line.fetching ) {
+            text += "  (fetching\xe2\x80\xa6)";
+        }
+
+        Attr attr;
+        if( index == in.cursor ) {
+            attr.reverse = focused;
+            attr.bold = !focused;
+        }
+        grid.drawText( inner.x, inner.y + row, text, inner.w, attr );
+    }
+}
+
+
+/** G5.3: every diagnostic received, newest last. */
+void drawDiagnostics( CellGrid& grid, const Model& model, const Rect& inner,
+                      bool focused )
+{
+    const DiagnosticsState& d = model.diagnostics();
+    if( d.items.empty() ) {
+        grid.drawText( inner.x, inner.y, "(none)", inner.w, Attr() );
+        return;
+    }
+    const int total = (int) d.items.size();
+    const int top = ensureVisible( d.selected, total, inner.h, d.top );
+    for( int row = 0; row < inner.h; ++row ) {
+        const int index = top + row;
+        if( index >= total ) { break; }
+        Attr attr;
+        attr.colour = Colour::Error;
+        if( index == d.selected ) {
+            attr.reverse = focused;
+            attr.bold = !focused;
+        }
+        grid.drawText( inner.x, inner.y + row,
+                       diagnosticHeadline( d.items[ (std::size_t) index ] ),
+                       inner.w, attr );
+    }
+}
+
+
+/**
+ * Where a diagnostic sent the Source panel.
+ *
+ * The reported line, numbered, with a caret under the column -- which is all
+ * a Diagnostic carries. Showing the whole definition needs gate G3's
+ * `source` request, and the panel says so on its last line rather than
+ * letting one line pass for the file.
+ */
+void drawSource( CellGrid& grid, const Model& model, const Rect& inner )
+{
+    const SourceLocation& at = model.sourceLocation();
+    if( !at.set ) {
+        drawEmpty( grid, inner, "the selected definition",
+                   "awaiting source (G3)" );
+        return;
+    }
+
+    Attr dim;
+    dim.colour = Colour::Dim;
+
+    std::ostringstream where;
+    where << ( at.file.empty() ? "<input>" : at.file ) << ":" << at.line;
+    if( at.column > 0 ) { where << ":" << at.column; }
+    Attr bold;
+    bold.bold = true;
+    grid.drawText( inner.x, inner.y, where.str(), inner.w, bold );
+    if( inner.h > 1 ) {
+        grid.drawText( inner.x, inner.y + 1, at.message, inner.w, dim );
+    }
+
+    if( inner.h > 3 && !at.text.empty() ) {
+        std::ostringstream number;
+        number << at.line;
+        const std::string gutter = " " + number.str() + " \xe2\x94\x82 ";
+        const int gutterWidth = displayWidth( gutter );
+        grid.drawText( inner.x, inner.y + 3, gutter, inner.w, dim );
+        grid.drawText( inner.x + gutterWidth, inner.y + 3, at.text,
+                       inner.w - gutterWidth, Attr() );
+        if( inner.h > 4 ) {
+            const std::string pad( (std::size_t) std::max( 0, gutterWidth - 2 ), ' ' );
+            grid.drawText( inner.x, inner.y + 4, pad + "\xe2\x94\x82 ", inner.w, dim );
+            const int caret = inner.x + gutterWidth
+                            + ( at.column > 1 ? (int) at.column - 1 : 0 );
+            if( caret < inner.x + inner.w ) {
+                Attr mark;
+                mark.colour = Colour::Error;
+                mark.bold = true;
+                grid.drawText( caret, inner.y + 4, "^", 1, mark );
+            }
+        }
+    }
+
+    if( inner.h > 6 ) {
+        grid.drawText( inner.x, inner.y + inner.h - 1,
+                       "only the reported line is known; the whole "
+                       "definition arrives with G3",
+                       inner.w, dim );
+    }
+}
+
+
 /** One tile: a titled box, with the buffer's placeholder lines inside. */
 void drawTile( CellGrid& grid, const Model& model, const Placement& placement,
                bool focused )
@@ -543,6 +817,18 @@ void drawTile( CellGrid& grid, const Model& model, const Placement& placement,
         return;
     case PanelKind::Transcript:
         drawTranscript( grid, *buffer, inner, focused );
+        return;
+    case PanelKind::Solutions:
+        drawSolutions( grid, model, inner, focused );
+        return;
+    case PanelKind::Inspector:
+        drawInspector( grid, model, inner, focused );
+        return;
+    case PanelKind::Diagnostics:
+        drawDiagnostics( grid, model, inner, focused );
+        return;
+    case PanelKind::Source:
+        drawSource( grid, model, inner );
         return;
     case PanelKind::Placeholder:
         break;

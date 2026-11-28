@@ -82,11 +82,33 @@ void SessionBridge::issue( Model& model, const CommandRequest& request )
         options.initialDemand = 20;
         options.retain = true;
 
-        Buffer* transcript = model.transcript();
         const us::QueryId query = m_session->solve( request.text, options );
-        if( transcript ) {
-            transcript->transcript.liveQuery = query;
+
+        /*
+         * lens retains exactly one query: the one the Solutions and
+         * Inspector panels show, so a truncated value can still be expanded
+         * (G5.2). The one they stop showing is released here, or every
+         * query run would hold its solutions in the core for the rest of
+         * the session (G0.10) -- `retain = true` is a debt, and this is
+         * where it is paid.
+         */
+        const us::QueryId previous = model.beginQuery( query );
+        if( previous != us::kNoQuery ) {
+            m_session->release( previous );
         }
+        return;
+    }
+
+    if( request.kind == "inspect" ) {
+        /*
+         * The default budget again, applied from the node down: enough for
+         * one more screenful of tree, and a node deeper than that is cut and
+         * marked once more rather than flooding the Inspector.
+         */
+        m_session->inspect( (us::QueryId) request.handle, request.index,
+                            us::ValuePath( request.valuePath.begin(),
+                                           request.valuePath.end() ),
+                            us::ValueBudget() );
         return;
     }
 

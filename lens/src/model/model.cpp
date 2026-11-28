@@ -167,6 +167,10 @@ std::string Model::contextualTopicId() const
         }
         return "transcript";
     }
+    case PanelKind::Solutions:   return "solutions";
+    case PanelKind::Inspector:   return "inspector";
+    case PanelKind::Diagnostics: return "diagnostics";
+    case PanelKind::Source:      return "source";
     case PanelKind::Placeholder:
         break;
     }
@@ -214,6 +218,13 @@ Buffer* Model::transcript()
 
 void Model::foldSession( const us::Event& event )
 {
+    /*
+     * The results panels first, and whatever the layout: the debug layout
+     * has an Inspector and no Transcript, and a fold that returned early for
+     * want of a transcript would leave it empty for ever.
+     */
+    foldResults( event );
+
     Buffer* buffer = transcript();
     if( !buffer ) {
         return;
@@ -423,6 +434,157 @@ void Model::foldSession( const us::Event& event )
 }
 
 
+us::QueryId Model::beginQuery( us::QueryId query )
+{
+    const us::QueryId previous = m_results.query;
+
+    m_results = ResultsState();
+    m_results.query = query;
+    syncInspector();
+
+    Buffer* buffer = transcript();
+    if( buffer ) {
+        buffer->transcript.liveQuery = query;
+    }
+    return previous != query ? previous : us::kNoQuery;
+}
+
+
+void Model::syncInspector()
+{
+    const std::uint64_t selected = (std::uint64_t) std::max( 0, m_results.selected );
+    if( m_inspector.forQuery == m_results.query
+        && m_inspector.forSolution == selected ) {
+        return;
+    }
+    /* In-flight expansions stay listed: their answers are still recognised,
+     * and dropped, rather than grafted into whatever is showing now. */
+    std::vector<PendingInspect> pending = m_inspector.pending;
+    m_inspector = InspectorState();
+    m_inspector.pending = pending;
+    m_inspector.forQuery = m_results.query;
+    m_inspector.forSolution = selected;
+}
+
+
+std::vector<InspectorRow> Model::inspectorRows() const
+{
+    const int selected = m_results.selected;
+    if( selected < 0 || selected >= (int) m_results.solutions.size() ) {
+        return std::vector<InspectorRow>();
+    }
+    return lens::inspectorRows( m_results.solutions[ (std::size_t) selected ],
+                                m_inspector );
+}
+
+
+void Model::foldResults( const us::Event& event )
+{
+    if( const us::Diagnostic* diagnostic =
+            std::get_if<us::Diagnostic>( &event.body ) ) {
+        m_diagnostics.items.push_back( *diagnostic );
+        return;
+    }
+
+    const us::QueryId eventQuery =
+        event.header.query ? *event.header.query : us::kNoQuery;
+    if( eventQuery == us::kNoQuery || eventQuery != m_results.query ) {
+        /* Not the query on show -- a superseded one, or none at all. */
+        return;
+    }
+
+    if( const us::Solution* solution = std::get_if<us::Solution>( &event.body ) ) {
+        m_results.demandPending = false;
+        if( m_results.detached ) {
+            return;
+        }
+        for( std::size_t i = 0; i < solution->bindings.size(); ++i ) {
+            const std::string& name = solution->bindings[i].first;
+            if( std::find( m_results.columns.begin(), m_results.columns.end(),
+                           name ) == m_results.columns.end() ) {
+                m_results.columns.push_back( name );
+            }
+        }
+        m_results.solutions.push_back( *solution );
+        return;
+    }
+
+    if( const us::QueryStatus* status =
+            std::get_if<us::QueryStatus>( &event.body ) ) {
+        m_results.demandPending = false;
+        const bool running = status->state == us::QueryStatus::State::Running
+                          || status->state == us::QueryStatus::State::Blocked;
+        m_results.more = running && !m_results.detached;
+        m_results.finished = !running;
+        return;
+    }
+
+    if( const us::Expanded* expanded = std::get_if<us::Expanded>( &event.body ) ) {
+        /*
+         * Grafted only where it was ASKED for. An expansion is matched to a
+         * pending request by query and path; the solution comes from the
+         * request, because the event does not carry it. One nobody is
+         * waiting for -- a stale answer, a duplicate -- is dropped rather
+         * than written over a value the user may be looking at.
+         */
+        std::vector<PendingInspect>& pending = m_inspector.pending;
+        for( std::size_t i = 0; i < pending.size(); ++i ) {
+            if( pending[i].query != eventQuery || pending[i].path != expanded->path ) {
+                continue;
+            }
+            const std::uint64_t index = pending[i].solution;
+            pending.erase( pending.begin() + (std::ptrdiff_t) i );
+            if( index < m_results.solutions.size() ) {
+                us::Value* node =
+                    valueAt( m_results.solutions[ (std::size_t) index ],
+                             expanded->path );
+                if( node ) {
+                    *node = expanded->value;
+                }
+            }
+            return;
+        }
+        return;
+    }
+}
+
+
+void Model::showPanel( PanelKind kind )
+{
+    const std::vector<TileId> tiles = m_layout.tiles();
+    for( std::size_t i = 0; i < tiles.size(); ++i ) {
+        const Buffer* shown = buffer( m_layout.bufferOf( tiles[i] ) );
+        if( shown && shown->kind == kind ) {
+            m_layout.focus( tiles[i] );
+            return;
+        }
+    }
+
+    BufferId id = kNoBuffer;
+    for( std::size_t i = 0; i < m_buffers.size(); ++i ) {
+        if( m_buffers[i].kind == kind ) {
+            id = m_buffers[i].id;
+            break;
+        }
+    }
+    if( kNoBuffer == id ) {
+        const char* title = "Panel";
+        switch( kind ) {
+        case PanelKind::Solutions:   title = "Solutions"; break;
+        case PanelKind::Inspector:   title = "Inspector"; break;
+        case PanelKind::Diagnostics: title = "Diagnostics"; break;
+        case PanelKind::Source:      title = "Source"; break;
+        default: break;
+        }
+        id = addBuffer( title, {}, kind );
+    }
+
+    /* Beside the work, in the largest tile -- as help opens (openHelp). */
+    m_layout.focus( largestTile() );
+    m_layout.splitFocused( splitDirectionForNewPanel(), id, 0.45 );
+}
+
+
 std::string Model::sessionStatus() const
 {
     const Buffer* buffer = transcript();
@@ -545,6 +707,33 @@ ScrollView Model::observeFocusedScroll( bool& out_valid ) const
         out_valid = view.viewportRows > 0;
         return view;
     }
+    case PanelKind::Solutions:
+        if( m_results.solutions.empty() ) { break; }
+        view.cursorLine = m_results.selected;
+        view.topLine = m_results.top;
+        view.viewportRows = solutionsListRows( inner.h );
+        view.totalLines = (int) m_results.solutions.size();
+        out_valid = view.viewportRows > 0;
+        return view;
+    case PanelKind::Inspector: {
+        const int total = (int) inspectorRows().size();
+        if( total == 0 ) { break; }
+        view.cursorLine = m_inspector.cursor;
+        view.topLine = m_inspector.top;
+        view.viewportRows = inner.h;
+        view.totalLines = total;
+        out_valid = true;
+        return view;
+    }
+    case PanelKind::Diagnostics:
+        if( m_diagnostics.items.empty() ) { break; }
+        view.cursorLine = m_diagnostics.selected;
+        view.topLine = m_diagnostics.top;
+        view.viewportRows = inner.h;
+        view.totalLines = (int) m_diagnostics.items.size();
+        out_valid = true;
+        return view;
+    case PanelKind::Source:
     case PanelKind::Placeholder:
         break;
     }
@@ -1105,6 +1294,26 @@ void followCursor( Model& model, Buffer& buffer )
                                transcriptHistoryRows( inner.h ), t.top );
         return;
     }
+    case PanelKind::Solutions: {
+        ResultsState& r = model.results();
+        r.top = ensureVisible( r.selected, (int) r.solutions.size(),
+                               solutionsListRows( inner.h ), r.top );
+        return;
+    }
+    case PanelKind::Inspector: {
+        InspectorState& in = model.inspector();
+        const int total = (int) model.inspectorRows().size();
+        /* Rows close under the cursor (Left on a parent); keep it on one. */
+        if( in.cursor >= total ) { in.cursor = total > 0 ? total - 1 : 0; }
+        in.top = ensureVisible( in.cursor, total, inner.h, in.top );
+        return;
+    }
+    case PanelKind::Diagnostics: {
+        DiagnosticsState& d = model.diagnostics();
+        d.top = ensureVisible( d.selected, (int) d.items.size(), inner.h, d.top );
+        return;
+    }
+    case PanelKind::Source:
     case PanelKind::Placeholder:
         return;
     }
@@ -1484,6 +1693,193 @@ std::vector<CommandRequest> foldTranscript( Model& model, Buffer& buffer,
     return requests;
 }
 
+/**
+ * Where a list cursor goes for one movement key, or -1 if the key is not a
+ * movement. One definition for the three list panels, so Home, End and the
+ * page keys mean the same thing in each.
+ */
+int moveListCursor( const Key& key, int cursor, int total, int page )
+{
+    if( total <= 0 ) { return -1; }
+    if( page < 1 ) { page = 1; }
+    switch( key.code ) {
+    case Key::Code::Up:       return std::max( 0, cursor - 1 );
+    case Key::Code::Down:     return std::min( total - 1, cursor + 1 );
+    case Key::Code::PageUp:   return std::max( 0, cursor - page );
+    case Key::Code::PageDown: return std::min( total - 1, cursor + page );
+    case Key::Code::Home:     return 0;
+    case Key::Code::End:      return total - 1;
+    default:                  return -1;
+    }
+}
+
+} // namespace
+
+/**
+ * Ask the shown query for its next batch -- G5.1, and `query.more`.
+ *
+ * At most ONE demand is ever outstanding: the second ask while the first is
+ * unanswered is answered here, with a message, and never reaches the core.
+ * That is what makes holding Down at the end of the table safe.
+ */
+std::vector<CommandRequest> demandMore( Model& model )
+{
+    std::vector<CommandRequest> requests;
+    ResultsState& r = model.results();
+    if( r.query == us::kNoQuery || !r.more || r.detached ) {
+        model.setMessage( r.finished || r.query == us::kNoQuery
+                              ? "no more solutions"
+                              : "no query is waiting for more" );
+        return requests;
+    }
+    if( r.demandPending ) {
+        model.setMessage( "more solutions already asked for" );
+        return requests;
+    }
+    CommandRequest request;
+    request.kind = "demand";
+    request.handle = (std::uint64_t) r.query;
+    requests.push_back( request );
+    r.demandPending = true;
+    return requests;
+}
+
+namespace {
+
+std::vector<CommandRequest> foldSolutions( Model& model, const Key& key )
+{
+    ResultsState& r = model.results();
+    const int total = (int) r.solutions.size();
+    const Rect inner = model.innerRectOf( model.layout().focused() );
+
+    if( key.code == Key::Code::Enter ) {
+        if( total > 0 ) { model.showPanel( PanelKind::Inspector ); }
+        return std::vector<CommandRequest>();
+    }
+
+    /*
+     * Down on the last row is the request for more -- the back-pressure of
+     * ARCHITECTURE.md section 5 made something a user does rather than
+     * something configured.
+     */
+    if( key.code == Key::Code::Down && ( total == 0 || r.selected >= total - 1 ) ) {
+        if( r.more && !r.detached && !r.demandPending ) {
+            return demandMore( model );
+        }
+        return std::vector<CommandRequest>();
+    }
+
+    const int next = moveListCursor( key, r.selected, total,
+                                     solutionsListRows( inner.h ) );
+    if( next >= 0 ) {
+        r.selected = next;
+        model.syncInspector();
+    }
+    return std::vector<CommandRequest>();
+}
+
+std::vector<CommandRequest> foldInspector( Model& model, const Key& key )
+{
+    std::vector<CommandRequest> requests;
+    InspectorState& in = model.inspector();
+    const std::vector<InspectorRow> rows = model.inspectorRows();
+    const int total = (int) rows.size();
+    const Rect inner = model.innerRectOf( model.layout().focused() );
+
+    const int next = moveListCursor( key, in.cursor, total, inner.h );
+    if( next >= 0 ) {
+        in.cursor = next;
+        return requests;
+    }
+    if( total == 0 || in.cursor < 0 || in.cursor >= total ) {
+        return requests;
+    }
+    const InspectorRow& row = rows[ (std::size_t) in.cursor ];
+
+    if( key.code == Key::Code::Left ) {
+        if( row.open ) {
+            in.open.erase( row.path );
+            return requests;
+        }
+        /* Already closed: go to the parent, as every tree view does. */
+        if( row.path.size() > 1 ) {
+            const us::ValuePath parent( row.path.begin(), row.path.end() - 1 );
+            for( int i = in.cursor - 1; i >= 0; --i ) {
+                if( rows[ (std::size_t) i ].path == parent ) {
+                    in.cursor = i;
+                    break;
+                }
+            }
+        }
+        return requests;
+    }
+
+    const bool opening = key.code == Key::Code::Right
+                      || ( key.code == Key::Code::Enter && !row.open );
+    const bool closing = key.code == Key::Code::Enter && row.open;
+    if( closing ) {
+        in.open.erase( row.path );
+        return requests;
+    }
+    if( !opening ) {
+        return requests;
+    }
+    if( !row.expandable ) {
+        model.setMessage( "a leaf: there is nothing inside it" );
+        return requests;
+    }
+
+    in.open.insert( row.path );
+
+    /*
+     * G5.2: what the budget cut is fetched with `inspect` -- never by
+     * running the goal again, which may answer differently or do something
+     * twice. Asked for once; the row says it is being fetched until the
+     * answer is grafted in.
+     */
+    if( row.truncated && !row.fetching ) {
+        const ResultsState& r = model.results();
+        PendingInspect pending;
+        pending.query = r.query;
+        pending.solution = (std::uint64_t) r.selected;
+        pending.path = row.path;
+        in.pending.push_back( pending );
+
+        CommandRequest request;
+        request.kind = "inspect";
+        request.handle = (std::uint64_t) r.query;
+        request.index = (std::uint64_t) r.selected;
+        request.valuePath = row.path;
+        requests.push_back( request );
+    }
+    return requests;
+}
+
+std::vector<CommandRequest> foldDiagnostics( Model& model, const Key& key )
+{
+    DiagnosticsState& d = model.diagnostics();
+    const int total = (int) d.items.size();
+    const Rect inner = model.innerRectOf( model.layout().focused() );
+
+    const int next = moveListCursor( key, d.selected, total, inner.h );
+    if( next >= 0 ) {
+        d.selected = next;
+        return std::vector<CommandRequest>();
+    }
+    if( key.code == Key::Code::Enter && d.selected >= 0 && d.selected < total ) {
+        const us::Diagnostic& item = d.items[ (std::size_t) d.selected ];
+        SourceLocation& at = model.sourceLocation();
+        at.set = true;
+        at.file = item.file;
+        at.line = item.line;
+        at.column = item.column;
+        at.text = item.sourceLine;
+        at.message = diagnosticHeadline( item );
+        model.showPanel( PanelKind::Source );
+    }
+    return std::vector<CommandRequest>();
+}
+
 } // namespace
 
 std::vector<CommandRequest> submitTranscriptLine( Model& model, Buffer& buffer,
@@ -1637,6 +2033,15 @@ std::vector<CommandRequest> Model::foldInner( Model& model,
     if( focused && focused->kind == PanelKind::Transcript ) {
         return foldTranscript( model, *focused, event.key );
     }
+    if( focused && focused->kind == PanelKind::Solutions ) {
+        return foldSolutions( model, event.key );
+    }
+    if( focused && focused->kind == PanelKind::Inspector ) {
+        return foldInspector( model, event.key );
+    }
+    if( focused && focused->kind == PanelKind::Diagnostics ) {
+        return foldDiagnostics( model, event.key );
+    }
 
     /*
      * An unbound key in an ordinary panel is not an error and gets no
@@ -1713,6 +2118,10 @@ std::vector<CommandRequest> cancelLiveQuery( Model& model )
     requests.push_back( request );
 
     t.detached.push_back( t.liveQuery );
+    if( model.results().query == t.liveQuery ) {
+        model.results().detached = true;
+        model.results().more = false;
+    }
     t.liveQuery = us::kNoQuery;
     t.finished = true;
 
@@ -1946,15 +2355,38 @@ void registerShellCommands( Model& model )
                         "so a goal with thousands of answers cannot freeze "
                         "it." )
                    .helpTopic( "transcript" )
-                   .enabledWhen( []( const Model& m ) { return hasLiveQuery( m ); } )
+                   .enabledWhen( []( const Model& m ) { return m.results().more; } )
+                   .onRun( []( Model& m ) { return demandMore( m ); } ) );
+
+    table.add( Command( "view.solutions", "Solutions",
+                        "Show the Solutions table: the current query's "
+                        "bindings, one row per solution. Down past the last "
+                        "row asks for the next batch." )
+                   .category( "Window" )
+                   .helpTopic( "solutions" )
                    .onRun( []( Model& m ) {
-                       std::vector<CommandRequest> requests;
-                       CommandRequest request;
-                       request.kind = "demand";
-                       request.handle =
-                           (std::uint64_t) m.transcript()->transcript.liveQuery;
-                       requests.push_back( request );
-                       return requests;
+                       m.showPanel( PanelKind::Solutions );
+                       return std::vector<CommandRequest>();
+                   } ) );
+
+    table.add( Command( "view.inspector", "Inspector",
+                        "Show the Inspector: the selected solution's bindings "
+                        "as a tree you can open node by node." )
+                   .category( "Window" )
+                   .helpTopic( "inspector" )
+                   .onRun( []( Model& m ) {
+                       m.showPanel( PanelKind::Inspector );
+                       return std::vector<CommandRequest>();
+                   } ) );
+
+    table.add( Command( "view.diagnostics", "Diagnostics",
+                        "Show the Diagnostics list. Enter on one sends the "
+                        "Source panel to where it was reported." )
+                   .category( "Window" )
+                   .helpTopic( "diagnostics" )
+                   .onRun( []( Model& m ) {
+                       m.showPanel( PanelKind::Diagnostics );
+                       return std::vector<CommandRequest>();
                    } ) );
 
     table.add( Command( "app.quit", "Quit",

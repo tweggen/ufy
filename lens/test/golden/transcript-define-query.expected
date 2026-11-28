@@ -1,8 +1,8 @@
  File  Edit  World  Query  Image  Debug  Window  Help
 ┌ Transcript ────────────────────────────────────┐┌ Solutions ─────────────────┐
-│?- colour( red );                               ││bindings, one row per soluti│
-│-- defined colour/1                             ││awaiting solve (G5)         │
-│?- colour( green );                             ││                            │
+│?- colour( red );                               ││#  $x                       │
+│-- defined colour/1                             ││1  red                      │
+│?- colour( green );                             ││2  green                    │
 │-- defined colour/1                             ││                            │
 │?- colour( $x )                                 ││                            │
 │$x = red                                        ││                            │
@@ -13,7 +13,7 @@
 │                                                ││                            │
 │                                                ││                            │
 │                                                ││                            │
-│?-                                              ││                            │
+│?-                                              ││-- 2 solutions              │
 └────────────────────────────────────────────────┘└────────────────────────────┘
 ┌ Catalogue ───────────────────────────────────────────────────────────────────┐
 │module -> (name, arity)                                                       │

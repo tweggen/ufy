@@ -42,6 +42,15 @@ public:
     /** What the core says it can do, for the model to tell the truth with. */
     const us::Capabilities& capabilities() const { return m_caps; }
 
+    /**
+     * Ask the core now, rather than the answer cached at start -- for the
+     * counters (retainedQueries, liveRequests), which move.
+     */
+    us::Capabilities describeNow() const
+    {
+        return m_session ? m_session->describe() : us::Capabilities();
+    }
+
     /** Issue one request. Unknown kinds are reported, never ignored. */
     void issue( Model& model, const CommandRequest& request );
 

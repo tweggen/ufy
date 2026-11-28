@@ -14,8 +14,8 @@
 │                  ││                                                          │
 └──────────────────┘└──────────────────────────────────────────────────────────┘
 ┌ Transcript ──────────────────────────┐┌ Solutions ───────┐┌ Inspector ───────┐
-│                                      ││bindings, one row ││the selected bindi│
-│                                      ││awaiting solve (G5││awaiting inspect (│
+│                                      ││no query yet      ││nothing to inspect│
+│                                      ││solve a goal in th││solve a goal; its │
 │                                      ││                  ││                  │
 │                                      ││                  ││                  │
 │?-                                    ││                  ││                  │

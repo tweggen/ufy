@@ -1,7 +1,7 @@
  File  Edit  World  Query  Image  Debug  Window  Help
 ┌ Transcript ────────────────────────────────────┐┌ Solutions ─────────────────┐
-│?- broken( $x ) { colour(                       ││bindings, one row per soluti│
-│<session>:1:1: parse error                      ││awaiting solve (G5)         │
+│?- broken( $x ) { colour(                       ││no query yet                │
+│<session>:1:1: parse error                      ││solve a goal in the Transcri│
 │broken( $x ) { colour(                          ││                            │
 │^                                               ││                            │
 │-- 1 error                                      ││                            │

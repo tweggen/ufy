@@ -148,6 +148,7 @@ add_library(lens-model STATIC
     "${LENS_LANGUAGE_HELP}"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/model/cell-grid.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/model/help-content.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/model/results.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/model/transcript.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/model/text-wrap.cpp"
 )
@@ -179,6 +180,21 @@ if(NOT MSVC)
 endif()
 add_test(NAME lens-shell COMMAND lens-shell-test)
 set_tests_properties(lens-shell PROPERTIES TIMEOUT 120)
+
+# Gate G5: the Solutions table, the Inspector and Diagnostics, asserted on
+# the model with hand-built session events (test/inspect-test.cpp says why).
+add_executable(lens-inspect-test
+    "${CMAKE_CURRENT_SOURCE_DIR}/test/inspect-test.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/app/layouts.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/model/model.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/model/view.cpp"
+)
+target_link_libraries(lens-inspect-test PRIVATE lens-model lens-modreg lens-layout)
+if(NOT MSVC)
+    target_compile_options(lens-inspect-test PRIVATE -Wall -Wextra)
+endif()
+add_test(NAME lens-inspect COMMAND lens-inspect-test)
+set_tests_properties(lens-inspect PROPERTIES TIMEOUT 120)
 
 # The third test category: what happens BETWEEN frames. See the file's own
 # comment for why neither the model tests nor the golden screens could see
@@ -425,6 +441,7 @@ if(BASH_PROGRAM)
         "transcript-define-query|80x24|run|transcript-define-query"
         "transcript-parse-error|80x24|run|transcript-parse-error"
         "transcript-output|80x24|run|transcript-output"
+        "inspect-tree|120x40|full|inspect-tree"
     )
 
     foreach(LENS_SCREEN ${LENS_SCREENS})
