@@ -221,4 +221,48 @@ std::vector<TranscriptEntry> renderDiagnostic( const us::Diagnostic& diagnostic 
     return entries;
 }
 
+std::vector<std::string> parseHistory( const std::string& contents )
+{
+    std::vector<std::string> lines;
+    std::string line;
+    for( std::size_t i = 0; i <= contents.size(); ++i ) {
+        if( i == contents.size() || contents[i] == '\n' ) {
+            if( !line.empty() && line[ line.size() - 1 ] == '\r' ) {
+                line.erase( line.size() - 1 );
+            }
+            if( line.find_first_not_of( " \t" ) != std::string::npos ) {
+                lines.push_back( line );
+            }
+            line.clear();
+        } else {
+            line += contents[i];
+        }
+    }
+    return lines;
+}
+
+
+std::string formatHistory( const std::vector<std::string>& lines )
+{
+    const std::size_t from =
+        lines.size() > kHistoryLimit ? lines.size() - kHistoryLimit : 0;
+    std::string text;
+    for( std::size_t i = from; i < lines.size(); ++i ) {
+        text += lines[i];
+        text += '\n';
+    }
+    return text;
+}
+
+
+std::string transcriptText( const TranscriptState& transcript )
+{
+    std::string text;
+    for( std::size_t i = 0; i < transcript.entries.size(); ++i ) {
+        text += transcript.entries[i].text;
+        text += '\n';
+    }
+    return text;
+}
+
 } // namespace lens

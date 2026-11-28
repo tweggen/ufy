@@ -185,10 +185,13 @@ void drawHintLine( CellGrid& grid, const Model& model )
          * line being typed into, which is where the eye already is.
          */
         const Buffer* palette = model.focusedBuffer();
-        const std::string input =
-            ( palette && palette->kind == PanelKind::Palette )
-                ? palette->palette.input : std::string();
-        text = "M-x " + input + "_";
+        const bool isPalette = palette && palette->kind == PanelKind::Palette;
+        const std::string input = isPalette ? palette->palette.input
+                                            : std::string();
+        const std::string label =
+            ( isPalette && !palette->palette.prompt.empty() )
+                ? palette->palette.prompt : std::string( "M-x " );
+        text = label + input + "_";
     } else if( model.menuOpen() ) {
         /* The menu's own keys, which no command table entry describes:
          * they are fixed by foldMenu, not bindings. */
@@ -327,10 +330,24 @@ void drawHelp( CellGrid& grid, const Model& model, const Buffer& buffer,
 void drawPalette( CellGrid& grid, const Model& model, const Buffer& buffer,
                   const Rect& inner )
 {
-    const std::vector<const Command*> matches = model.paletteMatches();
-
     Attr prompt;
     prompt.bold = true;
+
+    if( !buffer.palette.prompt.empty() ) {
+        /* A question: the line being answered, and how to answer it. */
+        grid.drawText( inner.x, inner.y,
+                       buffer.palette.prompt + buffer.palette.input + "_",
+                       inner.w, prompt );
+        Attr how;
+        how.colour = Colour::Dim;
+        grid.drawText( inner.x, inner.y + 1,
+                       "Enter accepts \xc2\xb7 Esc cancels \xc2\xb7 C-u clears",
+                       inner.w, how );
+        return;
+    }
+
+    const std::vector<const Command*> matches = model.paletteMatches();
+
     grid.drawText( inner.x, inner.y, "M-x " + buffer.palette.input + "_",
                    inner.w, prompt );
 
@@ -391,10 +408,20 @@ void drawTranscript( CellGrid& grid, const Buffer& buffer, const Rect& inner,
      * a REPL.
      */
     const int promptRow = inner.y + inner.h - 1;
-    const int historyRows = inner.h - 1;
+    const int historyRows = transcriptHistoryRows( inner.h );
 
+    /*
+     * Pinned to the newest line at the prompt; while a past line is
+     * selected, wherever fold left the viewport -- clamped, so a resize
+     * between keystrokes cannot leave the cursor off screen. The same rule
+     * as every other list panel (scroll.hpp).
+     */
     const int total = (int) t.entries.size();
-    int first = total - historyRows - t.scrollBack;
+    const bool browsing = t.selected >= 0 && t.selected < total;
+    int first = total - historyRows;
+    if( browsing ) {
+        first = ensureVisible( t.selected, total, historyRows, t.top );
+    }
     if( first < 0 ) { first = 0; }
 
     for( int row = 0; row < historyRows; ++row ) {
@@ -421,6 +448,9 @@ void drawTranscript( CellGrid& grid, const Buffer& buffer, const Rect& inner,
         case TranscriptEntry::Kind::Solution:
             break;
         }
+        if( browsing && index == t.selected ) {
+            attr.reverse = true;
+        }
 
         grid.drawText( inner.x, inner.y + row, entry.text, inner.w, attr );
     }
@@ -438,7 +468,9 @@ void drawTranscript( CellGrid& grid, const Buffer& buffer, const Rect& inner,
     int at = promptWidth;
     at += grid.drawText( inner.x + at, promptRow, before, inner.w - at, Attr() );
 
-    if( focused ) {
+    /* One cursor on screen at a time: while a past line is selected, the
+     * highlight is on it and the prompt shows no block. */
+    if( focused && !browsing ) {
         Attr cursor;
         cursor.reverse = true;
         const std::string under = after.empty() ? " " : after.substr( 0, 1 );

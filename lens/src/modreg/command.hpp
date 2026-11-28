@@ -50,6 +50,7 @@ struct CommandRequest {
     std::string kind;   //!< "solve", "define", "listing", ...
     std::string text;   //!< goal or program text, where applicable
     std::uint64_t handle = 0;   //!< query id, where applicable
+    std::string path;   //!< a file, for the requests the app performs itself
 };
 
 /**

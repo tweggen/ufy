@@ -32,6 +32,7 @@
 #include "help-content.hpp"
 #include "transcript.hpp"
 
+#include <functional>
 #include <memory>
 
 #include <string>
@@ -75,7 +76,20 @@ struct PaletteState {
     std::string input;
     int selected = 0;
     int top = 0;      //!< see HelpState::top
+
+    /**
+     * Non-empty while the minibuffer is asking a question rather than
+     * choosing a command -- "Write transcript to: ". UI.md section 4 makes
+     * the minibuffer the one place lens asks for text, so a command that
+     * needs an argument borrows it rather than growing a second input
+     * surface that would behave slightly differently.
+     */
+    std::string prompt;
 };
+
+/** What a minibuffer prompt does with the text it was given. */
+using PromptAccept =
+    std::function<std::vector<CommandRequest>( Model&, const std::string& )>;
 
 /**
  * The menu bar's state -- UI.md section 1.
@@ -268,6 +282,17 @@ public:
     void closePalette();
     bool paletteActive() const { return m_paletteTile != kNoTile; }
 
+    /**
+     * Ask for one line of text in the minibuffer.
+     *
+     * Enter hands the text to `accept` and runs what it returns; Esc or
+     * C-g cancels and nothing runs. The palette's tile, so it obeys the
+     * solver like every other dialog.
+     */
+    void openPrompt( const std::string& label, const std::string& initial,
+                     PromptAccept accept );
+    bool promptActive() const;
+
     // -- the menu bar --------------------------------------------------------
 
     /** Give the bar the keyboard, first heading highlighted, nothing open. */
@@ -360,6 +385,7 @@ public:
 
 private:
     friend std::vector<CommandRequest> fold( Model&, const Event& );
+    friend std::vector<CommandRequest> acceptPrompt( Model& );
 
     /**
      * The body of fold().
@@ -395,6 +421,7 @@ private:
      */
     TileId m_paletteTile = kNoTile;
     BufferId m_paletteBuffer = kNoBuffer;
+    PromptAccept m_promptAccept;
     BufferId m_helpBuffer = kNoBuffer;
 
     /// The tile help borrowed, and what it was showing. See openHelp().

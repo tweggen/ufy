@@ -91,8 +91,34 @@ struct TranscriptState {
     /** The query whose solutions are still arriving, or kNoQuery. */
     us::QueryId liveQuery = us::kNoQuery;
 
-    /** Scroll offset from the bottom; 0 means pinned to the newest line. */
-    int scrollBack = 0;
+    /**
+     * Queries the user cancelled whose terminal status has not arrived yet.
+     *
+     * The UI detaches at once (G2.6) -- it does not wait for the core to
+     * agree -- so between the keystroke and the core's `Aborted` there is a
+     * window in which a core that raced could still send rows. They are
+     * dropped: showing solutions under a query the user stopped would make
+     * the stop look like it had not worked. The status itself is still
+     * shown, because it is the core's own statement of what it did.
+     */
+    std::vector<us::QueryId> detached;
+
+    /**
+     * The past input line the cursor is on, as an index into `entries`, or
+     * -1 when the cursor is at the prompt -- G2.5.
+     *
+     * Only ever an Input entry: the cursor is there to pick something to
+     * re-run, and a solution row is not something you can run. PageUp and
+     * PageDown move it from input to input; F5 re-runs the line under it.
+     */
+    int selected = -1;
+
+    /**
+     * The first entry drawn while a past line is selected; see
+     * HelpState::top for why this is model state. At the prompt the
+     * transcript is pinned to its newest line and this is not consulted.
+     */
+    int top = 0;
 
     /** Solutions delivered for the live query, for the status line. */
     std::uint64_t produced = 0;
@@ -100,6 +126,18 @@ struct TranscriptState {
     /** True once the live query reached a terminal status. */
     bool finished = true;
 };
+
+/**
+ * How many rows of a transcript tile show history: all but the prompt's.
+ *
+ * One definition, used by fold, by the interaction projection and by the
+ * renderer. If those three disagreed about how tall the list is, the tests
+ * would assert a viewport the user never sees.
+ */
+inline int transcriptHistoryRows( int innerHeight )
+{
+    return innerHeight > 1 ? innerHeight - 1 : 0;
+}
 
 /** The prompt, matching `unify-run`'s so nobody has to unlearn it. */
 extern const char* const kTranscriptPrompt;
@@ -132,6 +170,37 @@ std::string renderBindings(
  * a later gate can make the first of them navigable.
  */
 std::vector<TranscriptEntry> renderDiagnostic( const us::Diagnostic& diagnostic );
+
+/**
+ * How many history lines are kept -- `unify-run`'s `stifle_history( 1000 )`
+ * (unify-repl.cpp). The same number, so the file does not grow or shrink
+ * depending on which of the two front ends last wrote it.
+ */
+constexpr std::size_t kHistoryLimit = 1000;
+
+/**
+ * The lines of a `$HOME/.unify_history` file, oldest first -- G2.8.
+ *
+ * The format is GNU readline's `write_history()` as `unify-run -i` calls it:
+ * one entry per line, newline-terminated, no timestamps (the REPL never sets
+ * `history_write_timestamps`). Blank lines are skipped, since neither front
+ * end ever records one, and a CR before the newline is dropped so a file
+ * that passed through a Windows editor still reads back as the same lines.
+ */
+std::vector<std::string> parseHistory( const std::string& contents );
+
+/** The file `parseHistory()` reads: the newest kHistoryLimit lines. */
+std::string formatHistory( const std::vector<std::string>& lines );
+
+/**
+ * The transcript as plain text, one line per entry -- G2.9.
+ *
+ * Exactly the lines on screen, prompts included, in order. Not a
+ * re-rendering and not a program: someone reading the file should see what
+ * they saw, and a file that could be fed back to the engine would have to
+ * leave out the answers, which are the point of keeping a transcript.
+ */
+std::string transcriptText( const TranscriptState& transcript );
 
 } // namespace lens
 

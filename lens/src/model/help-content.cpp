@@ -27,6 +27,21 @@ HelpBook::HelpBook( const CommandTable& commands, const Keymap& keymap )
 {
     addBuiltinTopics();
     addGeneratedTopics( commands, keymap );
+    addLanguageTopics();
+}
+
+
+void HelpBook::addLanguageTopics()
+{
+    /*
+     * Generated at build time by tools/help-extract.cpp from unify/SPEC.md
+     * and unify/LANGUAGE.md. Not written here: see that file for why lens
+     * extracts the language reference rather than restating it.
+     */
+    static const std::vector<HelpTopic> kLanguage = {
+#include "language-help.inc"
+    };
+    m_topics.insert( m_topics.end(), kLanguage.begin(), kLanguage.end() );
 }
 
 
@@ -182,7 +197,53 @@ void HelpBook::addBuiltinTopics()
         "  Help          this",
         "",
         "Most of them are still to come; a tile showing placeholder text",
-        "says which gate brings it. See [[getting-started]].",
+        "says which gate brings it. See [[transcript]] for the one you type",
+        "into, and [[getting-started]].",
+    } );
+
+    add( m_topics, "transcript", "The transcript", {
+        "The REPL. Type a goal and press Enter to solve it; type a",
+        "definition -- a line ending in ; or containing { -- to add it to",
+        "the world. What comes back is shown underneath: one row per",
+        "solution, the program's own output, and any errors.",
+        "",
+        "  Enter        solve or define the line",
+        "  Up / Down    walk back and forth through earlier input",
+        "  PageUp       put the cursor on an earlier input line",
+        "  PageDown     a later one; past the newest, back to the prompt",
+        "  F5           run the line under the cursor again, exactly as it",
+        "               was first submitted; at the prompt, like Enter",
+        "  Esc          leave the earlier line, back to the prompt",
+        "  C-c          stop the running query",
+        "  C-g          abort: stops the running query too",
+        "",
+        "Text is executable: any line you typed before can be run again",
+        "where it stands, without retyping it. Up brings an old line into",
+        "the prompt instead, for when you want to change it first. What you",
+        "were halfway through typing is kept either way.",
+        "",
+        "Solutions arrive one batch at a time, so a goal with ten thousand",
+        "answers cannot freeze the screen. When a batch ends with more to",
+        "come, the transcript says so; M-x query.more fetches the next one.",
+        "",
+        "Stopping a query detaches the transcript at once. Whether the",
+        "engine can actually stop the goal is a separate question, and the",
+        "status line answers it: \"cancel detaches only\" means this engine",
+        "keeps computing a goal it has started until lens exits.",
+        "",
+        "History is kept in $HOME/.unify_history -- the same file, in the",
+        "same format, as unify-run -i -- so Up recalls what you typed last",
+        "time in either program. unify-run's query shorthand works here",
+        "too: ? colour( $x ); is the goal colour( $x ).",
+        "",
+        "M-x transcript.write-file saves the transcript as plain text,",
+        "exactly the lines on screen, to a file you name.",
+        "",
+        "F1 with the cursor on a builtin or a reserved word -- print,",
+        "findall, foreach -- opens that word's page, taken from the",
+        "language's own documents. [[language]] lists them all.",
+        "",
+        "See [[keys]] for every binding and [[getting-started]].",
     } );
 
     add( m_topics, "help", "Help", {

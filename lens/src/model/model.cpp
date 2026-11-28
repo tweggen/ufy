@@ -99,6 +99,40 @@ void Model::rebuildHelp()
 }
 
 
+namespace {
+
+/**
+ * The identifier the cursor is in or just after, or empty.
+ *
+ * "Just after" counts, because that is where the cursor is when you have
+ * just typed a name and want to know what it does. A `$variable` is not a
+ * name anything documents, so the `$` ends the word rather than joining it.
+ */
+std::string wordAt( const std::string& text, std::size_t cursor )
+{
+    const auto isWord = []( char c ) {
+        return std::isalnum( (unsigned char) c ) || c == '_';
+    };
+    if( cursor > text.size() ) {
+        cursor = text.size();
+    }
+    std::size_t begin = cursor;
+    while( begin > 0 && isWord( text[ begin - 1 ] ) ) {
+        --begin;
+    }
+    std::size_t end = cursor;
+    while( end < text.size() && isWord( text[end] ) ) {
+        ++end;
+    }
+    if( begin == end || ( begin > 0 && text[ begin - 1 ] == '$' ) ) {
+        return std::string();
+    }
+    return text.substr( begin, end - begin );
+}
+
+} // namespace
+
+
 std::string Model::contextualTopicId() const
 {
     /*
@@ -115,7 +149,24 @@ std::string Model::contextualTopicId() const
     switch( focused->kind ) {
     case PanelKind::Help:       return "help";
     case PanelKind::Palette:    return "keys";
-    case PanelKind::Transcript: return "getting-started";
+    case PanelKind::Transcript: {
+        /*
+         * UI.md section 5.2: in the transcript, F1 answers for the word
+         * under the cursor -- a builtin, a reserved word -- because that is
+         * the question being asked when someone presses it mid-line.
+         */
+        const std::string word = wordAt( focused->transcript.input,
+                                         focused->transcript.cursor );
+        if( !word.empty() && m_helpBook ) {
+            if( m_helpBook->topic( "builtin." + word ) ) {
+                return "builtin." + word;
+            }
+            if( m_helpBook->topic( "keyword." + word ) ) {
+                return "keyword." + word;
+            }
+        }
+        return "transcript";
+    }
     case PanelKind::Placeholder:
         break;
     }
@@ -169,10 +220,21 @@ void Model::foldSession( const us::Event& event )
     }
     TranscriptState& t = buffer->transcript;
 
+    const us::QueryId eventQuery =
+        event.header.query ? *event.header.query : us::kNoQuery;
+    const std::vector<us::QueryId>::iterator detachedAt =
+        std::find( t.detached.begin(), t.detached.end(), eventQuery );
+    const bool fromDetached =
+        eventQuery != us::kNoQuery && detachedAt != t.detached.end();
+
     if( const us::Solution* solution = std::get_if<us::Solution>( &event.body ) ) {
+        if( fromDetached ) {
+            /* The user stopped this query; see TranscriptState::detached. */
+            return;
+        }
         TranscriptEntry entry;
         entry.kind = TranscriptEntry::Kind::Solution;
-        entry.query = event.header.query ? *event.header.query : us::kNoQuery;
+        entry.query = eventQuery;
         entry.text = renderBindings( solution->bindings );
         if( entry.text.empty() ) {
             /*
@@ -192,15 +254,44 @@ void Model::foldSession( const us::Event& event )
         const bool terminal = status->state != us::QueryStatus::State::Running
                            && status->state != us::QueryStatus::State::Blocked;
         if( !terminal ) {
+            /*
+             * A batch ended and more are waiting for demand. Said in the
+             * transcript, because otherwise the last row of a batch looks
+             * exactly like the last row of the answer -- and the status
+             * line's "running" alone does not tell anyone how to get the
+             * rest, or how to stop.
+             */
+            if( eventQuery == t.liveQuery && eventQuery != us::kNoQuery
+                && status->produced > 0 ) {
+                TranscriptEntry entry;
+                entry.kind = TranscriptEntry::Kind::Info;
+                entry.query = eventQuery;
+                std::ostringstream os;
+                os << "-- " << status->produced
+                   << " so far \xc2\xb7 M-x query.more for more \xc2\xb7 "
+                      "C-c stops";
+                entry.text = os.str();
+                t.entries.push_back( entry );
+            }
             return;
         }
 
-        t.finished = true;
-        t.liveQuery = us::kNoQuery;
+        /*
+         * Only the LIVE query's end ends the live state. A query that was
+         * superseded or detached can still report, and its report belongs in
+         * the transcript, but it must not mark the current one finished.
+         */
+        if( eventQuery == t.liveQuery ) {
+            t.finished = true;
+            t.liveQuery = us::kNoQuery;
+        }
+        if( fromDetached ) {
+            t.detached.erase( detachedAt );
+        }
 
         TranscriptEntry entry;
         entry.kind = TranscriptEntry::Kind::Status;
-        entry.query = event.header.query ? *event.header.query : us::kNoQuery;
+        entry.query = eventQuery;
 
         std::ostringstream text;
         switch( status->state ) {
@@ -425,6 +516,9 @@ ScrollView Model::observeFocusedScroll( bool& out_valid ) const
         return view;
     }
     case PanelKind::Palette: {
+        if( !buffer->palette.prompt.empty() ) {
+            break;   /* a question, not a list */
+        }
         view.cursorLine = buffer->palette.selected;
         view.topLine = buffer->palette.top;
         /* One row is the prompt; the rest is the list. */
@@ -433,8 +527,25 @@ ScrollView Model::observeFocusedScroll( bool& out_valid ) const
         out_valid = true;
         return view;
     }
+    case PanelKind::Transcript: {
+        /*
+         * Only while a past line is selected. At the prompt the transcript
+         * is a log pinned to its newest line with the cursor in the input,
+         * not a list with a line cursor, and reporting one would make the
+         * invariants assert about a cursor nobody can see.
+         */
+        const TranscriptState& t = buffer->transcript;
+        if( t.selected < 0 ) {
+            break;
+        }
+        view.cursorLine = t.selected;
+        view.topLine = t.top;
+        view.viewportRows = transcriptHistoryRows( inner.h );
+        view.totalLines = (int) t.entries.size();
+        out_valid = view.viewportRows > 0;
+        return view;
+    }
     case PanelKind::Placeholder:
-    case PanelKind::Transcript:
         break;
     }
     return view;
@@ -673,7 +784,11 @@ void Model::openPalette()
     if( palette ) {
         palette->palette.input.clear();
         palette->palette.selected = 0;
+        palette->palette.top = 0;
+        palette->palette.prompt.clear();
+        palette->title = "M-x";
     }
+    m_promptAccept = PromptAccept();
 
     /*
      * A tile, not an overlay. It goes below the focused tile so the work
@@ -683,6 +798,61 @@ void Model::openPalette()
      */
     m_paletteTile =
         m_layout.splitFocused( splitDirectionForNewPanel(), m_paletteBuffer, 0.5 );
+}
+
+
+void Model::openPrompt( const std::string& label, const std::string& initial,
+                        PromptAccept accept )
+{
+    closePalette();
+    openPalette();
+
+    Buffer* palette = buffer( m_paletteBuffer );
+    if( !palette ) {
+        return;
+    }
+    palette->palette.prompt = label;
+    palette->palette.input = initial;
+    /* The tile is titled with the question, minus its colon. */
+    std::string title = label;
+    while( !title.empty()
+           && ( title.back() == ' ' || title.back() == ':' ) ) {
+        title.pop_back();
+    }
+    palette->title = title;
+    m_promptAccept = accept;
+}
+
+
+bool Model::promptActive() const
+{
+    if( !paletteActive() ) {
+        return false;
+    }
+    const Buffer* palette = buffer( m_paletteBuffer );
+    return palette && !palette->palette.prompt.empty();
+}
+
+
+/**
+ * Enter at a prompt: close it FIRST, then hand over the text -- for the
+ * reason foldPalette closes before running a command: whatever the handler
+ * does to the layout must happen to the tile the user was looking at, not
+ * to the prompt's own.
+ */
+std::vector<CommandRequest> acceptPrompt( Model& model )
+{
+    const Buffer* palette = model.buffer( model.m_paletteBuffer );
+    const std::string text = palette ? palette->palette.input : std::string();
+    const PromptAccept accept = model.m_promptAccept;
+
+    model.closePalette();
+    model.m_promptAccept = PromptAccept();
+
+    if( !accept ) {
+        return std::vector<CommandRequest>();
+    }
+    return accept( model, text );
 }
 
 
@@ -742,6 +912,47 @@ bool isCancel( const Key& key )
 
 
 /**
+ * The minibuffer while it is asking a question. One line of text and three
+ * keys that mean something: Enter accepts, Esc and C-g cancel, C-u clears --
+ * the last because a prompt usually opens with a suggestion in it, and
+ * backspacing over a suggestion one character at a time is how people learn
+ * to dread a default.
+ */
+std::vector<CommandRequest> foldPrompt( Model& model, Buffer& palette,
+                                        const Key& key )
+{
+    std::string& input = palette.palette.input;
+
+    if( isCancel( key ) ) {
+        model.closePalette();
+        return std::vector<CommandRequest>();
+    }
+    if( key.code == Key::Code::Enter ) {
+        return acceptPrompt( model );
+    }
+    if( key.code == Key::Code::Char && key.ctrl && key.ch == U'u' ) {
+        input.clear();
+        return std::vector<CommandRequest>();
+    }
+    if( key.code == Key::Code::Backspace ) {
+        /* A codepoint, not a byte -- see foldTranscript. */
+        if( !input.empty() ) {
+            std::size_t at = input.size() - 1;
+            while( at > 0 && ( (unsigned char) input[at] & 0xC0 ) == 0x80 ) {
+                --at;
+            }
+            input.erase( at );
+        }
+        return std::vector<CommandRequest>();
+    }
+    if( key.code == Key::Code::Char && !key.ctrl && !key.alt && key.ch >= 0x20 ) {
+        input += encodeUtf8( key.ch );
+    }
+    return std::vector<CommandRequest>();
+}
+
+
+/**
  * The palette's keys. Modal on purpose: while a minibuffer is open, almost
  * every key is input, and a global binding firing out from under someone who
  * is typing a command name is the classic minibuffer bug.
@@ -750,6 +961,11 @@ std::vector<CommandRequest> foldPalette( Model& model, Buffer& palette,
                                          const Key& key )
 {
     std::vector<CommandRequest> requests;
+
+    if( !palette.palette.prompt.empty() ) {
+        return foldPrompt( model, palette, key );
+    }
+
     const std::vector<const Command*> matches = model.paletteMatches();
 
     if( isCancel( key ) ) {
@@ -880,8 +1096,16 @@ void followCursor( Model& model, Buffer& buffer )
                                             (int) model.paletteMatches().size(),
                                             inner.h - 1, buffer.palette.top );
         return;
+    case PanelKind::Transcript: {
+        TranscriptState& t = buffer.transcript;
+        if( t.selected < 0 ) {
+            return;
+        }
+        t.top = ensureVisible( t.selected, (int) t.entries.size(),
+                               transcriptHistoryRows( inner.h ), t.top );
+        return;
+    }
     case PanelKind::Placeholder:
-    case PanelKind::Transcript:
         return;
     }
 }
@@ -1092,6 +1316,37 @@ void foldHelp( Model& model, Buffer& help, const Key& key )
     }
 }
 
+/** The Input entry before `from`, or -1. */
+int previousInput( const TranscriptState& t, int from )
+{
+    for( int i = from - 1; i >= 0; --i ) {
+        if( t.entries[ (std::size_t) i ].kind == TranscriptEntry::Kind::Input ) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+
+/** The Input entry after `from`, or -1 -- which is the prompt. */
+int nextInput( const TranscriptState& t, int from )
+{
+    for( int i = from + 1; i < (int) t.entries.size(); ++i ) {
+        if( t.entries[ (std::size_t) i ].kind == TranscriptEntry::Kind::Input ) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+
+/** Where the view sits when it is pinned to the newest line. */
+int pinnedTop( const TranscriptState& t, int rows )
+{
+    const int top = (int) t.entries.size() - rows;
+    return top > 0 ? top : 0;
+}
+
 /**
  * The transcript's keys.
  *
@@ -1104,6 +1359,44 @@ std::vector<CommandRequest> foldTranscript( Model& model, Buffer& buffer,
 {
     std::vector<CommandRequest> requests;
     TranscriptState& t = buffer.transcript;
+
+    /*
+     * G2.5: the cursor over past input. PageUp and PageDown rather than the
+     * arrows, because Up and Down already walk the history into the prompt
+     * -- which is the other way to get an old line back, for when you want
+     * to edit it first.
+     */
+    if( key.code == Key::Code::PageUp && !key.ctrl && !key.alt ) {
+        const int from = t.selected >= 0 ? t.selected
+                                         : (int) t.entries.size();
+        const int found = previousInput( t, from );
+        if( found < 0 ) {
+            model.setMessage( t.selected < 0 ? "no earlier input to re-run"
+                                             : "this is the oldest input" );
+            return requests;
+        }
+        if( t.selected < 0 ) {
+            /* Start from where the eye already is: the pinned bottom. */
+            t.top = pinnedTop( t, transcriptHistoryRows(
+                model.innerRectOf( model.layout().focused() ).h ) );
+        }
+        t.selected = found;
+        return requests;
+    }
+    if( key.code == Key::Code::PageDown && !key.ctrl && !key.alt ) {
+        if( t.selected >= 0 ) {
+            t.selected = nextInput( t, t.selected );
+        }
+        return requests;
+    }
+    if( t.selected >= 0 ) {
+        if( key.code == Key::Code::Escape ) {
+            t.selected = -1;
+            return requests;
+        }
+        /* Anything else is aimed at the prompt: go back there, then do it. */
+        t.selected = -1;
+    }
 
     if( key.code == Key::Code::Enter ) {
         const std::string line = t.input;
@@ -1223,6 +1516,28 @@ std::vector<CommandRequest> submitTranscriptLine( Model& model, Buffer& buffer,
      * and getting it wrong costs a diagnostic rather than a wrong answer.
      */
     CommandRequest request;
+
+    /*
+     * `? goal;` is unify-run's query shorthand, and the history file is
+     * shared with it (G2.8) -- so a line recalled from a unify-run session
+     * has to mean here what it meant there. Without this it would end in
+     * `;`, be taken for a definition, and fail to parse.
+     */
+    const std::string::size_type first = line.find_first_not_of( " \t" );
+    if( first != std::string::npos && line[first] == '?' ) {
+        std::string goal = line.substr( first + 1 );
+        std::string::size_type last = goal.find_last_not_of( " \t" );
+        if( last != std::string::npos && goal[last] == ';' ) {
+            goal.erase( last );
+        }
+        request.kind = "solve";
+        request.text = goal;
+        requests.push_back( request );
+        t.finished = false;
+        t.produced = 0;
+        return requests;
+    }
+
     const bool looksLikeDefinition =
         line.find( '{' ) != std::string::npos
         || ( !line.empty() && line[ line.size() - 1 ] == ';' );
@@ -1362,6 +1677,103 @@ std::vector<CommandRequest> fold( Model& model, const Event& event )
 }
 
 
+namespace {
+
+/** True while the transcript has a query whose rows are still to come. */
+bool hasLiveQuery( const Model& model )
+{
+    const Buffer* buffer = model.transcript();
+    return buffer && !buffer->transcript.finished
+        && buffer->transcript.liveQuery != us::kNoQuery;
+}
+
+
+/**
+ * Detach from the live query and ask the core to cancel it -- G2.6.
+ *
+ * The UI detaches FIRST and unconditionally, rather than waiting for the
+ * core's `Aborted`: a front end that waited would be exactly as stuck as the
+ * engine when the goal does not terminate, which is the case cancel is for.
+ * The core's answer still arrives and lands in the transcript, because it is
+ * the core's own statement of what happened.
+ */
+std::vector<CommandRequest> cancelLiveQuery( Model& model )
+{
+    std::vector<CommandRequest> requests;
+    Buffer* buffer = model.transcript();
+    if( !hasLiveQuery( model ) ) {
+        model.setMessage( "no query is running" );
+        return requests;
+    }
+
+    TranscriptState& t = buffer->transcript;
+    CommandRequest request;
+    request.kind = "cancel";
+    request.handle = (std::uint64_t) t.liveQuery;
+    requests.push_back( request );
+
+    t.detached.push_back( t.liveQuery );
+    t.liveQuery = us::kNoQuery;
+    t.finished = true;
+
+    /*
+     * Plan section 6: do not ship a cancel that silently lies. This core
+     * cannot stop a goal that is still computing, so the message says what
+     * actually happened rather than "cancelled".
+     */
+    model.setMessage( model.capabilities().realCancel
+                          ? "query cancelled"
+                          : "query detached \xc2\xb7 this engine cannot stop "
+                            "a running goal yet" );
+    return requests;
+}
+
+/**
+ * `F5` -- G2.5. Re-run the selected past line through the SAME function
+ * Enter uses, so the request is identical by construction rather than by a
+ * reconstruction that happens to agree today.
+ */
+std::vector<CommandRequest> rerunTranscriptLine( Model& model )
+{
+    std::vector<CommandRequest> requests;
+    Buffer* buffer = model.transcript();
+    if( !buffer ) {
+        model.setMessage( "this layout has no transcript" );
+        return requests;
+    }
+    TranscriptState& t = buffer->transcript;
+
+    if( t.selected >= 0 && t.selected < (int) t.entries.size()
+        && t.entries[ (std::size_t) t.selected ].kind
+               == TranscriptEntry::Kind::Input ) {
+        const std::string source = t.entries[ (std::size_t) t.selected ].source;
+
+        /*
+         * Whatever was half-typed at the prompt survives. Re-running an old
+         * line is a side trip; losing the line you were in the middle of
+         * writing would make it an expensive one.
+         */
+        const std::string keptInput = t.input;
+        const std::size_t keptCursor = t.cursor;
+        requests = submitTranscriptLine( model, *buffer, source );
+        t.input = keptInput;
+        t.cursor = keptCursor;
+        t.selected = -1;
+        return requests;
+    }
+
+    t.selected = -1;
+    if( t.input.find_first_not_of( " \t" ) == std::string::npos ) {
+        model.setMessage( "nothing to run \xc2\xb7 PageUp picks an earlier line" );
+        return requests;
+    }
+    const std::string line = t.input;
+    return submitTranscriptLine( model, *buffer, line );
+}
+
+} // namespace
+
+
 void registerShellCommands( Model& model )
 {
     CommandTable& table = model.commands();
@@ -1473,10 +1885,76 @@ void registerShellCommands( Model& model )
                         "transcript." )
                    .onRun( []( Model& m ) {
                        /* Esc and C-g both reach the palette directly while
-                        * it is open; this is the case where nothing modal is
-                        * running and there is simply nothing to abort. */
+                        * it is open. Outside it, the innermost thing that
+                        * can be aborted is a live query (UI.md section 4). */
+                       if( hasLiveQuery( m ) ) {
+                           return cancelLiveQuery( m );
+                       }
                        m.setMessage( "nothing to abort" );
                        return std::vector<CommandRequest>();
+                   } ) );
+
+    table.add( Command( "transcript.rerun", "Run line",
+                        "Run the past input line under the transcript cursor "
+                        "again -- PageUp and PageDown move it -- exactly as it "
+                        "was first submitted. With no past line selected, run "
+                        "what is typed at the prompt." )
+                   .helpTopic( "transcript" )
+                   .onRun( []( Model& m ) { return rerunTranscriptLine( m ); } ) );
+
+    table.add( Command( "transcript.write-file", "Write transcript\xe2\x80\xa6",
+                        "Save the transcript as plain text, one line per "
+                        "line on screen: what was typed, what came back, and "
+                        "what went wrong. Asks for the file name." )
+                   .helpTopic( "transcript" )
+                   .enabledWhen( []( const Model& m ) { return m.transcript() != NULL; } )
+                   .onRun( []( Model& m ) {
+                       m.openPrompt( "Write transcript to: ", "transcript.txt",
+                           []( Model& model, const std::string& path ) {
+                               std::vector<CommandRequest> requests;
+                               if( path.find_first_not_of( " \t" )
+                                   == std::string::npos ) {
+                                   model.setMessage( "no file name given; "
+                                                     "nothing written" );
+                                   return requests;
+                               }
+                               const Buffer* transcript = model.transcript();
+                               if( !transcript ) {
+                                   return requests;
+                               }
+                               CommandRequest request;
+                               request.kind = "write-file";
+                               request.path = path;
+                               request.text =
+                                   transcriptText( transcript->transcript );
+                               requests.push_back( request );
+                               return requests;
+                           } );
+                       return std::vector<CommandRequest>();
+                   } ) );
+
+    table.add( Command( "query.cancel", "Cancel query",
+                        "Stop waiting for the running query's solutions. The "
+                        "transcript detaches at once; whether the engine can "
+                        "actually stop the goal is shown in the status line." )
+                   .helpTopic( "transcript" )
+                   .onRun( []( Model& m ) { return cancelLiveQuery( m ); } ) );
+
+    table.add( Command( "query.more", "More solutions",
+                        "Ask the running query for its next batch of "
+                        "solutions. The transcript shows one batch at a time "
+                        "so a goal with thousands of answers cannot freeze "
+                        "it." )
+                   .helpTopic( "transcript" )
+                   .enabledWhen( []( const Model& m ) { return hasLiveQuery( m ); } )
+                   .onRun( []( Model& m ) {
+                       std::vector<CommandRequest> requests;
+                       CommandRequest request;
+                       request.kind = "demand";
+                       request.handle =
+                           (std::uint64_t) m.transcript()->transcript.liveQuery;
+                       requests.push_back( request );
+                       return requests;
                    } ) );
 
     table.add( Command( "app.quit", "Quit",

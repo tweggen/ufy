@@ -117,7 +117,35 @@ set_tests_properties(lens-modreg PROPERTIES TIMEOUT 120)
 # only thing the terminal layer ever draws.
 # ---------------------------------------------------------------------------
 
+# The language reference, extracted at build time -- UI.md section 5.3's
+# third source of help. One topic per builtin from SPEC.md section 9 and one
+# per reserved word from LANGUAGE.md's reference table, so F1 on `findall`
+# shows what the documents say rather than a copy that has fallen behind
+# them. The extractor is strict on purpose: a document it can no longer read
+# stops the build, rather than quietly emitting fewer topics.
+add_executable(lens-help-extract "${CMAKE_CURRENT_SOURCE_DIR}/tools/help-extract.cpp")
+if(NOT MSVC)
+    target_compile_options(lens-help-extract PRIVATE -Wall -Wextra)
+endif()
+set(LENS_HELP_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
+set(LENS_LANGUAGE_HELP "${LENS_HELP_GENERATED_DIR}/language-help.inc")
+add_custom_command(
+    OUTPUT "${LENS_LANGUAGE_HELP}"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${LENS_HELP_GENERATED_DIR}"
+    COMMAND lens-help-extract
+            "${LENS_UNIFY_DIR}/SPEC.md"
+            "${LENS_UNIFY_DIR}/LANGUAGE.md"
+            "${LENS_LANGUAGE_HELP}"
+    COMMAND "${CMAKE_COMMAND}" -E touch "${LENS_LANGUAGE_HELP}"
+    DEPENDS lens-help-extract
+            "${LENS_UNIFY_DIR}/SPEC.md"
+            "${LENS_UNIFY_DIR}/LANGUAGE.md"
+    COMMENT "Extracting the language reference into lens's help"
+    VERBATIM
+)
+
 add_library(lens-model STATIC
+    "${LENS_LANGUAGE_HELP}"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/model/cell-grid.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/model/help-content.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/model/transcript.cpp"
@@ -131,6 +159,7 @@ target_include_directories(lens-model PUBLIC
     "${LENS_UNIFY_DIR}/include"
 )
 target_include_directories(lens-model PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_include_directories(lens-model PRIVATE "${LENS_HELP_GENERATED_DIR}")
 if(NOT MSVC)
     target_compile_options(lens-model PRIVATE -Wall -Wextra)
 endif()
@@ -167,6 +196,28 @@ if(NOT MSVC)
 endif()
 add_test(NAME lens-interaction COMMAND lens-interaction-test)
 set_tests_properties(lens-interaction PROPERTIES TIMEOUT 120)
+
+# The transcript against a REAL engine (gate G2). Every other model test runs
+# with no engine at all, which is what the boundary is for -- and it means
+# none of them can say what ten thousand solutions or a cancel that crosses
+# to a core which cannot stop actually do. This suite holds the pair: a Model
+# and a SessionBridge, driven the way --script drives them, and asserted on
+# the model rather than on a grid.
+add_executable(lens-session-test
+    "${CMAKE_CURRENT_SOURCE_DIR}/test/session-test.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/app/layouts.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/app/session-bridge.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/model/model.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/model/view.cpp"
+)
+target_link_libraries(lens-session-test PRIVATE lens-model lens-modreg lens-layout
+                                              vault-unify-core)
+target_include_directories(lens-session-test PRIVATE "${LENS_UNIFY_DIR}/src")
+if(NOT MSVC)
+    target_compile_options(lens-session-test PRIVATE -Wall -Wextra)
+endif()
+add_test(NAME lens-session COMMAND lens-session-test)
+set_tests_properties(lens-session PROPERTIES TIMEOUT 300)
 
 add_executable(lens-grid-test "${CMAKE_CURRENT_SOURCE_DIR}/test/grid-test.cpp")
 target_link_libraries(lens-grid-test PRIVATE lens-model)
@@ -226,6 +277,8 @@ add_executable(unify-lens
     "${CMAKE_CURRENT_SOURCE_DIR}/src/app/main.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/app/layouts.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/app/session-bridge.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/app/local-requests.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/app/history-file.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/app/driver.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/app/spec.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/model/model.cpp"
@@ -294,9 +347,18 @@ if(UNIX AND LENS_BUILD_TERM)
     )
     target_compile_options(lens-pty-interaction-test PRIVATE -Wall -Wextra)
 
+    # The G2.8 cases also drive unify-run -i, and can only do so where it was
+    # built with readline -- without it the REPL keeps no history file, so
+    # they skip and say why rather than passing over nothing.
+    if(UNIFY_USE_READLINE AND UNIFY_READLINE_INCLUDE_DIR AND UNIFY_READLINE_LIBRARY)
+        set(LENS_UNIFY_RUN_READLINE readline)
+    else()
+        set(LENS_UNIFY_RUN_READLINE no-readline)
+    endif()
     add_test(
         NAME lens-pty-interaction
         COMMAND lens-pty-interaction-test "$<TARGET_FILE:unify-lens>"
+                "$<TARGET_FILE:unify-run>" "${LENS_UNIFY_RUN_READLINE}"
     )
     set_tests_properties(lens-pty-interaction PROPERTIES
         SKIP_RETURN_CODE 77
@@ -432,6 +494,38 @@ if(BASH_PROGRAM)
             TIMEOUT 120
         )
     endforeach()
+
+    # G2.9: the transcript written to disk by the shipped binary with a real
+    # engine. Not a golden screen, because the file is not on the screen.
+    add_test(
+        NAME lens-transcript-write
+        COMMAND "${BASH_PROGRAM}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/test/check-transcript-write.sh"
+                "$<TARGET_FILE:unify-lens>"
+                "${LENS_GOLDEN_DIR}/transcript-write.txt"
+    )
+    set_tests_properties(lens-transcript-write PROPERTIES TIMEOUT 120)
+
+    # The help extractor's own gate: it must still REFUSE a document it can
+    # no longer read, or its strictness is strictness in name only.
+    add_test(
+        NAME lens-help-extract
+        COMMAND "${BASH_PROGRAM}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/test/check-help-extract.sh"
+                "$<TARGET_FILE:lens-help-extract>"
+                "${CMAKE_CURRENT_SOURCE_DIR}/test/help-extract"
+    )
+    set_tests_properties(lens-help-extract PROPERTIES TIMEOUT 60)
+
+    # G2.8: the history file, read and written by the shipped binary. The
+    # unify-run half needs a terminal and is in lens-pty-interaction.
+    add_test(
+        NAME lens-history
+        COMMAND "${BASH_PROGRAM}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/test/check-history.sh"
+                "$<TARGET_FILE:unify-lens>"
+    )
+    set_tests_properties(lens-history PROPERTIES TIMEOUT 60)
 
     # G1.4: below 80x24 lens exits with the pinned message and a non-zero
     # status, and does not render. Its own test because "it refuses" cannot

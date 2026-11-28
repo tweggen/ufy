@@ -56,6 +56,39 @@ void type( Model& model, const char* keys )
     }
 }
 
+/** Like type(), but returns every request the keys asked for. */
+std::vector<CommandRequest> typeKeys( Model& model, const char* keys )
+{
+    std::vector<CommandRequest> all;
+    KeySeq seq;
+    if ( !parseKeySeq( keys, seq ) ) {
+        UT_FAIL( "the test itself has a bad key sequence: '" << keys << "'" );
+    }
+    for ( const Key& key : seq ) {
+        Event event;
+        event.kind = Event::Kind::Key;
+        event.key = key;
+        const std::vector<CommandRequest> some = fold( model, event );
+        all.insert( all.end(), some.begin(), some.end() );
+    }
+    return all;
+}
+
+/** Tab until the transcript has focus. */
+void focusTranscript( Model& model )
+{
+    Buffer* transcript = model.transcript();
+    if ( !transcript ) {
+        UT_FAIL( "this layout has no transcript" );
+    }
+    for ( int i = 0; i < 16 && model.focusedBuffer() != transcript; ++i ) {
+        type( model, "Tab" );
+    }
+    if ( model.focusedBuffer() != transcript ) {
+        UT_FAIL( "could not focus the transcript" );
+    }
+}
+
 /** Type printable characters one at a time, as a user would. */
 void typeText( Model& model, const std::string& text )
 {
@@ -499,6 +532,387 @@ int main()
         UT_CHECK( model.menuOpen() );
         UT_CHECK_EQ( menuCategories()[ (std::size_t) model.menuBar().heading ],
                      std::string( "Window" ) );
+    } );
+
+    // -- G2.5: re-running past input in place --------------------------------
+
+    registry.add( "G2.5 F5 on a past line re-issues the identical request", []() {
+        Model model = makeModel();
+        focusTranscript( model );
+
+        typeText( model, "colour( $x )" );
+        const std::vector<CommandRequest> original = typeKeys( model, "Enter" );
+        UT_CHECK_EQ( original.size(), (std::size_t) 1 );
+
+        typeText( model, "shade( blue );" );
+        const std::vector<CommandRequest> definition = typeKeys( model, "Enter" );
+        UT_CHECK_EQ( definition.size(), (std::size_t) 1 );
+
+        /* PageUp twice: past the definition, onto the goal. */
+        type( model, "PageUp" );
+        type( model, "PageUp" );
+        const std::vector<CommandRequest> again = typeKeys( model, "F5" );
+
+        UT_CHECK_EQ( again.size(), (std::size_t) 1 );
+        UT_CHECK_EQ( again[0].kind, original[0].kind );
+        UT_CHECK_EQ( again[0].text, original[0].text );
+        UT_CHECK_EQ( again[0].handle, original[0].handle );
+
+        /* A definition re-runs as a definition, not as a goal. */
+        type( model, "PageUp" );
+        type( model, "PageUp" );
+        const std::vector<CommandRequest> redefined = typeKeys( model, "F5" );
+        UT_CHECK_EQ( redefined.size(), (std::size_t) 1 );
+        UT_CHECK_EQ( redefined[0].kind, definition[0].kind );
+        UT_CHECK_EQ( redefined[0].text, definition[0].text );
+    } );
+
+    registry.add( "G2.5 F5 keeps the line you were halfway through typing", []() {
+        Model model = makeModel();
+        focusTranscript( model );
+        TranscriptState& t = model.transcript()->transcript;
+
+        typeText( model, "colour( $x )" );
+        type( model, "Enter" );
+        typeText( model, "half a th" );
+        type( model, "PageUp" );
+        ( void ) typeKeys( model, "F5" );
+
+        UT_CHECK_EQ( t.input, std::string( "half a th" ) );
+        UT_CHECK_EQ( t.cursor, t.input.size() );
+        UT_CHECK_EQ( t.selected, -1 );
+    } );
+
+    registry.add( "G2.5 the transcript cursor visits only past input", []() {
+        Model model = makeModel();
+        focusTranscript( model );
+        TranscriptState& t = model.transcript()->transcript;
+
+        typeText( model, "a( 1 );" );
+        type( model, "Enter" );
+        /* Rows that are not input -- what a session would have folded in. */
+        TranscriptEntry row;
+        row.kind = TranscriptEntry::Kind::Solution;
+        row.text = "$x = 1";
+        t.entries.push_back( row );
+        t.entries.push_back( row );
+        typeText( model, "a( $x )" );
+        type( model, "Enter" );
+        t.entries.push_back( row );
+
+        type( model, "PageUp" );
+        UT_CHECK( t.selected >= 0 );
+        UT_CHECK_EQ( t.entries[ (std::size_t) t.selected ].source,
+                     std::string( "a( $x )" ) );
+        type( model, "PageUp" );
+        UT_CHECK_EQ( t.entries[ (std::size_t) t.selected ].source,
+                     std::string( "a( 1 );" ) );
+
+        /* At the oldest line PageUp stays put, and says why. */
+        type( model, "PageUp" );
+        UT_CHECK_EQ( t.entries[ (std::size_t) t.selected ].source,
+                     std::string( "a( 1 );" ) );
+        UT_CHECK_MSG( !model.message().empty(),
+                      "PageUp at the oldest input said nothing" );
+
+        /* PageDown walks forward, and past the newest returns to the prompt. */
+        type( model, "PageDown" );
+        UT_CHECK_EQ( t.entries[ (std::size_t) t.selected ].source,
+                     std::string( "a( $x )" ) );
+        type( model, "PageDown" );
+        UT_CHECK_EQ( t.selected, -1 );
+    } );
+
+    registry.add( "G2.5 Esc or typing leaves the past line for the prompt", []() {
+        Model model = makeModel();
+        focusTranscript( model );
+        TranscriptState& t = model.transcript()->transcript;
+
+        typeText( model, "a( 1 );" );
+        type( model, "Enter" );
+
+        type( model, "PageUp" );
+        UT_CHECK( t.selected >= 0 );
+        type( model, "Esc" );
+        UT_CHECK_EQ( t.selected, -1 );
+
+        type( model, "PageUp" );
+        typeText( model, "q" );
+        UT_CHECK_EQ( t.selected, -1 );
+        UT_CHECK_EQ( t.input, std::string( "q" ) );
+    } );
+
+    registry.add( "G2.5 F5 with nothing selected and nothing typed asks nothing",
+                  []() {
+        Model model = makeModel();
+        focusTranscript( model );
+        const std::vector<CommandRequest> requests = typeKeys( model, "F5" );
+        UT_CHECK( requests.empty() );
+        UT_CHECK_MSG( !model.message().empty(), "F5 on nothing said nothing" );
+    } );
+
+    registry.add( "G2.5 F5 at the prompt runs what is typed, like Enter", []() {
+        Model model = makeModel();
+        focusTranscript( model );
+        typeText( model, "colour( $x )" );
+        const std::vector<CommandRequest> requests = typeKeys( model, "F5" );
+        UT_CHECK_EQ( requests.size(), (std::size_t) 1 );
+        UT_CHECK_EQ( requests[0].kind, std::string( "solve" ) );
+        UT_CHECK_EQ( requests[0].text, std::string( "colour( $x )" ) );
+    } );
+
+    // -- G2 H: the transcript's help ------------------------------------------
+
+    registry.add( "G2 H every transcript command has an M-x entry and a topic",
+                  []() {
+        Model model = makeModel();
+        int checked = 0;
+        for ( const Command& command : model.commands().all() ) {
+            const bool transcriptCommand =
+                command.id().rfind( "transcript.", 0 ) == 0
+                || command.id().rfind( "query.", 0 ) == 0;
+            if ( !transcriptCommand ) {
+                continue;
+            }
+            ++checked;
+
+            /* M-x finds it by typing its id. */
+            type( model, "M-x" );
+            typeText( model, command.id() );
+            bool listed = false;
+            for ( const Command* match : model.paletteMatches() ) {
+                if ( match->id() == command.id() ) { listed = true; }
+            }
+            type( model, "Esc" );
+            UT_CHECK_MSG( listed, command.id() << " is not in M-x" );
+
+            UT_CHECK_MSG( !command.helpTopic().empty(),
+                          command.id() << " links no help topic" );
+            UT_CHECK_MSG( model.helpBook()->topic( command.helpTopic() ) != NULL,
+                          command.id() << " links help topic '"
+                              << command.helpTopic() << "', which does not exist" );
+        }
+        /* rerun, write-file, cancel, more -- and a floor, so a rename that
+         * left this loop matching nothing cannot pass it. */
+        UT_CHECK_MSG( checked >= 4, "only " << checked << " transcript commands" );
+    } );
+
+    registry.add( "G2 H F1 on a builtin under the cursor opens its extracted "
+                  "topic", []() {
+        Model model = makeModel();
+        focusTranscript( model );
+
+        /* In the middle of the word. */
+        typeText( model, "print( 1 )" );
+        type( model, "Home" );
+        type( model, "Right" );
+        type( model, "Right" );
+        UT_CHECK_EQ( model.contextualTopicId(), std::string( "builtin.print" ) );
+        type( model, "F1" );
+        const Buffer* help = findPanel( model, PanelKind::Help );
+        UT_CHECK( help != NULL );
+        UT_CHECK_EQ( help->help.topicId, std::string( "builtin.print" ) );
+
+        /* The topic is the spec's own words, not a copy written here. */
+        const HelpTopic* topic = model.helpBook()->topic( "builtin.print" );
+        UT_CHECK( topic != NULL );
+        bool fromSpec = false;
+        for ( const std::string& line : topic->lines ) {
+            if ( line.find( "variadic in practice" ) != std::string::npos ) {
+                fromSpec = true;
+            }
+        }
+        UT_CHECK_MSG( fromSpec, "builtin.print does not carry SPEC.md's text" );
+    } );
+
+    registry.add( "G2 H F1 just after a reserved word opens its topic", []() {
+        Model model = makeModel();
+        focusTranscript( model );
+        typeText( model, "$all = findall" );
+        UT_CHECK_EQ( model.contextualTopicId(), std::string( "keyword.findall" ) );
+    } );
+
+    registry.add( "G2 H F1 on a word that names nothing opens the transcript's "
+                  "page", []() {
+        Model model = makeModel();
+        focusTranscript( model );
+        typeText( model, "colour( red )" );
+        type( model, "Home" );
+        UT_CHECK_EQ( model.contextualTopicId(), std::string( "transcript" ) );
+    } );
+
+    registry.add( "G2 H the language index links every extracted topic", []() {
+        Model model = makeModel();
+        const HelpTopic* index = model.helpBook()->topic( "language" );
+        UT_CHECK( index != NULL );
+        std::size_t builtins = 0;
+        std::size_t keywords = 0;
+        for ( const HelpTopic& topic : model.helpBook()->topics() ) {
+            if ( topic.id.rfind( "builtin.", 0 ) == 0 ) { ++builtins; }
+            if ( topic.id.rfind( "keyword.", 0 ) == 0 ) { ++keywords; }
+        }
+        std::size_t links = 0;
+        for ( const std::string& line : index->lines ) {
+            links += HelpBook::linksOn( line ).size();
+        }
+        /* SPEC.md section 9: "All thirteen". */
+        UT_CHECK_EQ( builtins, (std::size_t) 13 );
+        UT_CHECK_MSG( keywords >= 10, "only " << keywords << " reserved words" );
+        UT_CHECK_EQ( links, builtins + keywords + 1 );   /* + transcript */
+    } );
+
+    // -- G2.8: the history file, shared with unify-run -i ---------------------
+
+    registry.add( "G2.8 a readline history file reads back line for line", []() {
+        const std::vector<std::string> lines =
+            parseHistory( "? colour( $x );\ncolour( red );\n" );
+        UT_CHECK_EQ( lines.size(), (std::size_t) 2 );
+        UT_CHECK_EQ( lines[0], std::string( "? colour( $x );" ) );
+        UT_CHECK_EQ( lines[1], std::string( "colour( red );" ) );
+
+        /* CRLF, blank lines and a missing final newline all read the same. */
+        const std::vector<std::string> rough =
+            parseHistory( "a( 1 );\r\n\n   \nb( 2 );" );
+        UT_CHECK_EQ( rough.size(), (std::size_t) 2 );
+        UT_CHECK_EQ( rough[0], std::string( "a( 1 );" ) );
+        UT_CHECK_EQ( rough[1], std::string( "b( 2 );" ) );
+
+        UT_CHECK( parseHistory( "" ).empty() );
+    } );
+
+    registry.add( "G2.8 the history file keeps the newest 1000 lines, as "
+                  "unify-run does", []() {
+        std::vector<std::string> lines;
+        for ( int i = 0; i < 1005; ++i ) {
+            lines.push_back( "line( " + std::to_string( i ) + " );" );
+        }
+        const std::vector<std::string> kept = parseHistory( formatHistory( lines ) );
+        UT_CHECK_EQ( kept.size(), kHistoryLimit );
+        UT_CHECK_EQ( kept.front(), std::string( "line( 5 );" ) );
+        UT_CHECK_EQ( kept.back(), std::string( "line( 1004 );" ) );
+
+        /* And the format is exactly readline's: one line, one newline. */
+        UT_CHECK_EQ( formatHistory( { "a( 1 );", "b" } ),
+                     std::string( "a( 1 );\nb\n" ) );
+    } );
+
+    registry.add( "G2.8 a unify-run query line means the same thing here", []() {
+        Model model = makeModel();
+        focusTranscript( model );
+        typeText( model, "? colour( $x );" );
+        const std::vector<CommandRequest> requests = typeKeys( model, "Enter" );
+        UT_CHECK_EQ( requests.size(), (std::size_t) 1 );
+        UT_CHECK_EQ( requests[0].kind, std::string( "solve" ) );
+        UT_CHECK_EQ( requests[0].text, std::string( " colour( $x )" ) );
+
+        /* History keeps what was TYPED, so unify-run reads it back as typed. */
+        UT_CHECK_EQ( model.transcript()->transcript.history.back(),
+                     std::string( "? colour( $x );" ) );
+    } );
+
+    // -- G2.9: the transcript as text -----------------------------------------
+
+    registry.add( "G2.9 transcript.write-file asks where, then asks for the "
+                  "transcript's text", []() {
+        Model model = makeModel();
+        focusTranscript( model );
+        typeText( model, "colour( red );" );
+        type( model, "Enter" );
+        TranscriptEntry row;
+        row.kind = TranscriptEntry::Kind::Status;
+        row.text = "-- defined colour/1";
+        model.transcript()->transcript.entries.push_back( row );
+
+        /* Through M-x, the way the criterion names it. */
+        type( model, "M-x" );
+        typeText( model, "transcript.write-file" );
+        type( model, "Enter" );
+
+        UT_CHECK_MSG( model.promptActive(), "no prompt for the file name" );
+        const Buffer* prompt = model.focusedBuffer();
+        UT_CHECK( prompt != NULL && prompt->kind == PanelKind::Palette );
+        UT_CHECK_EQ( prompt->palette.input, std::string( "transcript.txt" ) );
+
+        type( model, "C-u" );
+        UT_CHECK_EQ( model.focusedBuffer()->palette.input, std::string() );
+        typeText( model, "out.txt" );
+        const std::vector<CommandRequest> requests = typeKeys( model, "Enter" );
+
+        UT_CHECK( !model.promptActive() );
+        UT_CHECK_EQ( requests.size(), (std::size_t) 1 );
+        UT_CHECK_EQ( requests[0].kind, std::string( "write-file" ) );
+        UT_CHECK_EQ( requests[0].path, std::string( "out.txt" ) );
+        UT_CHECK_EQ( requests[0].text,
+                     std::string( "?- colour( red );\n-- defined colour/1\n" ) );
+
+        /* And focus is back where it was, not on a closed tile. */
+        UT_CHECK( model.focusedBuffer() == model.transcript() );
+    } );
+
+    registry.add( "G2.9 Esc at the file prompt writes nothing", []() {
+        Model model = makeModel();
+        type( model, "M-x" );
+        typeText( model, "transcript.write-file" );
+        type( model, "Enter" );
+        UT_CHECK( model.promptActive() );
+        const std::vector<CommandRequest> requests = typeKeys( model, "Esc" );
+        UT_CHECK( requests.empty() );
+        UT_CHECK( !model.promptActive() );
+        UT_CHECK( !model.paletteActive() );
+    } );
+
+    registry.add( "G2.9 an empty file name is refused, not written", []() {
+        Model model = makeModel();
+        type( model, "M-x" );
+        typeText( model, "transcript.write-file" );
+        type( model, "Enter" );
+        type( model, "C-u" );
+        const std::vector<CommandRequest> requests = typeKeys( model, "Enter" );
+        UT_CHECK( requests.empty() );
+        UT_CHECK_MSG( !model.message().empty(), "an empty name said nothing" );
+    } );
+
+    registry.add( "G2.9 the prompt edits by codepoint, not by byte", []() {
+        Model model = makeModel();
+        type( model, "M-x" );
+        typeText( model, "transcript.write-file" );
+        type( model, "Enter" );
+        type( model, "C-u" );
+        Event event;
+        event.kind = Event::Kind::Key;
+        event.key = Key::character( U'\u00e9' );   /* two bytes in UTF-8 */
+        ( void ) fold( model, event );
+        type( model, "Backspace" );
+        UT_CHECK_EQ( model.focusedBuffer()->palette.input, std::string() );
+    } );
+
+    registry.add( "G2.6 only the live query's end ends the live state", []() {
+        /*
+         * A superseded query can still report -- a demand or a cancel aimed
+         * at it, or simply a core that is behind. Its terminal status used
+         * to mark the transcript finished whatever query it was for, which
+         * would report the CURRENT query idle while its rows were still on
+         * their way.
+         */
+        Model model = makeModel();
+        TranscriptState& t = model.transcript()->transcript;
+        t.liveQuery = 7;
+        t.finished = false;
+
+        us::QueryStatus status;
+        status.state = us::QueryStatus::State::Exhausted;
+        us::Event event;
+        event.header.query = (us::QueryId) 3;
+        event.body = status;
+        model.foldSession( event );
+
+        UT_CHECK_MSG( !t.finished, "a superseded query's end finished the live one" );
+        UT_CHECK_EQ( t.liveQuery, (us::QueryId) 7 );
+
+        event.header.query = (us::QueryId) 7;
+        model.foldSession( event );
+        UT_CHECK( t.finished );
+        UT_CHECK_EQ( t.liveQuery, us::kNoQuery );
     } );
 
     registry.add( "a bare letter is still text while the menu is closed", []() {
