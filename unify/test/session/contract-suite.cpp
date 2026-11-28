@@ -667,6 +667,19 @@ void registerContractSuite( Registry& registry,
                     "inspect returned no more than the truncated value" );
             }
 
+            /*
+             * EventHeader: `query` is "set on every query-attributable
+             * event". An expansion is one -- it is a node of q's solution --
+             * and a front end showing more than one query's values has no
+             * other way to know which tree to graft it into. (lens G5.2.)
+             */
+            UT_CHECK_MSG( rec.allFor<us::Expanded>( q ).size() == 1,
+                          "Expanded does not carry its query in the header" );
+            if ( !expanded.empty() ) {
+                UT_CHECK_MSG( expanded[ 0 ].path == ( us::ValuePath{ 0 } ),
+                              "Expanded does not echo the path it answers" );
+            }
+
             rec.clear();
             d.session->release( q );
             d.settle();

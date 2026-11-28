@@ -1306,7 +1306,14 @@ void LocalSession::doInspect( RequestId req, QueryId qid, std::uint64_t index,
     expanded.req = req;
     expanded.path = path;
     expanded.value = applyBudget( *node, budget );
-    emit( expanded );
+
+    /*
+     * Through emitForQuery, not emit: an expansion is a node of qid's
+     * solution, so it is query-attributable and EventHeader says the header
+     * then names the query. A front end holding more than one query's values
+     * has no other way to know which tree the answer belongs to.
+     */
+    emitForQuery( qid, expanded );
 }
 
 // ---------------------------------------------------------------------------

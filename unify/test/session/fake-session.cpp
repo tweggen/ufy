@@ -878,6 +878,9 @@ us::RequestId FakeSession::inspect( us::QueryId query,
                 ex.path = path;
                 ex.value = us::applyBudget( *node, budget );
                 a.body = ex;
+                /* A node of this query's solution: attributable, so the
+                 * header names it (EventHeader::query). */
+                a.query = query;
             }
         }
     }
