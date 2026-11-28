@@ -75,8 +75,11 @@ Bindings now cross the boundary as trees rather than as strings.
 
 1. **The rest of G3.** Done: G3.1–G3.5 and H, on engine items E3 and E5.
    Open, in the order I would take them:
-   - **G3.7**: measure first. No baseline exists for how redefinition
-     degrades the clause database; now that F3 exists, it is one key away.
+   - **G3.7**: the baseline is measured (ACCEPTANCE.md, 2026-11-28) --
+     1,000 redefinitions of a 10-clause predicate take queries from 0.04
+     to 0.2 ms and memory from 5.2 to 11.5 MB, linearly. The bound is not
+     agreed; it is the maintainer's call, and it decides whether ROADMAP
+     Phase 3 indexing (or compacting tombstones) becomes mandatory.
    - **G3.8** (world undo). `retirePredicate` and `retireAppendedSince`
      are its raw material: undoing a replacement means retiring the new
      clauses and re-appending the old text, which E5 now keeps.
