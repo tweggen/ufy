@@ -21,12 +21,21 @@ if [ "$#" -ne 2 ]; then
     exit 2
 fi
 
-LENS_BIN="$1"
-EXPECTED="$2"
+# Absolute, because lens runs from inside the temporary directory below.
+absolute() { case "$1" in /*|[A-Za-z]:*) printf '%s' "$1" ;; *) printf '%s/%s' "$PWD" "$1" ;; esac; }
+LENS_BIN="$(absolute "$1")"
+EXPECTED="$(absolute "$2")"
 
 WORKDIR="$(mktemp -d)"
 trap 'rm -rf "$WORKDIR"' EXIT
-OUT="$WORKDIR/transcript out.txt"   # a space, because paths have them
+
+# The name lens is given is RELATIVE, and lens runs in $WORKDIR. The path is
+# typed into the minibuffer, so no shell ever sees it: on Windows, an MSYS
+# /tmp/... path would reach the native binary untranslated and name nothing,
+# and the translated C:/Users/... form is long enough to crowd the 80-column
+# status line this test reads. A space stays in it, because paths have them.
+NAME="transcript out.txt"
+OUT="$WORKDIR/$NAME"
 
 # Quoted, so `$x` reaches the engine as the variable it is; the one line that
 # needs the temporary path is appended after.
@@ -42,8 +51,9 @@ type transcript.write-file
 Enter
 C-u
 KEYS
-printf 'type %s\nEnter\n' "$OUT" >> "$WORKDIR/script.keys"
+printf 'type %s\nEnter\n' "$NAME" >> "$WORKDIR/script.keys"
 
+cd "$WORKDIR" || exit 1
 "$LENS_BIN" --geometry 80x24 --layout run --session --no-welcome \
     --script "$WORKDIR/script.keys" > "$WORKDIR/screen" 2>"$WORKDIR/stderr"
 RC=$?
@@ -65,7 +75,7 @@ if [ ! -f "$OUT" ]; then
 fi
 
 # The status line says what happened, so a user is not left guessing.
-if ! grep -q "wrote [0-9]* lines to $OUT" "$WORKDIR/screen"; then
+if ! grep -q "wrote [0-9]* lines to $NAME" "$WORKDIR/screen"; then
     echo "check-transcript-write.sh: the status line did not report the write:" >&2
     sed 's/^/    /' "$WORKDIR/screen" >&2
     exit 1

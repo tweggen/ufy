@@ -154,6 +154,29 @@ inline std::string describe( const std::string& value )
     return "\"" + value + "\"";
 }
 
+/**
+ * Compares for UT_CHECK_EQ, and describes both sides only when they differ.
+ *
+ * A function rather than two `const auto&` locals in the macro: binding
+ * `actual` to a reference kept only the expression's final result alive,
+ * not the temporaries it was read out of. `menuCategories()[ i ]` returned a
+ * reference into a vector destroyed before the comparison ran -- harmless
+ * by luck under glibc, an empty string under MSVC's debug heap, and what
+ * GCC's -Wdangling-reference had been pointing at. As arguments, every
+ * temporary lives until the end of the full expression that calls this.
+ */
+template <typename A, typename E>
+bool checkEqual( const A& actual, const E& expected,
+                 std::string& describedActual, std::string& describedExpected )
+{
+    if ( actual == expected ) {
+        return true;
+    }
+    describedActual = describe( actual );
+    describedExpected = describe( expected );
+    return false;
+}
+
 } // namespace unify_test
 
 /*
@@ -193,14 +216,12 @@ inline std::string describe( const std::string& value )
 
 #define UT_CHECK_EQ( actual, expected )                                       \
     do {                                                                      \
-        const auto& _ut_a = ( actual );                                       \
-        const auto& _ut_e = ( expected );                                     \
-        if ( !( _ut_a == _ut_e ) ) {                                          \
+        std::string _ut_a, _ut_e;                                             \
+        if ( !::unify_test::checkEqual( ( actual ), ( expected ),             \
+                                        _ut_a, _ut_e ) ) {                    \
             UT_FAIL( "expected " #actual " == " #expected                     \
-                     << "\n          actual:   "                              \
-                     << ::unify_test::describe( _ut_a )                       \
-                     << "\n          expected: "                              \
-                     << ::unify_test::describe( _ut_e ) );                    \
+                     << "\n          actual:   " << _ut_a                     \
+                     << "\n          expected: " << _ut_e );                  \
         }                                                                     \
     } while ( false )
 

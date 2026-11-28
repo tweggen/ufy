@@ -92,10 +92,14 @@ are larger than they look**: `RuntimeContext` binds one `Engine` and
   SPEC.md section 9 as it stands: class names, source paths. Accurate, and
   extracted so it stays accurate, but a user-facing paragraph per builtin
   belongs in LANGUAGE.md and the extractor would pick it up.
-- `-Wdangling-reference` (GCC 14+) fires on `UT_CHECK_EQ` in
-  `unify/test/session/test-harness.hpp:196` wherever an argument is a
-  member of a returned reference. Harmless, since the temporary outlives
-  the macro, but it is a warning, and the rule is zero.
+- **Fixed 2026-11-28: the `-Wdangling-reference` warning was a real bug.**
+  `UT_CHECK_EQ` bound `actual` to a `const auto&`, which kept alive only the
+  final reference, not the temporary it pointed into. Two menu-bar tests
+  (`menuCategories()[ i ]`) read a freed string: it passed under glibc by
+  luck and failed under MSVC's debug heap, which made `windows-msvc` red on
+  `main` from PR #2 on. The macro now compares inside one function call, and
+  the warning is gone. Lesson: a dangling-reference warning in a test
+  harness is never "harmless", whatever the reasoning sounds like.
 
 - **Two parser defects, recorded in `unify/ROADMAP.md`, unfixed.** A
   negative literal in a data position **silently** loses its sign
