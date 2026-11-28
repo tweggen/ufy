@@ -93,3 +93,28 @@ endif()
 
 add_test(NAME unify-session-contract COMMAND unify-session-contract)
 set_tests_properties(unify-session-contract PROPERTIES TIMEOUT 120)
+
+# ---------------------------------------------------------------------------
+# G3.7 -- growth under redefinition: a benchmark, deliberately NOT a test.
+#
+# The bounds are agreed (ACCEPTANCE.md G3.7) but not enforced: the current
+# engine fails them by design, and the maintainer chose not to optimise an
+# engine that may be redesigned. It is built so it cannot rot, and run by
+# hand: `unify-growth-bench [--quick] [--enforce]`. It speaks only Session,
+# so it measures a redesigned core unchanged.
+# ---------------------------------------------------------------------------
+
+add_executable(unify-growth-bench
+    "${CMAKE_CURRENT_SOURCE_DIR}/growth-bench.cpp"
+)
+set_target_properties(unify-growth-bench PROPERTIES
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+)
+target_include_directories(unify-growth-bench PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../src"
+)
+target_link_libraries(unify-growth-bench PRIVATE vault-unify-core)
+if(NOT MSVC)
+    target_compile_options(unify-growth-bench PRIVATE -Wall -Wextra)
+endif()

@@ -253,9 +253,13 @@ Two design questions the original flagged for re-litigation, now answered:
   was too small: TSan reported 164 races, E14 took it to 13, and the
   remaining 13 needed E16 (a race-free clause store) to reach zero.
 
-Still open for re-litigation: **G3.7's bound** — no baseline exists for how
-fast interactive redefinition degrades the clause database. Measure it
-before agreeing to a number.
+**G3.7's bound** was the third, and is answered too (2026-11-28): a
+baseline was measured, bounds B1–B3 were agreed, and the gate was then
+*deferred* on purpose. The maintainer expects a redesign of the execution
+engine to pay off better than optimising this one, so the bounds speak only
+of behaviour through `Session`, and `unify-growth-bench` measures any core
+behind it. Do not start a lookup index or tombstone reclamation for G3.7's
+sake without asking; see [ACCEPTANCE.md](ACCEPTANCE.md) G3.7 and its note.
 
 ## 6. Housekeeping
 
