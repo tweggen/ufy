@@ -110,9 +110,9 @@ rather than a proxy-private trick (§5).
 | Request | Serves | Why it is not something else |
 | --- | --- | --- |
 | `define` | (b) insert, and all editing | The single ingestion path. A transcript line, a file, an edited predicate and an `insert` are one operation with different `Origin`/`OverwritePolicy`; collapsing them is most of what keeps the API small |
-| `undefine` | editing, `ReplacePredicates` | "Define nothing for this key" cannot express deletion. Engine item **E3** (predicate-scoped retract) |
+| `undefine` | editing, `ReplacePredicates` | "Define nothing for this key" cannot express deletion. Engine item **E3** (predicate-scoped retract) — done 2026-11-28 |
 | `listing` | browser | Catalogue *metadata* only. The browser shows thousands of keys and the source of none of them |
-| `source` | source panel | One definition's text is a rarer, larger payload than `listing`. Splitting them is the difference between a browser that opens instantly over a socket and one that does not |
+| `source` | source panel | One definition's text is a rarer, larger payload than `listing`. Splitting them is the difference between a browser that opens instantly over a socket and one that does not. Since engine item E5 (2026-11-28) the text is what the user typed, per clause, and parses back |
 | `solve` | queries | `QueryOptions` carries `initialDemand` (first screen in one round trip), the value `budget`, and `trace` |
 | `demand` | invariant 3 | Takes a `Stream` so solutions and trace steps share one back-pressure mechanism instead of needing two verbs |
 | `cancel` | partial failure | Best-effort in v1 — plan §6 |
@@ -194,6 +194,7 @@ struct Failed     { RequestId req; std::string reason; bool fatal; };
 // program
 struct Defined    { RequestId req; ModuleId module;
                     std::vector<PredicateKey> added, replaced, removed;
+                    std::vector<uint32_t> replacedClauses;  // parallel to replaced
                     uint32_t errorCount; };
 struct Listing    { RequestId req; std::vector<CatalogueEntry> entries; bool more; };
 struct SourceText { RequestId req; PredicateKey key; std::string text; Origin origin; };

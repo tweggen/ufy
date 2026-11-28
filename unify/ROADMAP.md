@@ -457,8 +457,38 @@ not be filed under Phase 4 tooling.
       value and prints it. The language can therefore write a value it
       cannot read back, which breaks the round trip an image writer (E6)
       will need.
-- [ ] **E3, E5, E6, E9, E11, E12, E13, E15** — not started. (E7 is above,
-      with a plan.) E9 (world
+- [x] **E3 — Predicate-scoped retract.** *(2026-11-28.)*
+      `World::retirePredicate( name, arity, beforeIndex )` tombstones every
+      live clause of a predicate below a store index, builtins never, all
+      at ONE generation (a query sees the whole old definition or none of
+      it), through the same `Clause::retire()` runtime `retract` uses.
+      `World::retireAppendedSince( index )` takes back what a define
+      appended. `LocalSession` builds `ReplacePredicates` on the pair --
+      remember the store's end, parse (which appends), retire the earlier
+      clauses of every predicate the text defined, or take the new ones
+      back if it did not parse -- and `undefine` on the first. Not atomic
+      against a query STARTING between the append and the retirement; a
+      query already running keeps its view. Closing that window is E12, as
+      is the `Fail` policy, which is still refused. Found on the way: a
+      define with an error after some good clauses changed the world
+      without a `WorldChanged`, because the event was sent only for a clean
+      define; it is now sent whenever the generation moved.
+- [x] **E5 — Source retention.** *(2026-11-28.)* Each parsed clause keeps
+      the text it was parsed from, on `ClauseOrigin::sourceText`, and
+      `LocalSession`'s `source` returns it instead of `Clause::toString()`
+      -- which printed the engine's debug form (`warm( $c (VT29) ) :- ...`),
+      not the language, and not something the parser reads back. Kept per
+      CLAUSE rather than per module as first planned, so one predicate can
+      be shown and edited without the rest of its file; a module's text is
+      the concatenation in order, less whatever lay between clauses. A
+      comment the parser's post-skip consumed after one clause is handed to
+      the next (a same-line comment stays), with string literals stepped
+      over. Synthesized and asserted clauses have no text of their own.
+- [ ] **E6, E9, E11, E12, E13, E15** — not started. (E7 is above,
+      with a plan.) E15's effect -- solutions retained until `release`,
+      and `inspect` working against them -- is already in place through
+      E7's grounded clones (lens G5.2 runs on it); whether anything is
+      left of E15 is a decision still to take. E9 (world
       reset) and E12 (staged parse and commit) are the two the lens plan
       calls out as larger than they look; `RuntimeContext` binds one Engine
       and World for life and `~RuntimeContext` deliberately leaks the

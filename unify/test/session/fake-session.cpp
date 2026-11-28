@@ -582,6 +582,7 @@ us::RequestId FakeSession::define( std::string text, us::Origin origin,
 
         if ( existed && policy == us::OverwritePolicy::ReplacePredicates ) {
             defined.replaced.push_back( key );
+            defined.replacedClauses.push_back( row.entry.clauseCount );
         } else if ( existed ) {
             defined.added.push_back( key );
         } else {

@@ -216,8 +216,8 @@ struct Origin {
 enum class OverwritePolicy {
     Append,             //!< add clauses after any existing ones (consult)
     ReplacePredicates,  //!< for each predicate the text defines, drop its
-                        //!< existing clauses first (edit-and-save). Needs
-                        //!< engine item E3.
+                        //!< existing clauses first (edit-and-save). Engine
+                        //!< item E3.
     Fail                //!< refuse if any predicate the text defines exists
 };
 
@@ -405,6 +405,12 @@ struct Defined {
     ModuleId                  module = kNoModule;
     std::vector<PredicateKey> added;
     std::vector<PredicateKey> replaced;
+    /**
+     * Parallel to `replaced`: how many clauses each now has. UI.md section
+     * 10 rule 3 -- a redefinition is reported as `route/3 replaced (4
+     * clauses)`, never silently -- and the count is the core's to know.
+     */
+    std::vector<std::uint32_t> replacedClauses;
     std::vector<PredicateKey> removed;
     /**
      * Non-zero when the text had errors. The matching Diagnostics are
